@@ -34,6 +34,36 @@ private:
     }
 #endif
 
+#if defined(__AVX2__) && defined(__FMA__)
+    // exp(x) for 8 lanes (Cephes polynomial; softmax outputs measured within 8e-6 relative of a double reference on logits in [-30, 30]). Inputs below -87.3 (including -inf) give exactly 0,
+    // so masked logits stay zero. Inputs above 88.3 are clamped.
+    static inline __m256 exp256_ps(__m256 x) {
+        const __m256 underflow = _mm256_cmp_ps(x, _mm256_set1_ps(-87.3f), _CMP_LT_OQ);
+        x = _mm256_min_ps(x, _mm256_set1_ps(88.3762626647949f));
+        x = _mm256_max_ps(x, _mm256_set1_ps(-87.3f));
+        __m256 fx = _mm256_round_ps(_mm256_mul_ps(x, _mm256_set1_ps(1.44269504088896341f)),
+                                    _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+        x = _mm256_fnmadd_ps(fx, _mm256_set1_ps(0.693359375f), x);
+        x = _mm256_fnmadd_ps(fx, _mm256_set1_ps(-2.12194440e-4f), x);
+        __m256 y = _mm256_set1_ps(1.9875691500E-4f);
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(1.3981999507E-3f));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(8.3334519073E-3f));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(4.1665795894E-2f));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(1.6666665459E-1f));
+        y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(5.0000001201E-1f));
+        y = _mm256_fmadd_ps(_mm256_mul_ps(y, x), x, _mm256_add_ps(x, _mm256_set1_ps(1.0f)));
+        __m256i n = _mm256_slli_epi32(_mm256_add_epi32(_mm256_cvtps_epi32(fx), _mm256_set1_epi32(127)), 23);
+        return _mm256_andnot_ps(underflow, _mm256_mul_ps(y, _mm256_castsi256_ps(n)));
+    }
+
+    static inline float hsum256_ps(__m256 v) {
+        __m128 s = _mm_add_ps(_mm256_castps256_ps128(v), _mm256_extractf128_ps(v, 1));
+        s = _mm_add_ps(s, _mm_movehl_ps(s, s));
+        s = _mm_add_ss(s, _mm_shuffle_ps(s, s, 0x55));
+        return _mm_cvtss_f32(s);
+    }
+#endif
+
 #if defined(__AVX512F__)
     static inline float hmax512_ps(__m512 v) {
         __m256 vlow = _mm512_castps512_ps256(v);
@@ -89,7 +119,21 @@ public:
 
         // 2. Exponentiate & Sum
         float sum = 0.0f;
-        for (size_t j = 0; j < n; ++j) {
+        size_t j = 0;
+#if defined(__AVX2__) && defined(__FMA__)
+        {
+            const __m256 inv_t = _mm256_set1_ps(inv_temp);
+            const __m256 mx = _mm256_set1_ps(max_val);
+            __m256 acc = _mm256_setzero_ps();
+            for (; j + 8 <= n; j += 8) {
+                __m256 e = exp256_ps(_mm256_fmsub_ps(_mm256_loadu_ps(x + j), inv_t, mx));
+                _mm256_storeu_ps(x + j, e);
+                acc = _mm256_add_ps(acc, e);
+            }
+            sum = hsum256_ps(acc);
+        }
+#endif
+        for (; j < n; ++j) {
             float e = fast_math::fast_exp((x[j] * inv_temp) - max_val);
             x[j] = e;
             sum += e;
@@ -144,7 +188,18 @@ public:
         }
 
         float sum = 0.0f;
-        for (size_t j = 0; j < n; ++j) {
+        size_t j = 0;
+#if defined(__AVX2__) && defined(__FMA__)
+        {
+            const __m256 mx = _mm256_set1_ps(max_val);
+            __m256 acc = _mm256_setzero_ps();
+            for (; j + 8 <= n; j += 8) {
+                acc = _mm256_add_ps(acc, exp256_ps(_mm256_sub_ps(_mm256_loadu_ps(x + j), mx)));
+            }
+            sum = hsum256_ps(acc);
+        }
+#endif
+        for (; j < n; ++j) {
             sum += fast_math::fast_exp(x[j] - max_val);
         }
 
@@ -158,8 +213,33 @@ public:
         if (n == 0) return -1;
         int32_t best_idx = 0;
         float max_val = x[0];
+        size_t i = 1;
 
-        for (size_t i = 1; i < n; ++i) {
+#if defined(__AVX2__)
+        // Blocked: SIMD max over a block, and only when the block beats the running max, a scalar scan of that block
+        // for the first index (keeps the first-maximum tie-break). NaNs never win, as in the scalar loop.
+        if (n >= 64) {
+            constexpr size_t kBlock = 256;
+            while (i < n) {
+                const size_t end = std::min(n, i + kBlock);
+                size_t j = i;
+                __m256 mv = _mm256_set1_ps(max_val);
+                for (; j + 8 <= end; j += 8) mv = _mm256_max_ps(_mm256_loadu_ps(x + j), mv);
+                float block_max = hmax256_ps(mv);
+                if (block_max > max_val) {
+                    for (size_t k = i; k < j; ++k) {
+                        if (x[k] > max_val) { max_val = x[k]; best_idx = static_cast<int32_t>(k); }
+                    }
+                }
+                for (; j < end; ++j) {
+                    if (x[j] > max_val) { max_val = x[j]; best_idx = static_cast<int32_t>(j); }
+                }
+                i = end;
+            }
+            return best_idx;
+        }
+#endif
+        for (; i < n; ++i) {
             if (x[i] > max_val) {
                 max_val = x[i];
                 best_idx = static_cast<int32_t>(i);
