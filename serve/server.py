@@ -2656,6 +2656,10 @@ class Service:
                 "gpu": {"name": static.get("gpu_name"), "used_mib": scaled(hw.get("gpu_mem_used"), 2 ** 20),
                         "total_mib": scaled(hw.get("gpu_mem_total"), 2 ** 20), "util_pct": hw.get("gpu_util"),
                         "temp_c": hw.get("gpu_temp"), "power_w": hw.get("gpu_power")} if static.get("gpu_name") else None,
+                "igpu": {"name": static.get("igpu_name"), "used_mib": scaled(hw.get("igpu_mem_used"), 2 ** 20),
+                         "gtt_used_mib": scaled(hw.get("igpu_gtt_used"), 2 ** 20),
+                         "gtt_total_mib": scaled(hw.get("igpu_gtt_total"), 2 ** 20),
+                         "util_pct": hw.get("igpu_util")} if static.get("igpu_name") else None,
                 "ram": {"used_gib": scaled(hw.get("ram_used"), 2 ** 30, 1),
                         "total_gib": scaled(hw.get("ram_total"), 2 ** 30, 1)} if hw.get("ram_total") else None}}
 

@@ -210,6 +210,30 @@ async function refresh() {
     const swaWindow = status.swa?.window_size ? `SWA: ${status.swa.window_size}` : "SWA Ring";
     text("arch-badge", `${archName.toUpperCase()} · ${swaWindow}`);
 
+    // Compute Hardware (dGPU & iGPU)
+    const mac = status.machine || {};
+    const gpuInfo = mac.gpu || {};
+    const igpuInfo = mac.igpu || {};
+
+    if (gpuInfo.name) {
+      const gpuUtil = gpuInfo.util_pct !== undefined && gpuInfo.util_pct !== null ? `${gpuInfo.util_pct}%` : "0%";
+      const mainGpu = gpuInfo.name.split('+')[0].trim();
+      text("hw-gpu", `${mainGpu}`);
+    } else {
+      text("hw-gpu", mac.ram ? `CPU (${mac.ram.used_gib} / ${mac.ram.total_gib} GiB)` : "Host CPU Engine");
+    }
+
+    if (igpuInfo.name) {
+      const igpuUtil = igpuInfo.util_pct !== undefined && igpuInfo.util_pct !== null ? `${igpuInfo.util_pct}%` : "0%";
+      const gttStr = igpuInfo.gtt_total_mib ? ` · ${Math.round(igpuInfo.gtt_total_mib / 1024)} GB GTT` : "";
+      text("hw-igpu", `iGPU: ${igpuInfo.name} (${igpuUtil}${gttStr})`);
+    } else if (gpuInfo.name && gpuInfo.name.includes("[iGPU]")) {
+      const igpuPart = gpuInfo.name.split('+').find(p => p.includes('[iGPU]')) || "iGPU Active";
+      text("hw-igpu", `iGPU: ${igpuPart.trim()}`);
+    } else {
+      text("hw-igpu", "iGPU: Shared System DRAM / Host");
+    }
+
     // Runtime Stats (Virtual Context, CAS, Multi-Tenant)
     const rt = status.runtime_stats || {};
     const vRatio = rt.context_compression_ratio ? `${rt.context_compression_ratio}x` : "1.0x";

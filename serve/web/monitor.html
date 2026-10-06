@@ -26,17 +26,17 @@ header{height:70px;padding:0 32px;display:flex;align-items:center;justify-conten
 <!-- Row 1: Core Telemetry Cards -->
 <div class="cards">
 <div class="card"><div class="label">Model & Architecture</div><div id="model-state" class="value"><span class="dot"></span><span id="loaded">Connecting…</span></div><div id="model" class="model">127.0.0.1:5001/v1</div><div id="arch-badge" class="badge-tag">SWA: 4096 Ring</div></div>
+<div class="card"><div class="label">Compute Hardware (dGPU & iGPU)</div><div id="hw-gpu" class="value">—</div><div id="hw-igpu" class="small">Scanning GPU & iGPU…</div></div>
 <div class="card"><div class="label">Virtual Context Ratio</div><div id="vctx-ratio" class="value">—</div><div id="vctx-detail" class="small">0 virtual / 0 physical</div></div>
 <div class="card"><div class="label">Tool & CAS Tokens Saved</div><div id="tool-saved" class="value">—</div><div id="cas-detail" class="small">0 raw payloads in CAS</div></div>
-<div class="card"><div class="label">Multi-Tenant Sessions</div><div id="tenant-stats" class="value">—</div><div id="agent-detail" class="small">0 tenants · 0 agents</div></div>
 </div>
 
 <!-- Row 2: Performance Telemetry Cards -->
 <div class="cards">
-<div class="card"><div class="label">Requests Retained</div><div id="count" class="value">—</div><div id="active" class="small">Waiting for server</div></div>
+<div class="card"><div class="label">Multi-Tenant Sessions</div><div id="tenant-stats" class="value">—</div><div id="agent-detail" class="small">0 tenants · 0 agents</div></div>
+<div class="card"><div class="label">Compaction Events</div><div id="compactions" class="value">—</div><div class="small">Automatic context pruning</div></div>
 <div class="card"><div class="label">Last Wall-Clock</div><div id="wall" class="value">—</div><div class="small">Queue + Model + Generation</div></div>
 <div class="card"><div class="label">Decode Speed</div><div id="speed" class="value">—</div><div class="small">Engine timing · tokens / sec</div></div>
-<div class="card"><div class="label">Compaction Events</div><div id="compactions" class="value">—</div><div class="small">Automatic context pruning</div></div>
 </div>
 
 <section class="panel"><div class="panel-bar"><h2>Requests & Scoped Invocations</h2><div class="filters"><input id="search" aria-label="Filter requests" placeholder="Search ID, model, scope"><select id="filter" aria-label="Request status"><option value="all">All statuses</option><option value="active">Active</option><option value="completed">Completed</option><option value="error">Errors</option></select></div></div>

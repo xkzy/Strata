@@ -182,9 +182,112 @@ class _Amd:
         return out
 
 
+class _DrmGpu:
+    """Linux DRM sysfs GPU/iGPU reader for AMD, Intel, and generic display adapters."""
+
+    def __init__(self, render_path):
+        self.dev = render_path
+        self.vendor = self._read_str("vendor")
+        self.device_id = self._read_str("device")
+        self.driver = os.path.basename(os.readlink(os.path.join(self.dev, "driver"))) if os.path.exists(os.path.join(self.dev, "driver")) else ""
+        self.hwmon = None
+        if os.path.exists(os.path.join(self.dev, "hwmon")):
+            try:
+                hws = sorted(os.listdir(os.path.join(self.dev, "hwmon")))
+                self.hwmon = os.path.join(self.dev, "hwmon", hws[0]) if hws else None
+            except OSError:
+                pass
+
+    def ok(self):
+        return bool(self.dev and os.path.isdir(self.dev))
+
+    def _read_str(self, fname):
+        p = os.path.join(self.dev, fname)
+        if os.path.exists(p):
+            try:
+                with open(p, encoding="utf-8", errors="replace") as f:
+                    return f.read().strip()
+            except OSError:
+                pass
+        return ""
+
+    def _read_int(self, fname):
+        val = self._read_str(fname)
+        if not val:
+            return None
+        try:
+            return int(val, 16 if val.startswith("0x") else 10)
+        except (ValueError, TypeError):
+            return None
+
+    def is_igpu(self) -> bool:
+        vram = self._read_int("mem_info_vram_total") or 0
+        gtt = self._read_int("mem_info_gtt_total") or 0
+        if gtt > 0 and vram <= 2 * 1024 * 1024 * 1024:
+            return True
+        name = self.name().lower()
+        return any(k in name for k in ("igpu", "integrated", "radeon graphics", "iris", "uhd", "granite ridge", "raphael", "strix"))
+
+    def name(self) -> str:
+        prod = self._read_str("product_name")
+        if prod:
+            return prod
+        if self.vendor == "0x1002":
+            return "AMD Radeon Graphics (iGPU)"
+        if self.vendor == "0x8086":
+            return "Intel Graphics (iGPU)"
+        if self.vendor == "0x10de":
+            return "NVIDIA Graphics"
+        return f"GPU ({self.vendor}:{self.device_id})"
+
+    def read(self) -> dict:
+        vram_used = self._read_int("mem_info_vram_used")
+        vram_total = self._read_int("mem_info_vram_total")
+        gtt_used = self._read_int("mem_info_gtt_used")
+        gtt_total = self._read_int("mem_info_gtt_total")
+        util = self._read_int("gpu_busy_percent")
+        out = {
+            "name": self.name(),
+            "type": "iGPU" if self.is_igpu() else "dGPU",
+            "util": util,
+            "mem_used": vram_used,
+            "mem_total": vram_total,
+            "gtt_used": gtt_used,
+            "gtt_total": gtt_total,
+        }
+        if self.hwmon:
+            t = self._read_int(os.path.join(self.hwmon, "temp1_input")) if self.hwmon else None
+            out["temp"] = t / 1000.0 if t is not None else None
+            p = self._read_int(os.path.join(self.hwmon, "power1_average")) if self.hwmon else None
+            if p is None and self.hwmon:
+                p = self._read_int(os.path.join(self.hwmon, "power1_input"))
+            out["power"] = p / 1e6 if p is not None else None
+        return out
+
+
+def discover_all_drm_gpus():
+    """Finds all available DRM GPU and iGPU nodes on Linux."""
+    import glob
+    readers = []
+    for p in sorted(glob.glob("/sys/class/drm/renderD*/device")):
+        r = _DrmGpu(p)
+        if r.ok():
+            readers.append(r)
+    return readers
+
+
 def gpu_reader(index=0, amd=False):
     """The card's readings: NVML (NVIDIA), or the amdgpu sysfs files with the AMD backend (#301)."""
-    return _Amd(index) if amd else _Nvml(index)
+    if amd:
+        return _Amd(index)
+    nv = _Nvml(index)
+    if nv.ok():
+        return nv
+    # Fallback to DRM sysfs for AMD/Intel/iGPU
+    drms = discover_all_drm_gpus()
+    if 0 <= index < len(drms):
+        return drms[index]
+    return nv
 
 
 def free_vram_mib(index=0, amd=False):
@@ -278,15 +381,33 @@ class Telemetry:
         self.gpus = [(i, gpu_reader(i, amd)) for i in idx]
         self.gpus = [(i, g) for i, g in self.gpus if g.ok()] or self.gpus[:1]
         self.gpu = self.gpus[0][1]
+
+        # Discover all available compute devices (including iGPUs)
+        self.drm_gpus = discover_all_drm_gpus()
+        self.igpu_readers = [g for g in self.drm_gpus if g.is_igpu()]
+        self.igpu = self.igpu_readers[0] if self.igpu_readers else None
+
         try:
             import psutil  # noqa: F401
             self.ps = sys.modules["psutil"]
         except ImportError:
             self.ps = None
         self.fallback = _CpuRamFallback()
+
+        # Build comprehensive device list
+        all_dev_names = []
+        for _, g in self.gpus:
+            if g.ok():
+                all_dev_names.append(g.name() or "?")
+        for ig in self.igpu_readers:
+            ig_name = ig.name()
+            if ig_name and ig_name not in all_dev_names:
+                all_dev_names.append(f"{ig_name} [iGPU]")
+
         self.static = {
-            "gpu_name": " + ".join(g.name() or "?" for _, g in self.gpus) if self.gpu.ok() else None,
+            "gpu_name": " + ".join(all_dev_names) if all_dev_names else (self.gpu.name() if self.gpu.ok() else None),
             "gpu_count": len(self.gpus),
+            "igpu_name": self.igpu.name() if self.igpu else None,
             "cpu_name": _cpu_name(),
             "cores": (self.ps.cpu_count(logical=False) if self.ps else None) or None,
             "threads": os.cpu_count(),
@@ -328,6 +449,18 @@ class Telemetry:
                               "mem_total": r.get("mem_total"), "temp": r.get("temp"), "power": r.get("power")}
                              for i, r in reads]
             s.update({f"gpu_{k}": v for k, v in g.items()})
+
+        if self.igpu:
+            try:
+                ig_read = self.igpu.read()
+                s["igpu"] = ig_read
+                s["igpu_util"] = ig_read.get("util")
+                s["igpu_mem_used"] = ig_read.get("mem_used")
+                s["igpu_gtt_used"] = ig_read.get("gtt_used")
+                s["igpu_gtt_total"] = ig_read.get("gtt_total")
+            except Exception:
+                pass
+
         if self.ps:
             try:
                 s["cpu"] = self.ps.cpu_percent(interval=None)
@@ -351,8 +484,8 @@ class Telemetry:
             s = self.sample()
             with self.lock:
                 self.now = s
-                for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "cpu", "ram_used",
-                          "disk_read_mb", "tok_s", "prefill_tok_s_mean"):
+                for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "igpu_util",
+                          "igpu_gtt_used", "cpu", "ram_used", "disk_read_mb", "tok_s", "prefill_tok_s_mean"):
                     v = s.get(k)
                     self.hist[k].append(round(v, 2) if isinstance(v, float) else v)
             time.sleep(1.0)
