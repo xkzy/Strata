@@ -9,23 +9,54 @@
 
 namespace strata::context {
 
+namespace {
+struct AsciiLut {
+    bool is_token_char[256]{};
+    char tolower_char[256]{};
+    AsciiLut() {
+        for (int i = 0; i < 256; ++i) {
+            unsigned char c = static_cast<unsigned char>(i);
+            if (std::isalnum(c) || c == '_') {
+                is_token_char[i] = true;
+            }
+            tolower_char[i] = static_cast<char>(std::tolower(c));
+        }
+    }
+};
+const AsciiLut& get_ascii_lut() {
+    static const AsciiLut lut;
+    return lut;
+}
+} // anonymous namespace
+
 HierarchicalBM25Index::HierarchicalBM25Index() = default;
 
 std::vector<std::string> HierarchicalBM25Index::tokenize(const std::string& text) const {
+    const auto& lut = get_ascii_lut();
     std::vector<std::string> tokens;
-    std::string current;
-    for (char c : text) {
-        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') {
-            current += std::tolower(static_cast<unsigned char>(c));
-        } else if (!current.empty()) {
-            if (current.size() >= 2) {
-                tokens.push_back(current);
-            }
-            current.clear();
+    tokens.reserve(text.size() / 6 + 4);
+
+    size_t start = 0;
+    const size_t len = text.size();
+    while (start < len) {
+        while (start < len && !lut.is_token_char[static_cast<unsigned char>(text[start])]) {
+            ++start;
         }
-    }
-    if (!current.empty() && current.size() >= 2) {
-        tokens.push_back(current);
+        if (start >= len) break;
+
+        size_t end = start;
+        while (end < len && lut.is_token_char[static_cast<unsigned char>(text[end])]) {
+            ++end;
+        }
+
+        if (end - start >= 2) {
+            std::string tok(end - start, '\0');
+            for (size_t i = 0; i < end - start; ++i) {
+                tok[i] = lut.tolower_char[static_cast<unsigned char>(text[start + i])];
+            }
+            tokens.push_back(std::move(tok));
+        }
+        start = end;
     }
     return tokens;
 }

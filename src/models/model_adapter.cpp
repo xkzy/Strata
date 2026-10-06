@@ -93,23 +93,27 @@ public:
 
     void route_token(const float* routing_logits, int64_t n_expert, int64_t top_k,
                      int32_t* selected_experts_out, float* weights_out) const override {
-        std::vector<std::pair<float, int32_t>> scored(n_expert);
+        thread_local std::vector<std::pair<float, int32_t>> tl_scored;
+        if (static_cast<int64_t>(tl_scored.size()) < n_expert) {
+            tl_scored.resize(n_expert);
+        }
         for (int64_t i = 0; i < n_expert; ++i) {
             float score = sigmoid(routing_logits[i]);
-            scored[i] = {score, static_cast<int32_t>(i)};
+            tl_scored[i] = {score, static_cast<int32_t>(i)};
         }
-        std::partial_sort(scored.begin(), scored.begin() + top_k, scored.end(),
+        std::partial_sort(tl_scored.begin(), tl_scored.begin() + top_k, tl_scored.begin() + n_expert,
                           [](const auto& a, const auto& b) { return a.first > b.first; });
 
         float sum = 0.0f;
         for (int64_t i = 0; i < top_k; ++i) {
-            selected_experts_out[i] = scored[i].second;
-            weights_out[i] = scored[i].first;
+            selected_experts_out[i] = tl_scored[i].second;
+            weights_out[i] = tl_scored[i].first;
             sum += weights_out[i];
         }
         if (sum > 0.0f) {
+            const float inv_sum = 1.0f / sum;
             for (int64_t i = 0; i < top_k; ++i) {
-                weights_out[i] /= sum;
+                weights_out[i] *= inv_sum;
             }
         }
     }
@@ -167,21 +171,27 @@ public:
 
     void route_token(const float* routing_logits, int64_t n_expert, int64_t top_k,
                      int32_t* selected_experts_out, float* weights_out) const override {
-        std::vector<std::pair<float, int32_t>> scored(n_expert);
-        for (int64_t i = 0; i < n_expert; ++i) {
-            scored[i] = {routing_logits[i], static_cast<int32_t>(i)};
+        thread_local std::vector<std::pair<float, int32_t>> tl_scored;
+        thread_local std::vector<float> tl_top_logits;
+        if (static_cast<int64_t>(tl_scored.size()) < n_expert) {
+            tl_scored.resize(n_expert);
         }
-        std::partial_sort(scored.begin(), scored.begin() + top_k, scored.end(),
+        if (static_cast<int64_t>(tl_top_logits.size()) < top_k) {
+            tl_top_logits.resize(top_k);
+        }
+        for (int64_t i = 0; i < n_expert; ++i) {
+            tl_scored[i] = {routing_logits[i], static_cast<int32_t>(i)};
+        }
+        std::partial_sort(tl_scored.begin(), tl_scored.begin() + top_k, tl_scored.begin() + n_expert,
                           [](const auto& a, const auto& b) { return a.first > b.first; });
 
-        std::vector<float> top_logits(top_k);
         for (int64_t i = 0; i < top_k; ++i) {
-            selected_experts_out[i] = scored[i].second;
-            top_logits[i] = scored[i].first;
+            selected_experts_out[i] = tl_scored[i].second;
+            tl_top_logits[i] = tl_scored[i].first;
         }
-        softmax(top_logits.data(), top_k);
+        softmax(tl_top_logits.data(), top_k);
         for (int64_t i = 0; i < top_k; ++i) {
-            weights_out[i] = top_logits[i];
+            weights_out[i] = tl_top_logits[i];
         }
     }
 
@@ -240,22 +250,26 @@ public:
 
     void route_token(const float* routing_logits, int64_t n_expert, int64_t top_k,
                      int32_t* selected_experts_out, float* weights_out) const override {
-        std::vector<std::pair<float, int32_t>> scored(n_expert);
-        for (int64_t i = 0; i < n_expert; ++i) {
-            scored[i] = {sigmoid(routing_logits[i]), static_cast<int32_t>(i)};
+        thread_local std::vector<std::pair<float, int32_t>> tl_scored;
+        if (static_cast<int64_t>(tl_scored.size()) < n_expert) {
+            tl_scored.resize(n_expert);
         }
-        std::partial_sort(scored.begin(), scored.begin() + top_k, scored.end(),
+        for (int64_t i = 0; i < n_expert; ++i) {
+            tl_scored[i] = {sigmoid(routing_logits[i]), static_cast<int32_t>(i)};
+        }
+        std::partial_sort(tl_scored.begin(), tl_scored.begin() + top_k, tl_scored.begin() + n_expert,
                           [](const auto& a, const auto& b) { return a.first > b.first; });
 
         float sum = 0.0f;
         for (int64_t i = 0; i < top_k; ++i) {
-            selected_experts_out[i] = scored[i].second;
-            weights_out[i] = scored[i].first;
+            selected_experts_out[i] = tl_scored[i].second;
+            weights_out[i] = tl_scored[i].first;
             sum += weights_out[i];
         }
         if (sum > 0.0f) {
+            const float inv_sum = 1.0f / sum;
             for (int64_t i = 0; i < top_k; ++i) {
-                weights_out[i] /= sum;
+                weights_out[i] *= inv_sum;
             }
         }
     }
@@ -301,23 +315,27 @@ public:
 
     void route_token(const float* routing_logits, int64_t n_expert, int64_t top_k,
                      int32_t* selected_experts_out, float* weights_out) const override {
-        std::vector<std::pair<float, int32_t>> scored(n_expert);
+        thread_local std::vector<std::pair<float, int32_t>> tl_scored;
+        if (static_cast<int64_t>(tl_scored.size()) < n_expert) {
+            tl_scored.resize(n_expert);
+        }
         for (int64_t i = 0; i < n_expert; ++i) {
             float val = (cfg_.routing_type == RoutingType::kTopKSoftmax) ? routing_logits[i] : sigmoid(routing_logits[i]);
-            scored[i] = {val, static_cast<int32_t>(i)};
+            tl_scored[i] = {val, static_cast<int32_t>(i)};
         }
-        std::partial_sort(scored.begin(), scored.begin() + top_k, scored.end(),
+        std::partial_sort(tl_scored.begin(), tl_scored.begin() + top_k, tl_scored.begin() + n_expert,
                           [](const auto& a, const auto& b) { return a.first > b.first; });
 
         float sum = 0.0f;
         for (int64_t i = 0; i < top_k; ++i) {
-            selected_experts_out[i] = scored[i].second;
-            weights_out[i] = scored[i].first;
+            selected_experts_out[i] = tl_scored[i].second;
+            weights_out[i] = tl_scored[i].first;
             sum += weights_out[i];
         }
         if (sum > 0.0f) {
+            const float inv_sum = 1.0f / sum;
             for (int64_t i = 0; i < top_k; ++i) {
-                weights_out[i] /= sum;
+                weights_out[i] *= inv_sum;
             }
         }
     }

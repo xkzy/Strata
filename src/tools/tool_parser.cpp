@@ -49,26 +49,32 @@ StructuredToolData CompilerOutputParser::parse(const std::string& /*tool_name*/,
     std::smatch match;
 
     for (const auto& line : lines) {
-        if (std::regex_search(line, match, diag_regex)) {
-            CompilerDiagnostic diag;
-            diag.file = match[1].str();
-            diag.line = std::stoi(match[2].str());
-            diag.column = std::stoi(match[3].str());
-            diag.severity = match[4].str();
-            diag.message = match[5].str();
+        if (line.find(':') != std::string::npos &&
+            (line.find("error:") != std::string::npos ||
+             line.find("warning:") != std::string::npos ||
+             line.find("note:") != std::string::npos ||
+             line.find("FAILED:") != std::string::npos)) {
+            if (std::regex_search(line, match, diag_regex)) {
+                CompilerDiagnostic diag;
+                diag.file = match[1].str();
+                diag.line = std::stoi(match[2].str());
+                diag.column = std::stoi(match[3].str());
+                diag.severity = match[4].str();
+                diag.message = match[5].str();
 
-            if (diag.severity == "error") {
+                if (diag.severity == "error") {
+                    data.error_count++;
+                    data.build_success = false;
+                } else if (diag.severity == "warning") {
+                    data.warning_count++;
+                }
+                data.diagnostics.push_back(diag);
+            } else if (line.find("error:") != std::string::npos || line.find("FAILED:") != std::string::npos) {
                 data.error_count++;
                 data.build_success = false;
-            } else if (diag.severity == "warning") {
+            } else if (line.find("warning:") != std::string::npos) {
                 data.warning_count++;
             }
-            data.diagnostics.push_back(diag);
-        } else if (line.find("error:") != std::string::npos || line.find("FAILED:") != std::string::npos) {
-            data.error_count++;
-            data.build_success = false;
-        } else if (line.find("warning:") != std::string::npos) {
-            data.warning_count++;
         }
     }
 
@@ -94,17 +100,18 @@ StructuredToolData TestOutputParser::parse(const std::string& /*tool_name*/,
     auto lines = split_lines(raw_output);
     data.total_lines = lines.size();
 
-    std::regex pytest_summary_regex(R"((\d+)\s+passed(?:,\s+(\d+)\s+failed)?)");
     std::regex failed_test_regex(R"(FAILED\s+([^\s:]+))");
     std::smatch match;
 
     for (const auto& line : lines) {
-        if (std::regex_search(line, match, failed_test_regex)) {
-            TestFailure f;
-            f.test_name = match[1].str();
-            f.failure_message = line;
-            data.failures.push_back(f);
-            data.tests_failed++;
+        if (line.find("FAILED") != std::string::npos) {
+            if (std::regex_search(line, match, failed_test_regex)) {
+                TestFailure f;
+                f.test_name = match[1].str();
+                f.failure_message = line;
+                data.failures.push_back(f);
+                data.tests_failed++;
+            }
         } else if (line.find("Passed") != std::string::npos || line.find("PASSED") != std::string::npos) {
             data.tests_passed++;
         }

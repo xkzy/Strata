@@ -68,6 +68,35 @@ std::vector<ScheduledTask> DynamicScheduler::schedule_active_experts(
 
     tasks.reserve(k);
 
+    // Fast-path for single-device deployment (standard CPU-only or single-GPU)
+    if (devices.size() == 1) {
+        const auto& dev = devices[0];
+        int dev_id = dev->id();
+        double tflops = dev->metrics().compute_tflops_fp16;
+        if (tflops <= 0.0) tflops = 1.0;
+        double compute_sec = static_cast<double>(flops_per_expert) / (tflops * 1e12);
+
+        for (int64_t i = 0; i < k; ++i) {
+            int32_t expert_id = active_experts[i];
+            if (expert_id < 0) continue;
+
+            ScheduledTask task;
+            task.task_id = static_cast<int>(tasks.size());
+            task.op = OpType::kGEMV;
+            task.target_device_id = dev_id;
+            task.estimated_compute_sec = compute_sec;
+            task.estimated_transfer_sec = 0.0;
+            task.estimated_total_sec = compute_sec;
+            task.layer = layer;
+            task.expert_id = expert_id;
+
+            tasks.push_back(task);
+            tasks_scheduled_per_device_[dev_id]++;
+            total_compute_time_per_device_[dev_id] += compute_sec;
+        }
+        return tasks;
+    }
+
     for (int64_t i = 0; i < k; ++i) {
         int32_t expert_id = active_experts[i];
         if (expert_id < 0) continue;
@@ -115,6 +144,35 @@ ScheduledTask DynamicScheduler::schedule_op(OpType op, uint64_t input_bytes,
                                             uint64_t output_bytes, uint64_t required_flops,
                                             int64_t layer) {
     const auto& devices = DeviceManager::instance().all_devices();
+    if (devices.empty()) {
+        ScheduledTask task;
+        task.task_id = 0;
+        task.op = op;
+        task.target_device_id = 0;
+        task.layer = layer;
+        return task;
+    }
+
+    // Fast path for single device
+    if (devices.size() == 1) {
+        const auto& dev = devices[0];
+        int dev_id = dev->id();
+        ExecutionCost best_cost = estimate_cost(*dev, op, input_bytes, output_bytes, required_flops, layer, -1);
+        ScheduledTask task;
+        task.task_id = 0;
+        task.op = op;
+        task.target_device_id = dev_id;
+        task.estimated_compute_sec = best_cost.compute_time_sec;
+        task.estimated_transfer_sec = best_cost.transfer_time_sec;
+        task.estimated_total_sec = best_cost.total_cost();
+        task.layer = layer;
+        task.expert_id = -1;
+
+        tasks_scheduled_per_device_[dev_id]++;
+        total_compute_time_per_device_[dev_id] += best_cost.compute_time_sec;
+        return task;
+    }
+
     int best_device_id = 0;
     double min_total_cost = std::numeric_limits<double>::infinity();
     ExecutionCost best_cost;

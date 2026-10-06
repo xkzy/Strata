@@ -323,6 +323,7 @@ class HierarchicalBM25Index:
         self.inverted_index: Dict[str, Dict[int, int]] = {}  # term -> {doc_id: tf}
         self.file_index: Dict[str, Set[int]] = {}
         self.tag_index: Dict[str, Set[int]] = {}
+        self.total_doc_len = 0
         self.avg_doc_len = 0.0
 
     def _tokenize(self, text: str) -> List[str]:
@@ -336,6 +337,7 @@ class HierarchicalBM25Index:
 
         self.doc_records[doc_id] = item
         self.doc_lengths[doc_id] = doc_len
+        self.total_doc_len += doc_len
 
         tf_map: Dict[str, int] = {}
         for t in tokens:
@@ -352,7 +354,7 @@ class HierarchicalBM25Index:
             self.tag_index.setdefault(tag, set()).add(doc_id)
 
         n = len(self.doc_records)
-        self.avg_doc_len = sum(self.doc_lengths.values()) / max(1, n)
+        self.avg_doc_len = self.total_doc_len / max(1, n)
 
     def search(self, query: str, top_k: int = 5, filename_filter: str = "") -> List[Tuple[ContextItem, float]]:
         query_tokens = self._tokenize(query)
