@@ -149,6 +149,7 @@ async function loadHealth() {
 const METRICS = [
   {key: "speed", label: "Speed", icon: "gauge", unit: "t/s", series: "tok_s"},
   {key: "gpu", label: "GPU load", icon: "gpu", unit: "%", series: "gpu_util", max: 100},
+  {key: "igpu", label: "iGPU load", icon: "gpu", unit: "%", series: "igpu_util", max: 100},
   {key: "vram", label: "VRAM", icon: "layers", unit: "GB", series: "gpu_mem_used"},
   {key: "temp", label: "GPU temp", icon: "thermometer", unit: "°C", series: "gpu_temp", tone: "warn"},
   {key: "power", label: "Power", icon: "bolt", unit: "W", series: "gpu_power"},
@@ -319,6 +320,13 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   setMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%",
             multi ? per((g) => (g.util == null ? "–" : `${fmt(g.util)}%`)) : st.gpu_name || "");
   spark("sp-gpu", h.gpu_util, 100);
+  const igpuUtil = hw.igpu_util != null ? hw.igpu_util : (hw.igpu ? hw.igpu.util : null);
+  const igpuGtt = hw.igpu_gtt_used != null ? hw.igpu_gtt_used : (hw.igpu ? hw.igpu.gtt_used : null);
+  const igpuGttTotal = hw.igpu_gtt_total != null ? hw.igpu_gtt_total : (hw.igpu ? hw.igpu.gtt_total : null);
+  const igpuSub = st.igpu_name || (hw.igpu && hw.igpu.name) || "Integrated Graphics";
+  setMetric("igpu", igpuUtil == null ? (igpuGtt != null ? gb(igpuGtt) : null) : fmt(igpuUtil), igpuUtil == null && igpuGtt != null ? "GB" : "%",
+            igpuGttTotal ? `${gb(igpuGtt || 0)} / ${gb(igpuGttTotal, 0)} GB GTT · ${igpuSub}` : igpuSub);
+  spark("sp-igpu", h.igpu_util, 100);
   setMetric("vram", hw.gpu_mem_used == null ? null : gb(hw.gpu_mem_used), hw.gpu_mem_total ? `/ ${gb(hw.gpu_mem_total, 0)} GB` : "GB",
             multi ? per((g) => (g.mem_used == null ? "–" : `${gb(g.mem_used)} GB`))
                   : eng.expert_slots ? `${fmt(eng.expert_slots)} experts cached` : "");
@@ -393,6 +401,26 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     $("ram-slots-bar").style.width = hw.ram_total ? `${Math.min(100, (100 * ramCacheBytes) / hw.ram_total)}%` : "0%";
   }
 
+  if ($("igpu-text") && $("igpu-bar")) {
+    const igpuMem = igpuGtt != null ? igpuGtt : (hw.igpu ? hw.igpu.mem_used : null);
+    const igpuTot = igpuGttTotal != null ? igpuGttTotal : (hw.igpu ? hw.igpu.gtt_total : (hw.igpu ? hw.igpu.mem_total : null));
+    if (igpuMem != null && igpuTot) {
+      const igpuPct = Math.min(100, (100 * igpuMem) / igpuTot);
+      $("igpu-text").textContent = `${gb(igpuMem)} / ${gb(igpuTot, 0)} GB GTT (${fmt(igpuPct, 0)}%)`;
+      $("igpu-bar").style.width = `${igpuPct}%`;
+      if ($("igpu-row")) $("igpu-row").hidden = false;
+      if ($("igpu-progress")) $("igpu-progress").hidden = false;
+    } else if (st.igpu_name || (hw.igpu && hw.igpu.name)) {
+      $("igpu-text").textContent = `${st.igpu_name || hw.igpu.name} (Active)`;
+      $("igpu-bar").style.width = igpuUtil != null ? `${Math.min(100, igpuUtil)}%` : "0%";
+      if ($("igpu-row")) $("igpu-row").hidden = false;
+      if ($("igpu-progress")) $("igpu-progress").hidden = false;
+    } else {
+      if ($("igpu-row")) $("igpu-row").hidden = true;
+      if ($("igpu-progress")) $("igpu-progress").hidden = true;
+    }
+  }
+
   $("ram-text").textContent = hw.ram_total ? `${gb(hw.ram_used)} / ${gb(hw.ram_total, 0)} GB` : "–";
   const ramPct = hw.ram_total ? (100 * hw.ram_used) / hw.ram_total : 0;
   $("ram-bar").style.width = `${ramPct}%`;
@@ -442,6 +470,10 @@ function projectionText(c) {
 }
 function renderAbout(eng, hw, st) {
   const kv = {int8: "8-bit", q4_0: "4-bit (Hadamard-rotated)", fp16: "16-bit"}[eng.kv] || eng.kv;
+  const igpuDetail = st.igpu_name
+    ? `${st.igpu_name}${hw.igpu && hw.igpu.gtt_total ? `, ${gb(hw.igpu.gtt_total, 0)} GB GTT` : (hw.igpu_gtt_total ? `, ${gb(hw.igpu_gtt_total, 0)} GB GTT` : "")}`
+    : (hw.igpu && hw.igpu.name ? `${hw.igpu.name}${hw.igpu.gtt_total ? `, ${gb(hw.igpu.gtt_total, 0)} GB GTT` : ""}` : null);
+
   facts($("facts-engine"), [
     ["Model", eng.model],
     ["Engine", eng.version ? `v${eng.version}` : "built from source"],
@@ -453,7 +485,9 @@ function renderAbout(eng, hw, st) {
     ["Experimental speed projection", projectionText(eng.cvec)],
   ]);
   facts($("facts-hw"), [
-    ["GPU", st.gpu_name ? `${st.gpu_name}${hw.gpu_mem_total ? `, ${gb(hw.gpu_mem_total, 0)} GB` : ""}` : "not readable (NVML)"],
+    [igpuDetail ? "dGPU" : "GPU", st.gpu_name ? `${st.gpu_name}${hw.gpu_mem_total ? `, ${gb(hw.gpu_mem_total, 0)} GB` : ""}` : "not readable (NVML)"],
+    ["iGPU", igpuDetail],
+    ["Compute Devices", st.compute_devices && st.compute_devices.length > 1 ? st.compute_devices.join(" · ") : null],
     ["CPU", st.cpu_name ? `${st.cpu_name}${st.threads ? `, ${st.threads} threads` : ""}` : null],
     ["RAM", hw.ram_total ? `${gb(hw.ram_total, 0)} GB` : null],
   ]);
