@@ -1,4 +1,4 @@
-﻿# Strata Engine - top-level build (P1.S1).
+# Strata Engine - top-level build (P1.S1).
 #
 # Targets (phase-1 Ă‚Â§P1.S1): `strata_artifact` (no CUDA dependency), `tests`.  `strata_plan` and the C++
 # `strata-pack` are added when their sources exist - a target with no sources would make the build graph
@@ -446,6 +446,47 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(exchange_storage_test PRIVATE Threads::Threads)
     add_test(NAME exchange_storage_test COMMAND exchange_storage_test)
     set_tests_properties(exchange_storage_test PROPERTIES TIMEOUT 60)
+  endif()
+
+  # ---- Generic MoE Runtime & Model Adapters ----
+  add_library(strata_generic_runtime STATIC
+    src/runtime/device.cpp
+    src/runtime/memory.cpp
+    src/runtime/topology.cpp
+    src/runtime/expert_manager.cpp
+    src/runtime/scheduler.cpp
+    src/runtime/runtime.cpp
+    src/models/model_adapter.cpp)
+  target_include_directories(strata_generic_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(strata_generic_runtime PUBLIC strata_engine ${_strata_gpu_runtime_target})
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/runtime/test_generic_runtime.cpp")
+    enable_testing()
+    add_executable(test_generic_runtime tests/runtime/test_generic_runtime.cpp)
+    target_link_libraries(test_generic_runtime PRIVATE strata_generic_runtime)
+    add_test(NAME test_generic_runtime COMMAND test_generic_runtime)
+    set_tests_properties(test_generic_runtime PROPERTIES TIMEOUT 60)
+  endif()
+
+  # ---- Generic Long-Context & Virtual Memory Runtime ----
+  add_library(strata_context STATIC
+    src/context/context_item.cpp
+    src/context/importance_scorer.cpp
+    src/context/token_budget.cpp
+    src/context/retrieval_index.cpp
+    src/context/hierarchical_memory.cpp
+    src/context/context_compactor.cpp
+    src/context/virtual_context.cpp
+    src/context/context_runtime.cpp)
+  target_include_directories(strata_context PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(strata_context PUBLIC strata_generic_runtime)
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/context/test_virtual_context.cpp")
+    enable_testing()
+    add_executable(test_virtual_context tests/context/test_virtual_context.cpp)
+    target_link_libraries(test_virtual_context PRIVATE strata_context)
+    add_test(NAME test_virtual_context COMMAND test_virtual_context)
+    set_tests_properties(test_virtual_context PROPERTIES TIMEOUT 60)
   endif()
 
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/file_expert_source_test.cpp")
