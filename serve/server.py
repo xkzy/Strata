@@ -68,7 +68,8 @@ from serve.multi_tenant import MultiTenantServerManager, SecurityScope, SharingS
 from serve.anti_loop import (AntiLoopManager, ActionRecord, ActionKind, EscalationState,  # noqa: E402
                              ErrorCategory, ExecutionBudget, GuardVerdict, LoopDetector)
 from serve.generation_loop import (GenerationLoopConfig, GenerationLoopDetector,  # noqa: E402
-                                   DynamicTemperatureConfig, DynamicTemperatureController)
+                                   DynamicTemperatureConfig, DynamicTemperatureController, LoopConfidence)
+from serve.resource_manager import Overloaded, ResourceManager  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
@@ -2180,6 +2181,10 @@ class Service:
         self.generation_loop_config = GenerationLoopConfig()
         self.dynamic_temp_config = DynamicTemperatureConfig()
         self.generation_loop_detection = False
+        # #18 Auto-Adaptive Resource Utilization: the feedback controller over what this server already measures
+        # (serve/telemetry.py's 1 Hz sampler, the queue counters, the engine's INFO/DONE figures).  It admits or
+        # backpressures new work and adapts the queue limit from measurements; it never touches sampling.
+        self.resources = ResourceManager(source=self._resource_source)
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
@@ -2543,6 +2548,20 @@ class Service:
                     req["output_config"] = {"effort": effort}
         return req
 
+    def _resource_source(self) -> dict:
+        """#18: one read for the resource controller - telemetry's latest 1 Hz sample (never a new poll), the queue
+        counters and the engine's own batch slots.  Called only where status_lock is free (admission, /metrics),
+        and never while the controller's locks are held."""
+        tel = getattr(self, "telemetry", None)
+        hw = dict(tel.now) if getattr(tel, "now", None) else {}
+        info = getattr(self.engine, "info", None) or {}
+        with self.status_lock:
+            queued = int(self.status.get("queued") or 0)
+            batch = int(getattr(self.engine, "batch", 0) or 0)
+            active = len(self.live_reqs) if batch else (1 if self.status.get("busy") else 0)
+        return {**hw, "queued": queued, "active": active, "batch": batch,
+                "vram_free_mib": info.get("vram_free_mib")}
+
     def start_telemetry(self):
         """The hardware sampler behind GET /metrics (serve/telemetry.py), recording this server's tok/s too."""
         if getattr(self, "telemetry", None) is None:
@@ -2591,6 +2610,8 @@ class Service:
 
     def begin_request(self, path, req):
         """#332: a monitor record for this request, or None when the monitor is off (nothing is kept then)."""
+        self.request_trace.admitted = False       # #18: the next prepare() gates THIS request (once per request:
+        self.request_trace.pending_token = None   # an MCP tool loop re-prepares mid-request and is not re-gated)
         if not self.api_monitor:
             return None
         raw = json.dumps(req, ensure_ascii=False, indent=2)
@@ -2681,6 +2702,7 @@ class Service:
 
         rt_stats = self.multi_tenant.summary_stats() if hasattr(self, "multi_tenant") else {}
         loop_stats = self.anti_loop.stats() if hasattr(self, "anti_loop") else {}
+        resource_stats = self.resources.metrics()   # #18: workload, knobs, pressure, decisions, backpressure
         engine = {"model": self.model, "max_context": self.engine.max_context,
                   "n_ctx_physical": self.engine.max_context, "n_ctx_virtual": virt_limit,
                   "virtual_context_limit": virt_limit,
@@ -2694,6 +2716,7 @@ class Service:
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
                 "runtime_stats": rt_stats,
                 "anti_loop": loop_stats,
+                "resource": resource_stats,
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
                 tel["static"], "history": tel["history"], "time": now}
@@ -2839,6 +2862,10 @@ class Service:
         prompt; with thinking, Service.run writes it once the thinking is over."""
         # Multi-Tenant & Server-Side Virtual Context Resolution
         current_scope = scope or SecurityScope()
+        self.request_trace.session = current_scope.session_id   # #18: run() names the session for loop protection
+        if not getattr(self.request_trace, "admitted", False):  # #18: admission control before anything is built
+            self.request_trace.admitted = True
+            self.request_trace.pending_token = self.resources.admit(current_scope.session_id)
         vctx = (self.multi_tenant.get_or_create_session(current_scope)
                 if hasattr(self, "multi_tenant") else getattr(self, "context_runtime", None))
 
@@ -2918,6 +2945,7 @@ class Service:
             combined = combined_embeddings_path(self.vision.dir, sum(Path(p).stat().st_size for p, _ in encoded))
             self.embeddings.path = combined             # first, so a half-written one is found as well
             write_temporary(combined, [p for p, _ in encoded])
+        self.resources.observe_start(len(ids), max_new, ctx)   # #18: the workload class, inferred (never asked)
         return ids, kwargs.get("enable_thinking", True) is not False, max_new
 
     def drop_embeddings(self) -> None:
@@ -3018,6 +3046,8 @@ class Service:
         rate = collections.deque(maxlen=32) if par else self.rate
         with self.status_lock:
             self.status["queued"] += 1
+        queued_at, sess = time.time(), getattr(self.request_trace, "session", "")
+        self.resources.begin_run(getattr(self.request_trace, "pending_token", None))   # #18: handed over
         try:
             # --batch: the engine runs several requests at once (StrataEngine.generate_batched orders them)
             with (contextlib.nullcontext() if getattr(self.engine, "batch", 0) else self.fifo):
@@ -3085,6 +3115,8 @@ class Service:
                                 # Generation Loop Online Detection & Dynamic Temperature
                                 if enable_loop_det and parser.state not in ("rcall", "tool_call", "call") and not force:
                                     gen_verdict = loop_detector.feed_token(t, piece)
+                                    if gen_verdict.confidence is LoopConfidence.SUSPICIOUS:
+                                        self.resources.note_loop(sess, confirmed=False)   # #18: limit this session
                                     if dyn_temp_controller.config.enabled:
                                         new_temp = dyn_temp_controller.update(gen_verdict, t)
                                         if sampling is not None and "temperature" in sampling:
@@ -3275,6 +3307,17 @@ class Service:
                             el = now - st.get("started", now)
                             ft = st.get("first_token")
                             rate = n / max(1e-6, now - ft) if ft else 0.0
+                            # #18: this request's own measurements feed the resource controller (queue wait, TTFT,
+                            # the engine's prefill/decode split, expert reuse); a reply that ended in a generation
+                            # loop limits THIS session's next admissions while the suspicion lasts
+                            self.resources.observe_finish(
+                                prompt_tokens=len(ids), output_tokens=n, max_new=max_new,
+                                queue_s=max(0.0, started - queued_at) if queued_at else 0.0,
+                                ttft_s=(ft - started) if ft else None,
+                                prompt_ms=last.get("prompt_ms"), decode_ms=last.get("decode_ms"),
+                                pcie_share=pcie_share, hit_rate=hit_rate, finish=finish)
+                            if finish == "generation_loop":
+                                self.resources.note_loop(sess, confirmed=True)
                             hit_msg = f", expert cache {hit_rate*100:.1f}% hit" if hit_rate is not None else ""
                             if hit_msg and pcie_share:
                                 hit_msg += f" (+{pcie_share*100:.1f}% of the routed experts over PCIe)"
@@ -4254,6 +4297,10 @@ def make_handler(svc: Service):
                         canonical_hash=h,
                     )
                     v = svc.anti_loop.evaluate_action(act)
+                    if v.state in (EscalationState.SUSPECTED, EscalationState.THROTTLED, EscalationState.BLOCKED):
+                        # #18: a session the guard suspects gets less than half of the capacity until the
+                        # suspicion lapses (a runaway may not consume the server)
+                        svc.resources.note_loop(scope.session_id, confirmed=v.state is EscalationState.BLOCKED)
                     self._json(200, {
                         "allowed": v.allowed,
                         "state": v.state.value,
@@ -4320,6 +4367,10 @@ def make_handler(svc: Service):
                     self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
             except ModelBusy as e:
                 self._json(409, {"error": {"type": "model_busy", "message": str(e)}})
+            except Overloaded as e:                      # #18 backpressure: a structured 429, never an OOM
+                self._note(outcome="overloaded")
+                self._json(e.status, {"error": {"type": "server_error", "code": "server_overloaded",
+                                                "message": str(e), "retry_after": e.retry_after}})
             except StructuredOutputError as e:
                 self._json(502, {"error": {"type": "structured_output_failed", "code": "structured_output_failed",
                                           "message": str(e)}})
@@ -4335,6 +4386,7 @@ def make_handler(svc: Service):
                 raise                                        # as before #332: the server's own handling
             finally:
                 svc.drop_embeddings()                        # the images' file of a request that never got to run()
+                svc.resources.cancel_pending(getattr(svc.request_trace, "pending_token", None))   # #18: released
                 if self.watch_done is not None:
                     self.watch_done.set()
                 record = self.record
@@ -4599,6 +4651,9 @@ def make_handler(svc: Service):
                 return self._json(e.status, e.body())
             except ModelBusy as e:
                 return self._json(409, responses_error_body(str(e), "server_error", code="model_busy"))
+            except Overloaded as e:                      # #18: the queue is full - a 429 with a measured retry_after
+                return self._json(e.status, responses_error_body(
+                    f"{e} (retry after {e.retry_after} s)", "server_error", code="server_overloaded"))
             except (GpuBusy, EngineStarting, EngineStuck, EngineDied) as e:
                 return self._json(503, responses_error_body(str(e), "server_error", code="server_error"))
             cancel = threading.Event()
@@ -5282,6 +5337,14 @@ def main() -> int:
     svc.gpu_index = (gpu_list(cfg) or [0])[0]           # the Monitor reads the card the engine runs on (issue #51)
     svc.gpu_indices = gpu_list(cfg)                     # ... or every card of a layer split (issue #112)
     svc.backend = cfg.get("backend")                    # "hip": the AMD cards' readings come from sysfs (#301)
+    try:                                                # #18: the adaptive controller's targets (on by default)
+        svc.resources.set_power_policy(str(cfg.get("power_policy") or "BALANCED"))
+    except ValueError as e:
+        raise SystemExit(f"[strata] config {e}")
+    svc.resources.set_enabled(cfg.get("resource_adapt") is not False)
+    if svc.resources.enabled:
+        print(f"[strata] resource adaptation on ({svc.resources.scheduler.policy} policy; \"power_policy\" and "
+              "\"resource_adapt\" in the config change this)", flush=True)
     if a.config:
         svc.config_path = a.config                      # #564: the web page's Settings view
     if a.config:                                        # the Chat settings shared with other apps, from last time

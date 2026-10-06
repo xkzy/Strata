@@ -36,6 +36,10 @@ EDITABLE = [
     ("open_browser", "bool", "Open the chat page in the browser when the model is ready"),
     ("vram_reserve_mib", ("arg", "--vram-reserve-mib"),
      "VRAM in MiB the engine leaves free for other programs (engine default 700)"),
+    ("power_policy", ("enum", ["MAX_THROUGHPUT", "LOW_LATENCY", "BALANCED", "ENERGY_SAVING"]),
+     "What the adaptive resource controller aims for (#18): throughput, latency, a balance, or saved energy"),
+    ("resource_adapt", "bool",
+     "Adapt queue limits and admission to measured load (#18); off keeps one fixed limit whatever the load"),
 ]
 SPEC = {k: kind for k, kind, _ in EDITABLE}
 
