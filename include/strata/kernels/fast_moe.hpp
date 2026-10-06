@@ -17,22 +17,10 @@ namespace strata::kernels {
 
 class FastMoE {
 private:
-#if defined(__AVX2__) || defined(__AVX__) || defined(_MSC_VER)
-    static inline float hsum256_ps(__m256 v) {
-        __m128 vlow = _mm256_castps256_ps128(v);
-        __m128 vhigh = _mm256_extractf128_ps(v, 1);
-        __m128 sum128 = _mm_add_ps(vlow, vhigh);
-        __m128 sum64 = _mm_add_ps(sum128, _mm_movehl_ps(sum128, sum128));
-        __m128 sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 0x55));
-        return _mm_cvtss_f32(sum32);
-    }
-#endif
-
-#if defined(__AVX512F__)
-    static inline float hsum512_ps(__m512 v) {
-        return _mm512_reduce_add_ps(v);
-    }
-#endif
+    struct ExpertScore {
+        int32_t index;
+        float score;
+    };
 
     static inline void accumulate_weighted(float* __restrict__ out,
                                            const float* __restrict__ v,
@@ -60,28 +48,21 @@ private:
         }
     }
 
-public:
-    // ------------------------------------------------------------------------
-    // Top-K Router: Partial-sort Top-K selection with numerical bounds sanitization
-    // and stable softmax normalization over selected experts.
-    // Complexity: O(E + K log K)
-    // ------------------------------------------------------------------------
-    static void route_topk(
+    static void route_topk_impl(
         const float* __restrict__ logits,
         size_t num_experts,
         size_t top_k,
         int32_t* __restrict__ out_indices,
         float* __restrict__ out_weights,
-        const MathContext& ctx = MathContext()) {
+        std::vector<ExpertScore>& scores,
+        const MathContext& ctx) {
         if (!logits || !out_indices || !out_weights || num_experts == 0 || top_k == 0) return;
         top_k = std::min(top_k, num_experts);
 
-        struct ExpertScore {
-            int32_t index;
-            float score;
-        };
+        if (scores.size() != num_experts) {
+            scores.resize(num_experts);
+        }
 
-        std::vector<ExpertScore> scores(num_experts);
         for (size_t i = 0; i < num_experts; ++i) {
             scores[i] = {static_cast<int32_t>(i), sanitize_logit(logits[i], ctx)};
         }
@@ -110,8 +91,27 @@ public:
         }
     }
 
+public:
+    // ------------------------------------------------------------------------
+    // Top-K Router: Partial-sort Top-K selection with numerical bounds sanitization
+    // and stable softmax normalization over selected experts.
+    // Complexity: O(E + K log K)
+    // ------------------------------------------------------------------------
+    static void route_topk(
+        const float* __restrict__ logits,
+        size_t num_experts,
+        size_t top_k,
+        int32_t* __restrict__ out_indices,
+        float* __restrict__ out_weights,
+        const MathContext& ctx = MathContext()) {
+        if (!logits || !out_indices || !out_weights || num_experts == 0 || top_k == 0) return;
+        std::vector<ExpertScore> scores(num_experts);
+        route_topk_impl(logits, num_experts, top_k, out_indices, out_weights, scores, ctx);
+    }
+
     // ------------------------------------------------------------------------
     // Batched Top-K Router: routes multiple tokens across experts.
+    // Reuses the expert scores buffer across tokens to eliminate heap allocations.
     // ------------------------------------------------------------------------
     static void route_topk_batch(
         const float* __restrict__ logits,
@@ -123,12 +123,13 @@ public:
         const MathContext& ctx = MathContext()) {
         if (!logits || !out_indices || !out_weights || num_tokens == 0 || num_experts == 0 || top_k == 0) return;
 
+        std::vector<ExpertScore> scores(num_experts);
         for (size_t t = 0; t < num_tokens; ++t) {
             const float* tok_logits = logits + t * num_experts;
             int32_t* tok_indices = out_indices + t * top_k;
             float* tok_weights = out_weights + t * top_k;
 
-            route_topk(tok_logits, num_experts, top_k, tok_indices, tok_weights, ctx);
+            route_topk_impl(tok_logits, num_experts, top_k, tok_indices, tok_weights, scores, ctx);
         }
     }
 
@@ -301,8 +302,12 @@ public:
 
         for (size_t i = 0; i < total_dispatched; ++i) {
             int32_t t = token_indices[i];
-            const float* src = tokens + static_cast<size_t>(t) * dim;
             float* dst = out_permuted + i * dim;
+            if (t < 0) {
+                std::memset(dst, 0, dim * sizeof(float));
+                continue;
+            }
+            const float* src = tokens + static_cast<size_t>(t) * dim;
             std::memcpy(dst, src, dim * sizeof(float));
         }
     }
@@ -342,12 +347,11 @@ public:
             int32_t t = token_indices[i];
             if (t < 0 || static_cast<size_t>(t) >= num_tokens) continue;
 
-            float w = 1.0f;
+            float w = 0.0f;
             if (slot_indices) {
                 int32_t k = slot_indices[i];
-                if (k >= 0 && static_cast<size_t>(k) < top_k) {
-                    w = weights[static_cast<size_t>(t) * top_k + static_cast<size_t>(k)];
-                }
+                if (k < 0 || static_cast<size_t>(k) >= top_k) continue;
+                w = weights[static_cast<size_t>(t) * top_k + static_cast<size_t>(k)];
             } else {
                 w = weights[i];
             }

@@ -362,6 +362,65 @@ void test_edge_cases() {
     assert(s_idx[0] == -1 && s_idx[1] == -1);
 }
 
+void test_negative_indices_safety() {
+    using namespace strata::kernels;
+
+    const size_t num_tokens = 2;
+    const size_t dim = 8;
+    const size_t top_k = 2;
+    const size_t total_dispatched = 3;
+
+    std::vector<float> tokens(num_tokens * dim, 1.0f);
+    // Fill token 0 with 5.0f and token 1 with 10.0f
+    for (size_t d = 0; d < dim; ++d) {
+        tokens[0 * dim + d] = 5.0f;
+        tokens[1 * dim + d] = 10.0f;
+    }
+
+    // 1. Test permute_tokens with negative token index -1
+    std::vector<int32_t> token_indices = {0, -1, 1};
+    std::vector<float> permuted(total_dispatched * dim, 99.0f);
+
+    FastMoE::permute_tokens(tokens.data(), token_indices.data(), total_dispatched, dim, permuted.data());
+
+    // Slot 0 (t=0) should be 5.0f
+    for (size_t d = 0; d < dim; ++d) {
+        assert(permuted[0 * dim + d] == 5.0f);
+    }
+    // Slot 1 (t=-1) must be zeroed out safely (no buffer overflow)
+    for (size_t d = 0; d < dim; ++d) {
+        assert(permuted[1 * dim + d] == 0.0f);
+    }
+    // Slot 2 (t=1) should be 10.0f
+    for (size_t d = 0; d < dim; ++d) {
+        assert(permuted[2 * dim + d] == 10.0f);
+    }
+
+    // 2. Test combine_dispatched with negative slot index -1 and negative token index -1
+    std::vector<float> dispatched(total_dispatched * dim, 2.0f);
+    std::vector<float> weights = {
+        0.7f, 0.3f, // token 0
+        0.6f, 0.4f  // token 1
+    };
+    // Token indices: slot 0 -> token 0 (valid), slot 1 -> token 0 (invalid slot -1), slot 2 -> token -1 (invalid token)
+    std::vector<int32_t> test_tokens = {0, 0, -1};
+    std::vector<int32_t> test_slots = {0, -1, 0};
+    std::vector<float> combined(num_tokens * dim, 0.0f);
+
+    FastMoE::combine_dispatched(
+        dispatched.data(), test_tokens.data(), test_slots.data(), weights.data(),
+        total_dispatched, num_tokens, top_k, dim, combined.data()
+    );
+
+    // Token 0: should only accumulate slot 0 (w = 0.7f, val = 2.0f * 0.7f = 1.4f).
+    // Slot 1 has slot index -1, so it must be skipped and NOT accumulate (not even with w=1.0f).
+    for (size_t d = 0; d < dim; ++d) {
+        assert(std::abs(combined[0 * dim + d] - 1.4f) < 1e-5f);
+        // Token 1 had no assignments, should remain 0.0f
+        assert(combined[1 * dim + d] == 0.0f);
+    }
+}
+
 int main() {
     std::cout << "Running Fast MoE unit tests..." << std::endl;
     test_basic_route_topk();
@@ -371,6 +430,7 @@ int main() {
     test_dispatch_permutation();
     test_bounds_and_nan_sanitization();
     test_edge_cases();
+    test_negative_indices_safety();
 
     std::cout << "test_fast_moe passed" << std::endl;
     return 0;
