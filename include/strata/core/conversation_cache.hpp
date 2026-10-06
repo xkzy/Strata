@@ -273,7 +273,15 @@ public:
             const ConversationCheckpoint* deepest = nullptr;
             for (const auto& c : e.checkpoints)
                 if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
-            if (e.cvec == cvec && deepest && !deepest->ids.empty() && held(*deepest)) {
+            // Multi-user: only a stale copy of the SAME conversation may be dropped - one whose DEEPEST
+            // checkpoint is a turn-boundary deeper than its own root.  A young conversation's deepest
+            // checkpoint IS the shared system-prompt root, which every user's/agent's chain also holds;
+            // dropping on that match alone wiped every other user's parked conversation to zero as soon as
+            // one of them parked.  An entry whose deepest checkpoint is its root (no turn of its own past
+            // the shared prefix) is kept, as the comment above requires.
+            const bool past_root = deepest && !e.checkpoints.empty() &&
+                                   deepest->ids.size() > e.checkpoints.front().ids.size();
+            if (e.cvec == cvec && past_root && held(*deepest)) {
                 bytes_ -= e.bytes();
                 entries_.erase(entries_.begin() + (std::ptrdiff_t) i);
                 ++dropped;

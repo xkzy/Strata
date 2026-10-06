@@ -19,6 +19,13 @@ SavedConversation image(std::initializer_list<int32_t> ids, bool cvec = true) {
     s.cvec = cvec;
     return s;
 }
+SavedConversation image(const std::vector<int32_t>& ids, size_t gdn_size, bool cvec = true) {
+    SavedConversation s;
+    s.live.ids = ids;
+    s.live.gdn.resize(gdn_size, 7);
+    s.cvec = cvec;
+    return s;
+}
 }
 
 int main() {
@@ -300,6 +307,66 @@ int main() {
         cache.retain(kv(500), 40);
         r = cache.take_reuse();
         check(r.kv.size() == 2 && r.stages.empty(), "no layer split: no stage reuse, as before");
+    }
+    {
+        // Multi-user fairness: under byte pressure make_room evicts the entry parked longest (the oldest),
+        // not a different user's or agent's, so another user's next turn does not push out everyone else's
+        // cached prefix.  A0 is parked first (oldest), then B0, then C0 (youngest).  A large incoming
+        // snapshot exceeds the byte budget; exactly one entry must leave, and it must be A0.
+        ConversationCache cache(1 << 20, 3);
+        auto park = [&](const char* tag, const std::vector<int32_t>& ids) {
+            SavedConversation s;
+            s.live.ids = ids;
+            s.live.gdn.resize(200000, 7);       // ~200 KB, so byte pressure is real
+            s.cvec = true;
+            check(cache.put(std::move(s)), tag);
+        };
+        park("A0", {10, 20, 30});               // parked longest
+        park("B0", {40, 50, 60});               // middle
+        park("C0", {70, 80, 90});               // parked youngest
+        // a 4-token prompt is longer than each 3-token checkpoint, so best() can match a parked entry
+        const std::vector<int32_t> pa{10, 20, 30, 999}, pb{40, 50, 60, 999}, pc{70, 80, 90, 999};
+        check(cache.best<int32_t>(pa, {}, true).tokens == 3, "A0 resumable before pressure");
+        check(cache.best<int32_t>(pb, {}, true).tokens == 3, "B0 resumable before pressure");
+        check(cache.best<int32_t>(pc, {}, true).tokens == 3, "C0 resumable before pressure");
+        // the incoming snapshot is ~500 KB: 600 KB + 500 KB exceeds the 1 MB budget -> one eviction
+        std::vector<int32_t> incoming_ids(1 << 16);
+        for (size_t i = 0; i < incoming_ids.size(); ++i) incoming_ids[i] = (int32_t) i;
+        check(cache.put(image(incoming_ids, 300000)), "a large incoming snapshot parks");
+        check(cache.evictions() == 1, "exactly one entry left under byte pressure");
+        // the OLDEST (A0) was the one that left; the two newer conversations (B0, C0) kept their prefix
+        check(cache.best<int32_t>(pa, {}, true).tokens == 0, "A0 (oldest) was evicted");
+        check(cache.best<int32_t>(pb, {}, true).tokens == 3, "B0 kept its prefix");
+        check(cache.best<int32_t>(pc, {}, true).tokens == 3, "C0 kept its prefix");
+        check(cache.size() == 3, "the cache holds B0, C0 and the incoming snapshot");
+    }
+    {
+        // Multi-user / multi-agent: two conversations share the system-prompt root checkpoint.  A young
+        // conversation's DEEPEST checkpoint IS that shared root; when another user parks, drop_superseded
+        // must not treat the shared root as "superseded" and wipe the other user's parked conversation to
+        // zero.  Only a stale copy of the SAME conversation (deepest checkpoint deeper than its own root)
+        // may be dropped.
+        auto cp = [](std::vector<int32_t> ids) { ConversationCheckpoint c; c.ids = std::move(ids); return c; };
+        const std::vector<int32_t> root = {1, 2, 3, 4};           // shared system-prompt root
+        ConversationCache cache(1 << 20, 8);
+        // user B is young: one checkpoint (the shared root), live = root + B's first reply
+        SavedConversation b = image({1, 2, 3, 4, 40, 41});
+        b.checkpoints = {cp(root)};
+        check(cache.put(std::move(b)), "park B (young, deepest = shared root)");
+        // user A turn 2 parks: its outgoing chain holds the root plus A's own turn boundary
+        std::vector<ConversationCheckpoint> out = {cp(root), cp({1, 2, 3, 4, 20, 21})};
+        const size_t dropped = cache.drop_superseded({1, 2, 3, 4, 20, 21, 22}, {}, out, true);
+        check(dropped == 0, "a conversation sharing only the root is not superseded");
+        check(cache.size() == 1, "B's parked conversation survives another user's park");
+        const auto m = cache.best<int32_t>(std::vector<int32_t>{1, 2, 3, 4, 40, 41, 42}, {}, true);
+        check(m.tokens == 6, "B resumes in full after A parks");
+        // ...but a stale copy of the SAME conversation (deepest deeper than root) still drops
+        SavedConversation stale = image({1, 2, 3, 4, 20, 21, 900, 1});
+        stale.checkpoints = {cp(root), cp({1, 2, 3, 4, 20, 21})};   // deepest = A's own turn boundary
+        check(cache.put(std::move(stale)), "park A's stale copy");
+        const size_t dropped2 = cache.drop_superseded({1, 2, 3, 4, 20, 21, 22, 23}, {}, out, true);
+        check(dropped2 == 1, "the same conversation's stale copy is still dropped");
+        check(cache.size() == 1, "only the stale copy left");
     }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }
