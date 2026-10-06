@@ -237,11 +237,53 @@ void test_alias_and_prefill() {
     }
 }
 
+void test_mask_isolation_with_negative_logits() {
+    using namespace strata::kernels;
+
+    const size_t head_dim = 16;
+    const size_t seq_len = 3;
+
+    // Construct q and k such that unmasked token dot product * scale produces a large negative logit (<= -88.0f)
+    // Sanitized logit for unmasked token: -88.0f
+    // Masked token: mask = -1e9f
+    // With sanitization BEFORE mask addition:
+    // unmasked score = -88.0f, masked score = 88.0f + (-1e9f) = -999999912.0f
+    // Unmasked token completely dominates and output is 42.0f
+    std::vector<float> q(head_dim, 1.0f);
+    std::vector<float> k_cache(seq_len * head_dim, 0.0f);
+    for (size_t d = 0; d < head_dim; ++d) {
+        k_cache[0 * head_dim + d] = -10.0f; // unmasked token produces negative dot product (-160)
+        k_cache[1 * head_dim + d] = 10.0f;  // masked token
+        k_cache[2 * head_dim + d] = 10.0f;  // masked token
+    }
+
+    std::vector<float> v_cache(seq_len * head_dim, 0.0f);
+    for (size_t d = 0; d < head_dim; ++d) {
+        v_cache[0 * head_dim + d] = 42.0f; // target output from unmasked token
+        v_cache[1 * head_dim + d] = 99.0f; // masked value
+        v_cache[2 * head_dim + d] = 99.0f; // masked value
+    }
+
+    std::vector<float> mask = {0.0f, -1e9f, -1e9f};
+    std::vector<float> out(head_dim, 0.0f);
+
+    MathContext ctx;
+    FastAttention::scaled_dot_product_decode(
+        q.data(), k_cache.data(), v_cache.data(), out.data(),
+        seq_len, head_dim, 1.0f, mask.data(), ctx
+    );
+
+    for (size_t d = 0; d < head_dim; ++d) {
+        assert(std::abs(out[d] - 42.0f) < 1e-4f);
+    }
+}
+
 int main() {
     std::cout << "Running Fast Attention unit tests..." << std::endl;
     test_basic_decode();
     test_reference_parity_and_simd();
     test_attention_masking();
+    test_mask_isolation_with_negative_logits();
     test_bounds_and_nan_sanitization();
     test_multi_head_decode();
     test_edge_cases();
@@ -250,4 +292,5 @@ int main() {
     std::cout << "test_fast_attention passed" << std::endl;
     return 0;
 }
+
 

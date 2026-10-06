@@ -16,7 +16,7 @@ namespace strata::kernels {
 
 class FastAttention {
 private:
-#if defined(__AVX2__) && defined(__FMA__)
+#if defined(__AVX2__) || defined(__AVX__) || defined(_MSC_VER)
     static inline float hsum256_ps(__m256 v) {
         __m128 vlow = _mm256_castps256_ps128(v);
         __m128 vhigh = _mm256_extractf128_ps(v, 1);
@@ -29,10 +29,7 @@ private:
 
 #if defined(__AVX512F__)
     static inline float hsum512_ps(__m512 v) {
-        __m256 vlow = _mm512_castps512_ps256(v);
-        __m256 vhigh = _mm512_extractf32x8_ps(v, 1);
-        __m256 sum256 = _mm256_add_ps(vlow, vhigh);
-        return hsum256_ps(sum256);
+        return _mm512_reduce_add_ps(v);
     }
 #endif
 
@@ -46,7 +43,7 @@ private:
             acc0 = _mm512_fmadd_ps(va, vb, acc0);
         }
         float dot = hsum512_ps(acc0);
-#elif defined(__AVX2__) && defined(__FMA__)
+#elif defined(__AVX2__) && (defined(__FMA__) || defined(_MSC_VER))
         __m256 acc0 = _mm256_setzero_ps();
         for (; d + 7 < dim; d += 8) {
             __m256 va = _mm256_loadu_ps(a + d);
@@ -73,7 +70,7 @@ private:
             __m512 vv = _mm512_loadu_ps(v + d);
             _mm512_storeu_ps(out + d, _mm512_fmadd_ps(w_v, vv, vo));
         }
-#elif defined(__AVX2__) && defined(__FMA__)
+#elif defined(__AVX2__) && (defined(__FMA__) || defined(_MSC_VER))
         __m256 w_v = _mm256_set1_ps(weight);
         for (; d + 7 < dim; d += 8) {
             __m256 vo = _mm256_loadu_ps(out + d);
@@ -91,7 +88,8 @@ public:
     // Single-Head Incremental Attention Decode:
     // Computes dot-product attention of single query vector q [head_dim]
     // against key cache k_cache [seq_len, head_dim], applies causal scaling,
-    // bounds sanitization, softmax, and aggregates v_cache [seq_len, head_dim] into out [head_dim].
+    // bounds sanitization, optional additive masking, softmax, and aggregates
+    // v_cache [seq_len, head_dim] into out [head_dim].
     // ------------------------------------------------------------------------
     static void scaled_dot_product_decode(
         const float* __restrict__ q,
@@ -123,11 +121,10 @@ public:
         for (size_t s = 0; s < seq_len; ++s) {
             const float* k_row = k_cache + s * head_dim;
             float dot = dot_product(q, k_row, head_dim);
-            float score = dot * scale;
+            float score = sanitize_logit(dot * scale, ctx);
             if (mask) {
                 score += mask[s];
             }
-            score = sanitize_logit(score, ctx);
             scores[s] = score;
             if (score > max_score) max_score = score;
         }
@@ -195,23 +192,22 @@ public:
         if (!q || !k_cache || !v_cache || !out || num_heads == 0 || num_kv_heads == 0 || seq_len == 0 || head_dim == 0) return;
 
         const size_t gqa_group_size = num_heads / num_kv_heads;
+        std::vector<float> scores(seq_len);
 
         for (size_t h = 0; h < num_heads; ++h) {
-            const size_t kv_head = (gqa_group_size > 0) ? (h / gqa_group_size) : 0;
+            const size_t kv_head = (gqa_group_size > 0) ? std::min(h / gqa_group_size, num_kv_heads - 1) : 0;
             const float* q_h = q + h * head_dim;
             float* out_h = out + h * head_dim;
 
-            std::vector<float> scores(seq_len);
             float max_score = -1e30f;
 
             for (size_t s = 0; s < seq_len; ++s) {
                 const float* k_row = k_cache + (s * num_kv_heads + kv_head) * head_dim;
                 float dot = dot_product(q_h, k_row, head_dim);
-                float score = dot * scale;
+                float score = sanitize_logit(dot * scale, ctx);
                 if (mask) {
                     score += mask[s];
                 }
-                score = sanitize_logit(score, ctx);
                 scores[s] = score;
                 if (score > max_score) max_score = score;
             }
