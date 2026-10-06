@@ -27,7 +27,7 @@ import time
 
 def run_benchmark_matrix(models=None, devices=None, memory_tiers=None, tokens=128):
     if models is None:
-        models = ["qwen_moe", "mixtral", "deepseek_moe", "generic_moe"]
+        models = ["qwen_moe", "mixtral", "deepseek_moe", "mimo_v2_6", "generic_moe"]
     if devices is None:
         devices = ["cpu_only", "primary_device", "heterogeneous_all"]
     if memory_tiers is None:

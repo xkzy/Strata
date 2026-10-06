@@ -28,7 +28,8 @@ enum class AttentionType {
     kStandardMHA = 0,
     kGroupedQueryAttn,
     kMultiHeadLatentAttn,   // DeepSeek MLA
-    kSparseHybridAttn       // QSA + GDN hybrid
+    kSparseHybridAttn,      // QSA + GDN hybrid
+    kSlidingWindowAttn      // Interleaved SWA (e.g. MiMo-V2.6)
 };
 
 enum class LayerType {
@@ -54,6 +55,10 @@ struct MoEModelConfig {
     int64_t n_shared_experts = 0;
     int64_t n_ff = 640;
     int64_t shared_n_ff = 0;
+
+    // Speculative Multi-Token Prediction (MTP) & SWA extensions
+    int64_t mtp_layers = 0;
+    int64_t sliding_window = 4096;
 
     // Hybrid/Recurrence extensions (if applicable)
     int64_t hybrid_interval = 4;

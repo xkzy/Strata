@@ -91,7 +91,20 @@ void test_model_adapters() {
     assert(deepseek->config().active_experts == 6);
     assert(deepseek->config().n_shared_experts == 2);
 
-    std::cout << "  Passed. Verified Qwen, Mixtral, and DeepSeek model adapters." << std::endl;
+    // Test MiMo-V2.6 MoE Adapter
+    auto mimo = reg.create("mimo_v2_6");
+    assert(mimo != nullptr);
+    assert(mimo->architecture_name() == "mimo_v2_6");
+    assert(mimo->config().n_expert == 384);
+    assert(mimo->config().active_experts == 8);
+    assert(mimo->config().n_shared_experts == 2);
+    assert(mimo->config().n_layers == 70);
+    assert(mimo->config().mtp_layers == 5);
+    assert(mimo->config().sliding_window == 4096);
+    assert(mimo->is_full_attention_layer(3));
+    assert(!mimo->is_full_attention_layer(0));
+
+    std::cout << "  Passed. Verified Qwen, Mixtral, DeepSeek, and MiMo-V2.6 model adapters." << std::endl;
 }
 
 void test_routing_algorithms() {
@@ -131,7 +144,26 @@ void test_routing_algorithms() {
     assert(mix_selected[1] == 3);
     assert(std::fabs(mix_weights[0] + mix_weights[1] - 1.0f) < 1e-4);
 
-    std::cout << "  Passed. Routing logic validated bit-exact and normalized." << std::endl;
+    // 3. Sigmoid Top-K with 384 experts (MiMo-V2.6 style)
+    auto mimo = reg.create("mimo_v2_6");
+    std::vector<float> mimo_logits(384, 0.0f);
+    mimo_logits[42] = 12.0f;
+    mimo_logits[188] = 9.5f;
+    mimo_logits[301] = 7.0f;
+
+    std::vector<int32_t> mimo_selected(8, -1);
+    std::vector<float> mimo_weights(8, 0.0f);
+    mimo->route_token(mimo_logits.data(), 384, 8, mimo_selected.data(), mimo_weights.data());
+
+    assert(mimo_selected[0] == 42);
+    assert(mimo_selected[1] == 188);
+    assert(mimo_selected[2] == 301);
+
+    float mimo_sum = 0.0f;
+    for (float w : mimo_weights) mimo_sum += w;
+    assert(std::fabs(mimo_sum - 1.0f) < 1e-4);
+
+    std::cout << "  Passed. Routing logic validated bit-exact and normalized across all models." << std::endl;
 }
 
 void test_generic_expert_manager() {

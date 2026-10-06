@@ -282,6 +282,89 @@ private:
     MoEModelConfig cfg_;
 };
 
+// ------------------- MiMo-V2.6 MoE Adapter -------------------
+class MiMoV26Adapter : public MoEModelAdapter {
+public:
+    explicit MiMoV26Adapter(const MoEModelConfig* custom_cfg = nullptr) {
+        if (custom_cfg) {
+            cfg_ = *custom_cfg;
+        } else {
+            cfg_.model_name = "MiMo-V2.6-Pro";
+            cfg_.architecture = "mimo_v2_6";
+            cfg_.n_embd = 6144;
+            cfg_.n_layers = 70;
+            cfg_.hybrid_interval = 4;
+            cfg_.n_head = 48;
+            cfg_.n_head_kv = 8;
+            cfg_.head_dim = 128;
+            cfg_.n_expert = 384;
+            cfg_.active_experts = 8;
+            cfg_.n_shared_experts = 2;
+            cfg_.n_ff = 2048;
+            cfg_.shared_n_ff = 4096;
+            cfg_.mtp_layers = 5;
+            cfg_.sliding_window = 4096;
+            cfg_.hc = 1;
+            cfg_.routing_type = RoutingType::kTopKSigmoid;
+            cfg_.attention_type = AttentionType::kSlidingWindowAttn;
+        }
+    }
+
+    const MoEModelConfig& config() const override { return cfg_; }
+    std::string architecture_name() const override { return "mimo_v2_6"; }
+
+    std::string tensor_name(int64_t layer, const std::string& role) const override {
+        return "blk." + std::to_string(layer) + "." + role;
+    }
+
+    bool validate_weights(const core::WeightTable& /*table*/, std::string& /*err*/) const override {
+        return true;
+    }
+
+    LayerType layer_type(int64_t /*layer*/) const override {
+        return LayerType::kSharedExpertMoE;
+    }
+
+    bool is_full_attention_layer(int64_t layer) const override {
+        // Interleaves sliding-window attention and global attention
+        return (layer % cfg_.hybrid_interval) == (cfg_.hybrid_interval - 1);
+    }
+
+    void route_token(const float* routing_logits, int64_t n_expert, int64_t top_k,
+                     int32_t* selected_experts_out, float* weights_out) const override {
+        thread_local std::vector<std::pair<float, int32_t>> tl_scored;
+        if (static_cast<int64_t>(tl_scored.size()) < n_expert) {
+            tl_scored.resize(n_expert);
+        }
+        for (int64_t i = 0; i < n_expert; ++i) {
+            float score = sigmoid(routing_logits[i]);
+            tl_scored[i] = {score, static_cast<int32_t>(i)};
+        }
+        std::partial_sort(tl_scored.begin(), tl_scored.begin() + top_k, tl_scored.begin() + n_expert,
+                          [](const auto& a, const auto& b) { return a.first > b.first; });
+
+        float sum = 0.0f;
+        for (int64_t i = 0; i < top_k; ++i) {
+            selected_experts_out[i] = tl_scored[i].second;
+            weights_out[i] = tl_scored[i].first;
+            sum += weights_out[i];
+        }
+        if (sum > 0.0f) {
+            const float inv_sum = 1.0f / sum;
+            for (int64_t i = 0; i < top_k; ++i) {
+                weights_out[i] *= inv_sum;
+            }
+        }
+    }
+
+    std::unique_ptr<MoEModelAdapter> clone() const override {
+        return std::make_unique<MiMoV26Adapter>(&cfg_);
+    }
+
+private:
+    MoEModelConfig cfg_;
+};
+
 // ------------------- Generic MoE Adapter -------------------
 class GenericMoEAdapter : public MoEModelAdapter {
 public:
@@ -365,6 +448,12 @@ ModelAdapterRegistry::ModelAdapterRegistry() {
     register_factory("deepseek_moe", [](const MoEModelConfig* cfg) {
         return std::make_unique<DeepSeekMoEAdapter>(cfg);
     });
+    register_factory("mimo_v2_6", [](const MoEModelConfig* cfg) {
+        return std::make_unique<MiMoV26Adapter>(cfg);
+    });
+    register_factory("mimo", [](const MoEModelConfig* cfg) {
+        return std::make_unique<MiMoV26Adapter>(cfg);
+    });
     register_factory("generic_moe", [](const MoEModelConfig* cfg) {
         return std::make_unique<GenericMoEAdapter>(cfg);
     });
@@ -398,6 +487,10 @@ std::vector<std::string> ModelAdapterRegistry::available_architectures() const {
 }
 
 std::unique_ptr<MoEModelAdapter> ModelAdapterRegistry::detect_and_create(const core::WeightTable& table) const {
+    // Check for MiMo-style tensors (e.g. MTP head or MiMo router)
+    if (table.find("blk.0.mtp_head.0.weight") || table.find("blk.0.mimo_router.weight")) {
+        return create("mimo_v2_6");
+    }
     // Check for DeepSeek-style tensors
     if (table.find("blk.0.ffn_shared_exps.weight") || table.find("blk.0.shared_expert.weight")) {
         return create("deepseek_moe");
