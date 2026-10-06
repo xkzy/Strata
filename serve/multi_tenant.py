@@ -355,3 +355,38 @@ class MultiTenantServerManager:
             if session_id not in self._session_locks:
                 self._session_locks[session_id] = threading.RLock()
             return self._session_locks[session_id]
+
+    def summary_stats(self) -> Dict[str, Any]:
+        with self._lock:
+            total_sessions = len(self._sessions)
+            tenants = set(s.tenant_id for s in self._session_scopes.values())
+            users = set(s.user_id for s in self._session_scopes.values())
+            agents = set(s.agent_id for s in self._session_scopes.values())
+            workspaces = set(s.workspace_id for s in self._session_scopes.values())
+
+            tot_v_tokens = 0
+            tot_p_tokens = 0
+            tot_compactions = 0
+            tot_tool_tokens_saved = 0
+            for vctx in self._sessions.values():
+                st = vctx.stats()
+                tot_v_tokens += st.get("virtual_tokens_processed", 0)
+                tot_p_tokens += st.get("physical_tokens_emitted", 0)
+                tot_compactions += st.get("compaction_events", 0)
+                tot_tool_tokens_saved += st.get("tool_tokens_saved", 0)
+
+            cas_st = self.tool_store.stats()
+            return {
+                "active_sessions": total_sessions,
+                "active_tenants": max(1, len(tenants)),
+                "active_users": max(1, len(users)),
+                "active_agents": max(1, len(agents)),
+                "active_workspaces": max(1, len(workspaces)),
+                "total_virtual_tokens": tot_v_tokens,
+                "total_physical_tokens": tot_p_tokens,
+                "total_compaction_events": tot_compactions,
+                "tool_tokens_saved": tot_tool_tokens_saved,
+                "context_compression_ratio": round(tot_v_tokens / max(1, tot_p_tokens), 2) if tot_p_tokens > 0 else 1.0,
+                "cas_storage": cas_st,
+                "shared_documents_count": len(self._shared_documents),
+            }

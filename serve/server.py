@@ -2615,8 +2615,25 @@ class Service:
 
         busy, ctx = bool(s.get("busy")), self.engine.max_context
         images = self.vision is not None
+        
+        # Model architecture & SWA info
+        m_lower = str(self.model).lower()
+        if "mimo" in m_lower:
+            arch = "mimo_v2_6"
+        elif "mixtral" in m_lower:
+            arch = "mixtral"
+        elif "deepseek" in m_lower:
+            arch = "deepseek_moe"
+        else:
+            arch = "qwen_moe"
+
+        rt_stats = self.multi_tenant.summary_stats() if hasattr(self, "multi_tenant") else {}
+
         return {
             "service": "strata", "model": self.model,
+            "architecture": arch,
+            "swa": {"enabled": True, "window_size": 4096},
+            "runtime_stats": rt_stats,
             "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
             "structured_output": {"formats": ["json_object", "json_schema"], "method": "prompt_and_validate",
                                   "constrained_decoding": False, "stream_buffered": True},
