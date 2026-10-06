@@ -214,6 +214,7 @@ class ToolResultCASStore:
         self._store: Dict[str, str] = {}                 # hash -> raw payload
         self._records: Dict[str, StructuredToolData] = {}  # result_id -> structured data
         self._hash_to_id: Dict[str, str] = {}
+        self._id_to_hash: Dict[str, str] = {}
         self._compiler_parser = CompilerOutputParser()
         self._test_parser = TestOutputParser()
         self._search_parser = SearchOutputParser()
@@ -248,6 +249,7 @@ class ToolResultCASStore:
             result_id = f"tool_res_{h[:12]}"
             self._store[h] = raw_output
             self._hash_to_id[h] = result_id
+            self._id_to_hash[result_id] = h
 
             parser = self._select_parser(tool_name, raw_output)
             data = parser.parse(tool_name, raw_output, exit_code)
@@ -284,9 +286,9 @@ class ToolResultCASStore:
 
     def get_raw_by_id(self, result_id: str) -> str:
         with self._lock:
-            for h, rid in self._hash_to_id.items():
-                if rid == result_id:
-                    return self._store.get(h, "")
+            h = self._id_to_hash.get(result_id)
+            if h:
+                return self._store.get(h, "")
             return ""
 
     def get_fragment(self, result_id: str, start_line: int, end_line: int) -> str:
@@ -366,26 +368,38 @@ class HierarchicalBM25Index:
             return []
 
         scores: Dict[int, float] = {}
+        k1_1 = self.k1 + 1.0
+        k1_1mb = self.k1 * (1.0 - self.b)
+        avgdl = self.avg_doc_len if self.avg_doc_len > 0 else 50.0
+        k1_b_div_avgdl = (self.k1 * self.b) / avgdl
 
         for term in query_tokens:
             if term in self.inverted_index:
                 postings = self.inverted_index[term]
                 df = len(postings)
                 idf = math.log((n_docs - df + 0.5) / (df + 0.5) + 1.0)
+                idf_k1_1 = idf * k1_1
 
                 for doc_id, tf in postings.items():
                     dl = self.doc_lengths.get(doc_id, 50)
-                    num = tf * (self.k1 + 1.0)
-                    den = tf + self.k1 * (1.0 - self.b + self.b * (dl / self.avg_doc_len))
-                    scores[doc_id] = scores.get(doc_id, 0.0) + (idf * (num / den))
+                    den = tf + k1_1mb + k1_b_div_avgdl * dl
+                    scores[doc_id] = scores.get(doc_id, 0.0) + (tf * idf_k1_1 / den)
 
         if filename_filter and filename_filter in self.file_index:
             for doc_id in self.file_index[filename_filter]:
                 scores[doc_id] = scores.get(doc_id, 0.0) + 5.0
 
-        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        if not scores:
+            return []
+
+        import heapq
+        if len(scores) <= top_k:
+            ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        else:
+            ranked = heapq.nlargest(top_k, scores.items(), key=lambda x: x[1])
+
         results = []
-        for doc_id, score in ranked[:top_k]:
+        for doc_id, score in ranked:
             if doc_id in self.doc_records:
                 results.append((self.doc_records[doc_id], score))
         return results

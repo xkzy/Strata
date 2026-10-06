@@ -153,17 +153,27 @@ std::vector<SearchResult> HierarchicalBM25Index::search(const RetrievalQuery& qu
 
     auto query_tokens = tokenize(query.text);
     std::unordered_map<int64_t, double> doc_scores;
+    const double N = static_cast<double>(item_count_ > 0 ? item_count_ : 1);
+    const double k1 = 1.2;
+    const double b = 0.75;
+    const double avgdl = avg_doc_length_ > 0 ? avg_doc_length_ : 50.0;
+    const double k1_1mb = k1 * (1.0 - b);
+    const double k1_b_div_avgdl = (k1 * b) / avgdl;
 
-    // 1. BM25 text match
+    // 1. BM25 text match with hoisted IDF computation per query term
     for (const auto& qterm : query_tokens) {
         auto it = inverted_index_.find(qterm);
         if (it != inverted_index_.end()) {
             double df = static_cast<double>(it->second.size());
+            double idf = std::log((N - df + 0.5) / (df + 0.5) + 1.0);
+            double idf_k1_1 = idf * (k1 + 1.0);
+
             for (const auto& posting : it->second) {
                 auto doc_it = doc_records_.find(posting.item_id);
                 if (doc_it != doc_records_.end()) {
-                    double weight = compute_bm25_term_weight(posting.term_freq, df, doc_it->second.doc_length);
-                    doc_scores[posting.item_id] += weight;
+                    double tf = posting.term_freq;
+                    double den = tf + k1_1mb + k1_b_div_avgdl * doc_it->second.doc_length;
+                    doc_scores[posting.item_id] += (tf * idf_k1_1) / den;
                 }
             }
         }
@@ -197,22 +207,37 @@ std::vector<SearchResult> HierarchicalBM25Index::search(const RetrievalQuery& qu
         }
     }
 
+    if (doc_scores.empty()) {
+        return results;
+    }
+
     // Rank candidate documents
     std::vector<std::pair<int64_t, double>> ranked;
+    ranked.reserve(doc_scores.size());
     for (const auto& kv : doc_scores) {
         if (kv.second > 0.0) {
             ranked.push_back(kv);
         }
     }
 
-    std::sort(ranked.begin(), ranked.end(),
-              [](const auto& a, const auto& b) { return a.second > b.second; });
-
     size_t limit = std::min(query.top_k, ranked.size());
+    if (limit == 0) return results;
+
+    if (limit < ranked.size()) {
+        std::partial_sort(ranked.begin(), ranked.begin() + limit, ranked.end(),
+                          [](const auto& a, const auto& b) { return a.second > b.second; });
+    } else {
+        std::sort(ranked.begin(), ranked.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+    }
+
+    results.reserve(limit);
     for (size_t i = 0; i < limit; ++i) {
         int64_t doc_id = ranked[i].first;
-        const auto& rec = doc_records_.at(doc_id);
+        auto doc_it = doc_records_.find(doc_id);
+        if (doc_it == doc_records_.end()) continue;
 
+        const auto& rec = doc_it->second;
         SearchResult res;
         res.item_id = doc_id;
         res.relevance_score = ranked[i].second;
@@ -223,7 +248,7 @@ std::vector<SearchResult> HierarchicalBM25Index::search(const RetrievalQuery& qu
         res.matched_content = query.hierarchical_expand ? rec.raw_content : rec.content_snippet;
         res.is_expanded_from_summary = query.hierarchical_expand;
 
-        results.push_back(res);
+        results.push_back(std::move(res));
     }
 
     return results;

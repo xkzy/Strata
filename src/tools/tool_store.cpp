@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
+#include <shared_mutex>
 #include <sstream>
 
 namespace strata::tools {
@@ -24,7 +26,7 @@ std::string ContentAddressedStore::compute_hash(const std::string& content) {
 }
 
 std::string ContentAddressedStore::store(const std::string& raw_content) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     std::string h = compute_hash(raw_content);
     if (store_.find(h) == store_.end()) {
         store_[h] = raw_content;
@@ -34,7 +36,7 @@ std::string ContentAddressedStore::store(const std::string& raw_content) {
 }
 
 bool ContentAddressedStore::get(const std::string& content_hash, std::string& out_content) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(mutex_);
     auto it = store_.find(content_hash);
     if (it != store_.end()) {
         out_content = it->second;
@@ -44,17 +46,17 @@ bool ContentAddressedStore::get(const std::string& content_hash, std::string& ou
 }
 
 bool ContentAddressedStore::contains(const std::string& content_hash) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(mutex_);
     return store_.find(content_hash) != store_.end();
 }
 
 size_t ContentAddressedStore::total_stored_entries() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(mutex_);
     return store_.size();
 }
 
 uint64_t ContentAddressedStore::total_stored_bytes() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(mutex_);
     return total_bytes_;
 }
 
@@ -63,7 +65,7 @@ ToolStateStore::ToolStateStore() = default;
 ToolStateStore::~ToolStateStore() = default;
 
 int64_t ToolStateStore::save_result(ToolResult result) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     int64_t id = next_result_id_++;
     result.result_id = id;
 
@@ -79,7 +81,7 @@ int64_t ToolStateStore::save_result(ToolResult result) {
 }
 
 const ToolResult* ToolStateStore::get_result(int64_t result_id) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(mutex_);
     auto it = results_.find(result_id);
     if (it != results_.end()) {
         return &it->second;
@@ -88,53 +90,70 @@ const ToolResult* ToolStateStore::get_result(int64_t result_id) const {
 }
 
 std::string ToolStateStore::retrieve_fragment(const ToolRetrievalQuery& query) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(mutex_);
     auto it = results_.find(query.result_id);
     if (it == results_.end()) {
         return "[Error: Tool Result " + std::to_string(query.result_id) + " not found]";
     }
 
     std::string full_content;
-    if (!content_store_.get(it->second.content_hash, full_content)) {
-        full_content = it->second.raw_output;
+    std::string_view content_view;
+    if (content_store_.get(it->second.content_hash, full_content)) {
+        content_view = full_content;
+    } else {
+        content_view = it->second.raw_output;
     }
 
-    std::istringstream stream(full_content);
-    std::string line;
-    std::ostringstream out;
+    std::string out;
+    out.reserve(std::min<size_t>(content_view.size(), 4096));
 
     int cur_line = 0;
     int matches_found = 0;
     int lines_included = 0;
 
-    while (std::getline(stream, line)) {
+    size_t pos = 0;
+    const size_t len = content_view.size();
+    while (pos < len) {
+        size_t next_nl = content_view.find('\n', pos);
+        size_t line_end = (next_nl != std::string_view::npos) ? next_nl : len;
+        std::string_view line = content_view.substr(pos, line_end - pos);
+        if (!line.empty() && line.back() == '\r') {
+            line.remove_suffix(1);
+        }
         cur_line++;
-        bool matches = true;
 
+        bool matches = true;
         if (!query.query.empty()) {
-            matches = (line.find(query.query) != std::string::npos);
+            matches = (line.find(query.query) != std::string_view::npos);
         }
         if (matches && !query.filter_keyword.empty()) {
-            matches = (line.find(query.filter_keyword) != std::string::npos);
+            matches = (line.find(query.filter_keyword) != std::string_view::npos);
         }
 
         if (matches && cur_line >= query.line_start) {
-            out << "L" << cur_line << ": " << line << "\n";
+            out += "L";
+            out += std::to_string(cur_line);
+            out += ": ";
+            out.append(line.data(), line.size());
+            out += "\n";
             lines_included++;
             matches_found++;
             if (lines_included >= query.line_count) break;
         }
+
+        if (next_nl == std::string_view::npos) break;
+        pos = next_nl + 1;
     }
 
     if (matches_found == 0) {
         return "[No matching lines found in Tool Result " + std::to_string(query.result_id) + "]";
     }
-    return out.str();
+    return out;
 }
 
 ContextLease ToolStateStore::materialize_lease(int64_t result_id, int64_t max_tokens,
                                               double duration_sec) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     ContextLease lease;
     auto it = results_.find(result_id);
     if (it == results_.end()) {
@@ -166,17 +185,17 @@ ContextLease ToolStateStore::materialize_lease(int64_t result_id, int64_t max_to
 }
 
 void ToolStateStore::release_lease(int64_t lease_id) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     active_leases_.erase(lease_id);
 }
 
 void ToolStateStore::log_event(const ToolEvent& event) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     event_log_.push_back(event);
 }
 
 std::vector<ToolEvent> ToolStateStore::get_recent_events(size_t limit) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(mutex_);
     if (event_log_.size() <= limit) {
         return event_log_;
     }
@@ -184,7 +203,7 @@ std::vector<ToolEvent> ToolStateStore::get_recent_events(size_t limit) const {
 }
 
 size_t ToolStateStore::total_results() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(mutex_);
     return results_.size();
 }
 
@@ -193,7 +212,7 @@ uint64_t ToolStateStore::total_raw_bytes() const {
 }
 
 uint64_t ToolStateStore::total_raw_tokens() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(mutex_);
     return total_raw_tokens_;
 }
 

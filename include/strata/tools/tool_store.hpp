@@ -8,8 +8,9 @@
 
 #include <cstdint>
 #include <memory>
-#include <mutex>
+#include <shared_mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -52,7 +53,7 @@ public:
     static std::string compute_hash(const std::string& content);
 
 private:
-    mutable std::mutex mutex_;
+    mutable std::shared_mutex mutex_;
     std::unordered_map<std::string, std::string> store_;
     uint64_t total_bytes_ = 0;
 };
@@ -90,7 +91,7 @@ public:
     ContentAddressedStore& content_store() { return content_store_; }
 
 private:
-    mutable std::mutex mutex_;
+    mutable std::shared_mutex mutex_;
     int64_t next_result_id_ = 1;
     int64_t next_lease_id_ = 1;
 
