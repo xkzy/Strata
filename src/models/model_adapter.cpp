@@ -30,9 +30,11 @@ void softmax(float* x, size_t n) {
     }
 }
 
-// Sigmoid helper
+#include "strata/kernels/fast_activations.hpp"
+
+// Fast Sigmoid helper
 inline float sigmoid(float v) {
-    return 1.0f / (1.0f + std::exp(-v));
+    return strata::kernels::fast_math::fast_sigmoid(v);
 }
 
 // ------------------- Qwen MoE Adapter -------------------

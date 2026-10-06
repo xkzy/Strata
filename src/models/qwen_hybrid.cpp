@@ -6,11 +6,13 @@
 #include <cstring>
 #include <numeric>
 
+#include "strata/kernels/fast_activations.hpp"
+
 namespace strata::models::qwen {
 
 namespace {
 inline float fast_sigmoid(float x) {
-    return 1.0f / (1.0f + std::exp(-x));
+    return strata::kernels::fast_math::fast_sigmoid(x);
 }
 } // anonymous namespace
 
