@@ -8,6 +8,7 @@
 // 4. YaRN & Linear RoPE context scaling: dynamic frequency interpolation for long contexts.
 
 #include <cmath>
+#include "strata/kernels/fast_parallel.hpp"
 #include <cstdint>
 #include <cstddef>
 #include <algorithm>
@@ -135,7 +136,7 @@ public:
                                       int64_t head_dim, int64_t rot_dim,
                                       const float* __restrict__ cos_tab,
                                       const float* __restrict__ sin_tab) {
-        #pragma omp parallel for schedule(static) if (n_heads > 4)
+        #pragma omp parallel for schedule(static) if (n_heads * head_dim >= fast_parallel::kRopeMinElems)
         for (int64_t h = 0; h < n_heads; ++h) {
             float* head_ptr = qk + h * head_dim;
             apply_neox(head_ptr, cos_tab, sin_tab, rot_dim);

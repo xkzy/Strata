@@ -8,6 +8,7 @@
 // 4. Quantized INT8 / Q8_0 dot-product acceleration (AVX-VNNI & AVX512-VNNI).
 
 #include "strata/kernels/fast_activations.hpp"
+#include "strata/kernels/fast_parallel.hpp"
 #include <cmath>
 #include <cstdint>
 #include <cstddef>
@@ -67,7 +68,7 @@ public:
                           ActivationType act = ActivationType::kNone) {
         if (M <= 0 || K <= 0) return;
 
-        #pragma omp parallel for schedule(static) if (M > 16)
+        #pragma omp parallel for schedule(static) if (M * K >= fast_parallel::kGemvMinMacs)
         for (int64_t i = 0; i < M; ++i) {
             const float* row = A + i * K;
             float acc = 0.0f;
@@ -152,7 +153,7 @@ public:
         if (ldw <= 0) ldw = K;
         if (ldy <= 0) ldy = N;
 
-        #pragma omp parallel for schedule(static) if (N > 16)
+        #pragma omp parallel for schedule(static) if (T * N * K >= fast_parallel::kBatchGemvMinMacs)
         for (int64_t n = 0; n < N; ++n) {
             const float* w_row = W + n * ldw;
             for (int64_t t = 0; t < T; ++t) {
@@ -233,14 +234,14 @@ public:
         constexpr int64_t BK = 64;
 
         if (beta == 0.0f) {
-            #pragma omp parallel for schedule(static)
+            #pragma omp parallel for schedule(static) if (M * N >= fast_parallel::kElementwiseMinElems)
             for (int64_t i = 0; i < M * N; ++i) C[i] = 0.0f;
         } else if (beta != 1.0f) {
-            #pragma omp parallel for schedule(static)
+            #pragma omp parallel for schedule(static) if (M * N >= fast_parallel::kElementwiseMinElems)
             for (int64_t i = 0; i < M * N; ++i) C[i] *= beta;
         }
 
-        #pragma omp parallel for collapse(2) schedule(dynamic)
+        #pragma omp parallel for collapse(2) schedule(dynamic) if (M * N * K >= fast_parallel::kGemmMinMacs)
         for (int64_t bm = 0; bm < M; bm += BM) {
             for (int64_t bn = 0; bn < N; bn += BN) {
                 const int64_t m_end = std::min(bm + BM, M);
@@ -314,7 +315,7 @@ public:
                                   int64_t M, int64_t N, int64_t K) {
         if (M <= 0 || N <= 0 || K <= 0) return;
 
-        #pragma omp parallel for collapse(2) schedule(static)
+        #pragma omp parallel for collapse(2) schedule(static) if (M * N * K >= fast_parallel::kSwigluMinMacs)
         for (int64_t m = 0; m < M; ++m) {
             for (int64_t n = 0; n < N; ++n) {
                 const float* x_row = X + m * K;
