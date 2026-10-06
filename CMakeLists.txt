@@ -489,6 +489,23 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     set_tests_properties(test_virtual_context PROPERTIES TIMEOUT 60)
   endif()
 
+  # ---- Tool Runtime & Bounded Observation Engine ----
+  add_library(strata_tools STATIC
+    src/tools/tool_parser.cpp
+    src/tools/tool_store.cpp
+    src/tools/tool_runtime.cpp
+    src/strata_unified.cpp)
+  target_include_directories(strata_tools PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(strata_tools PUBLIC strata_context strata_generic_runtime)
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/tools/test_tool_runtime.cpp")
+    enable_testing()
+    add_executable(test_tool_runtime tests/tools/test_tool_runtime.cpp)
+    target_link_libraries(test_tool_runtime PRIVATE strata_tools)
+    add_test(NAME test_tool_runtime COMMAND test_tool_runtime)
+    set_tests_properties(test_tool_runtime PROPERTIES TIMEOUT 60)
+  endif()
+
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/file_expert_source_test.cpp")
     enable_testing()
     add_executable(file_expert_source_test tests/core/file_expert_source_test.cpp)
