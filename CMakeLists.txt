@@ -48,6 +48,15 @@ if(STRATA_PORTABLE AND MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 endif()
 
+# Opt-in: build the engine's users of the header-only fast kernels (include/strata/kernels/fast_*.hpp) with AVX2/FMA and
+# OpenMP. Off by default: without them those kernels run their scalar paths (see tests/kernels/test_fast_unified_benchmark).
+# The flags are PUBLIC on the runtime libraries so every translation unit that includes the inline kernels agrees.
+option(STRATA_FAST_KERNELS_AVX2 "compile the fast_*.hpp users with AVX2/FMA/F16C (needs an AVX2 CPU; not with STRATA_ISA_FLOOR)" OFF)
+option(STRATA_FAST_KERNELS_OPENMP "compile the fast_*.hpp users with OpenMP (can oversubscribe cores next to the engine's own threads)" OFF)
+if(STRATA_FAST_KERNELS_AVX2 AND STRATA_ISA_FLOOR)
+  message(FATAL_ERROR "STRATA_FAST_KERNELS_AVX2 needs an AVX2 CPU; STRATA_ISA_FLOOR builds target older CPUs")
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -621,6 +630,40 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_include_directories(test_fast_rope PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     add_test(NAME test_fast_rope COMMAND test_fast_rope)
     set_tests_properties(test_fast_rope PROPERTIES TIMEOUT 60)
+  # ---- SIMD + OpenMP for the header-only fast kernels (tests and benchmark only) ----
+  # Without these flags the AVX2/FMA paths in include/strata/kernels/fast_*.hpp are compiled out and the
+  # `#pragma omp` lines are ignored. The production engine is not built with them (no AVX2 baseline assumed).
+  add_library(strata_fast_kernel_flags INTERFACE)
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag("-mavx2 -mfma -mf16c" STRATA_HAS_AVX2_FLAGS)
+    if(STRATA_HAS_AVX2_FLAGS)
+      target_compile_options(strata_fast_kernel_flags INTERFACE -mavx2 -mfma -mf16c)
+    endif()
+  endif()
+  find_package(OpenMP COMPONENTS CXX QUIET)
+  if(OpenMP_CXX_FOUND)
+    target_link_libraries(strata_fast_kernel_flags INTERFACE OpenMP::OpenMP_CXX)
+  endif()
+
+  # Opt-in engine build of the fast kernels (see STRATA_FAST_KERNELS_AVX2 / STRATA_FAST_KERNELS_OPENMP at the top).
+  if(STRATA_FAST_KERNELS_AVX2)
+    if(MSVC)
+      set(_strata_fast_avx2_flags /arch:AVX2)
+    else()
+      set(_strata_fast_avx2_flags -mavx2 -mfma -mf16c)
+    endif()
+    foreach(_t strata_generic_runtime strata_tools)
+      target_compile_options(${_t} PUBLIC "$<$<COMPILE_LANGUAGE:CXX>:${_strata_fast_avx2_flags}>")
+    endforeach()
+  endif()
+  if(STRATA_FAST_KERNELS_OPENMP)
+    find_package(OpenMP REQUIRED COMPONENTS CXX)
+    foreach(_t strata_generic_runtime strata_tools)
+      target_link_libraries(${_t} PUBLIC OpenMP::OpenMP_CXX)
+    endforeach()
+  endif()
+
   # ---- SIMD + OpenMP for the header-only fast kernels (tests and benchmark only) ----
   # Without these flags the AVX2/FMA paths in include/strata/kernels/fast_*.hpp are compiled out and the
   # `#pragma omp` lines are ignored. The production engine is not built with them (no AVX2 baseline assumed).
