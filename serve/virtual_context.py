@@ -501,6 +501,23 @@ class VirtualContextServerRuntime:
         with self._lock:
             self.virtual_tokens_processed += current_tokens + tool_savings
 
+        # Index messages into session retrieval index
+        for m in processed:
+            if m.get("role") not in ("system", "developer"):
+                c = m.get("content", "")
+                raw_text = c if isinstance(c, str) else json.dumps(c)
+                if raw_text:
+                    item = ContextItem(
+                        item_id=self._next_id,
+                        item_type=ContextItemType.USER_MESSAGE if m.get("role") == "user" else ContextItemType.ASSISTANT_MESSAGE,
+                        raw_content=raw_text,
+                        token_count=self.estimate_tokens(raw_text),
+                        timestamp=time.time(),
+                        info_class=InformationClass.TEMPORARY if "<think>" in raw_text else InformationClass.IMPORTANT,
+                    )
+                    self._next_id += 1
+                    self.index.index_item(item)
+
         # If already fits comfortably within physical target budget, return directly
         if current_tokens <= target_budget:
             with self._lock:

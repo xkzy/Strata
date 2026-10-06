@@ -64,6 +64,7 @@ from serve.structured import StructuredOutputError, prepare_format, validated_js
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
 from serve.virtual_context import VirtualContextServerRuntime  # noqa: E402
+from serve.multi_tenant import MultiTenantServerManager, SecurityScope, SharingScope  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
@@ -2167,9 +2168,10 @@ class Service:
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
         self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
                             tokenizer.encode("<|endoftext|>", parse_special=True))
-        self.context_runtime = VirtualContextServerRuntime(
-            physical_context_limit=getattr(engine, "max_context", 32768)
+        self.multi_tenant = MultiTenantServerManager(
+            default_physical_limit=getattr(engine, "max_context", 32768)
         )
+        self.context_runtime = self.multi_tenant.get_or_create_session(SecurityScope())
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
@@ -2699,16 +2701,20 @@ class Service:
                     content[n] = {"type": "text", "text": f"[image omitted: {why}]"}
         return fetched
 
-    def prepare(self, messages, tools, kwargs, max_new=None, force=None):
+    def prepare(self, messages, tools, kwargs, max_new=None, force=None, scope: Optional[SecurityScope] = None):
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context.  `force` (forced_call): without thinking the reply starts with it, so it ends the
         prompt; with thinking, Service.run writes it once the thinking is over."""
-        # Server-Side Virtual Context & Bounded Tool Observation handling
+        # Multi-Tenant & Server-Side Virtual Context Resolution
+        current_scope = scope or SecurityScope()
+        vctx = (self.multi_tenant.get_or_create_session(current_scope)
+                if hasattr(self, "multi_tenant") else getattr(self, "context_runtime", None))
+
         ctx_val = getattr(self.engine, "max_context", 0) or getattr(self.engine, "known_ctx", 0)
-        if ctx_val > 0 and hasattr(self, "context_runtime") and self.context_runtime is not None:
+        if ctx_val > 0 and vctx is not None:
             reserve = max_new if (max_new is not None and max_new > 0) else 1024
             target_budget = max(256, ctx_val - CTX_SLACK - reserve)
-            messages = self.context_runtime.process_messages(messages, target_budget, self.tok)
+            messages = vctx.process_messages(messages, target_budget, self.tok)
 
         fetched = self._note_unreadable_tool_images(messages)
         ids = self.encode_prompt(messages, tools, kwargs)
@@ -3841,10 +3847,20 @@ def make_handler(svc: Service):
                     self._json(200, svc.v1_status())
             elif path == "/v1/strata/context":
                 if self._authorized():
-                    self._json(200, svc.context_runtime.stats() if hasattr(svc, "context_runtime") else {})
+                    scope = SecurityScope.from_headers_and_body(self.headers, {})
+                    vctx = svc.multi_tenant.get_or_create_session(scope) if hasattr(svc, "multi_tenant") else getattr(svc, "context_runtime", None)
+                    self._json(200, vctx.stats() if vctx else {})
             elif path == "/v1/strata/tools":
                 if self._authorized():
-                    self._json(200, svc.context_runtime.tool_store.stats() if hasattr(svc, "context_runtime") else {})
+                    self._json(200, svc.multi_tenant.tool_store.stats() if hasattr(svc, "multi_tenant") else {})
+            elif path == "/v1/strata/sessions":
+                if self._authorized():
+                    scope = SecurityScope.from_headers_and_body(self.headers, {})
+                    self._json(200, {"sessions": svc.multi_tenant.list_sessions(scope) if hasattr(svc, "multi_tenant") else []})
+            elif path == "/v1/strata/tenants/metrics":
+                if self._authorized():
+                    scope = SecurityScope.from_headers_and_body(self.headers, {})
+                    self._json(200, svc.multi_tenant.get_tenant_metrics(scope.tenant_id) if hasattr(svc, "multi_tenant") else {})
             else:
                 self._json(404, {"error": {"message": "not found"}})
 
@@ -3945,23 +3961,67 @@ def make_handler(svc: Service):
                     self._anthropic(req)
                 elif path == "/v1/messages/count_tokens":
                     self._count_tokens(req)
+                elif path == "/v1/strata/sessions":
+                    scope = SecurityScope.from_headers_and_body(self.headers, req)
+                    vctx = svc.multi_tenant.get_or_create_session(scope) if hasattr(svc, "multi_tenant") else None
+                    if vctx is None:
+                        self._json(403, {"error": {"message": "Session creation failed or tenant quota exceeded"}})
+                    else:
+                        self._json(200, {"status": "active", "session_id": scope.session_id, "stats": vctx.stats()})
+                elif path == "/v1/strata/sessions/fork":
+                    parent_scope = SecurityScope(
+                        tenant_id=req.get("tenant_id", "default_tenant"),
+                        user_id=req.get("user_id", "default_user"),
+                        workspace_id=req.get("workspace_id", "default_workspace"),
+                        agent_id=req.get("agent_id", "default_agent"),
+                        session_id=req.get("parent_session_id", "default_session")
+                    )
+                    new_scope = SecurityScope(
+                        tenant_id=req.get("tenant_id", "default_tenant"),
+                        user_id=req.get("user_id", "default_user"),
+                        workspace_id=req.get("workspace_id", "default_workspace"),
+                        agent_id=req.get("agent_id", "default_agent"),
+                        session_id=req.get("new_session_id", "forked_session")
+                    )
+                    forked = svc.multi_tenant.fork_session(parent_scope, new_scope) if hasattr(svc, "multi_tenant") else None
+                    if forked is None:
+                        self._json(403, {"error": {"message": "Session fork failed: unauthorized or parent not found"}})
+                    else:
+                        self._json(200, {"status": "forked", "session_id": new_scope.session_id, "stats": forked.stats()})
+                elif path == "/v1/strata/sessions/delete":
+                    scope = SecurityScope.from_headers_and_body(self.headers, req)
+                    deleted = svc.multi_tenant.delete_session(scope) if hasattr(svc, "multi_tenant") else False
+                    self._json(200 if deleted else 404, {"deleted": deleted, "session_id": scope.session_id})
+                elif path == "/v1/strata/projects/memory":
+                    scope = SecurityScope.from_headers_and_body(self.headers, req)
+                    title = req.get("title", "document.md")
+                    content = req.get("content", "")
+                    sharing_str = req.get("sharing", "project").upper()
+                    sharing = SharingScope[sharing_str] if sharing_str in SharingScope.__members__ else SharingScope.PROJECT
+                    if hasattr(svc, "multi_tenant"):
+                        svc.multi_tenant.ingest_shared_knowledge(scope, title, content, sharing)
+                    self._json(200, {"status": "ingested", "title": title, "sharing": sharing.value})
                 elif path == "/v1/strata/tools/retrieve":
+                    scope = SecurityScope.from_headers_and_body(self.headers, req)
                     rid = req.get("result_id", "")
                     s_line = int(req.get("start_line", 1))
                     e_line = int(req.get("end_line", 0))
-                    if hasattr(svc, "context_runtime"):
+                    if hasattr(svc, "multi_tenant"):
                         if e_line > 0:
-                            content = svc.context_runtime.tool_store.get_fragment(rid, s_line, e_line)
+                            content = svc.multi_tenant.tool_store.get_scoped_fragment(rid, s_line, e_line, scope)
                         else:
-                            content = svc.context_runtime.tool_store.get_raw_by_id(rid)
+                            content = svc.multi_tenant.tool_store.get_scoped_raw(rid, scope)
                     else:
                         content = ""
                     self._json(200, {"result_id": rid, "content": content})
                 elif path == "/v1/strata/context/query":
+                    scope = SecurityScope.from_headers_and_body(self.headers, req)
                     q = req.get("query", "")
                     k = int(req.get("top_k", 5))
                     hits = []
-                    if hasattr(svc, "context_runtime"):
+                    if hasattr(svc, "multi_tenant"):
+                        hits = svc.multi_tenant.retrieve_scoped(q, scope, top_k=k)
+                    elif hasattr(svc, "context_runtime"):
                         res = svc.context_runtime.index.search(q, top_k=k)
                         hits = [{"item_id": item.item_id, "score": round(score, 2), "content": item.raw_content}
                                 for item, score in res]
@@ -4207,7 +4267,8 @@ def make_handler(svc: Service):
                 raise ValueError("a forced tool_choice with MCP tools is not supported")
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
-            ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force)
+            scope = SecurityScope.from_headers_and_body(self.headers, req)
+            ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, scope=scope)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431
@@ -4393,7 +4454,8 @@ def make_handler(svc: Service):
             max_new = int(req.get("max_tokens") or 0)                  # 0/-1: the rest of the context
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
-            ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force)
+            scope = SecurityScope.from_headers_and_body(self.headers, req)
+            ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, scope=scope)
             _debug_req("anthropic", req, messages, tools, max_new, thinking, len(ids))
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431

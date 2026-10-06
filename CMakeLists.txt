@@ -477,7 +477,8 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     src/context/hierarchical_memory.cpp
     src/context/context_compactor.cpp
     src/context/virtual_context.cpp
-    src/context/context_runtime.cpp)
+    src/context/context_runtime.cpp
+    src/context/multi_tenant_context.cpp)
   target_include_directories(strata_context PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_context PUBLIC strata_generic_runtime)
 
@@ -487,6 +488,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(test_virtual_context PRIVATE strata_context)
     add_test(NAME test_virtual_context COMMAND test_virtual_context)
     set_tests_properties(test_virtual_context PROPERTIES TIMEOUT 60)
+  endif()
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/context/test_multi_tenant.cpp")
+    enable_testing()
+    add_executable(test_multi_tenant tests/context/test_multi_tenant.cpp)
+    target_link_libraries(test_multi_tenant PRIVATE strata_context)
+    add_test(NAME test_multi_tenant COMMAND test_multi_tenant)
+    set_tests_properties(test_multi_tenant PROPERTIES TIMEOUT 60)
   endif()
 
   # ---- Tool Runtime & Bounded Observation Engine ----
