@@ -457,6 +457,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     src/runtime/scheduler.cpp
     src/runtime/runtime.cpp
     src/models/model_adapter.cpp
+    src/models/qwen_hybrid.cpp
     src/kernels/swa.cpp)
   target_include_directories(strata_generic_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_generic_runtime PUBLIC strata_engine ${_strata_gpu_runtime_target})
@@ -467,6 +468,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(test_generic_runtime PRIVATE strata_generic_runtime)
     add_test(NAME test_generic_runtime COMMAND test_generic_runtime)
     set_tests_properties(test_generic_runtime PROPERTIES TIMEOUT 60)
+  endif()
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/models/test_qwen_hybrid.cpp")
+    enable_testing()
+    add_executable(test_qwen_hybrid tests/models/test_qwen_hybrid.cpp)
+    target_link_libraries(test_qwen_hybrid PRIVATE strata_generic_runtime)
+    add_test(NAME test_qwen_hybrid COMMAND test_qwen_hybrid)
+    set_tests_properties(test_qwen_hybrid PROPERTIES TIMEOUT 60)
   endif()
 
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_swa.cpp")

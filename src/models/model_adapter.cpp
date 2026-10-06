@@ -1,5 +1,6 @@
 // src/models/model_adapter.cpp - MoE Model Adapters Implementation
 #include "strata/models/model_adapter.hpp"
+#include "strata/models/qwen_hybrid.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -94,22 +95,31 @@ public:
 
     void route_token(const float* routing_logits, int64_t n_expert, int64_t top_k,
                      int32_t* selected_experts_out, float* weights_out) const override {
+        if (n_expert == qwen::QwenOptimConfig::N_EXPERTS && top_k == qwen::QwenOptimConfig::ACTIVE_EXPERTS) {
+            qwen::QwenRoutingOptimizer::route_top10(routing_logits, selected_experts_out, weights_out);
+            return;
+        }
+
+        // Generic fallback for custom top_k / n_expert
         thread_local std::vector<std::pair<float, int32_t>> tl_scored;
         if (static_cast<int64_t>(tl_scored.size()) < n_expert) {
             tl_scored.resize(n_expert);
         }
         for (int64_t i = 0; i < n_expert; ++i) {
-            float score = sigmoid(routing_logits[i]);
-            tl_scored[i] = {score, static_cast<int32_t>(i)};
+            tl_scored[i] = {routing_logits[i], static_cast<int32_t>(i)};
         }
         std::partial_sort(tl_scored.begin(), tl_scored.begin() + top_k, tl_scored.begin() + n_expert,
-                          [](const auto& a, const auto& b) { return a.first > b.first; });
+                          [](const auto& a, const auto& b) {
+                              if (a.first != b.first) return a.first > b.first;
+                              return a.second < b.second;
+                          });
 
         float sum = 0.0f;
         for (int64_t i = 0; i < top_k; ++i) {
             selected_experts_out[i] = tl_scored[i].second;
-            weights_out[i] = tl_scored[i].first;
-            sum += weights_out[i];
+            float sig_w = sigmoid(tl_scored[i].first);
+            weights_out[i] = sig_w;
+            sum += sig_w;
         }
         if (sum > 0.0f) {
             const float inv_sum = 1.0f / sum;
