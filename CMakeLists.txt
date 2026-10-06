@@ -435,7 +435,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # about arithmetic, and this one knows the ORDER the arithmetic happens in.
   add_library(strata_engine STATIC src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
     src/core/remote_expert_opt.cu
-    src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
+    src/core/expert_cache.cpp src/core/ram_expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
     src/core/arch_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp)
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -446,6 +446,15 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(exchange_storage_test PRIVATE Threads::Threads)
     add_test(NAME exchange_storage_test COMMAND exchange_storage_test)
     set_tests_properties(exchange_storage_test PROPERTIES TIMEOUT 60)
+  endif()
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/test_ram_expert_cache.cpp")
+    enable_testing()
+    add_executable(test_ram_expert_cache tests/core/test_ram_expert_cache.cpp src/core/ram_expert_cache.cpp)
+    target_include_directories(test_ram_expert_cache PRIVATE include)
+    target_link_libraries(test_ram_expert_cache PRIVATE Threads::Threads ${_strata_gpu_runtime_target})
+    add_test(NAME test_ram_expert_cache COMMAND test_ram_expert_cache)
+    set_tests_properties(test_ram_expert_cache PROPERTIES TIMEOUT 60)
   endif()
 
   # ---- Generic MoE Runtime & Model Adapters ----

@@ -362,6 +362,14 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   const cacheBytes = (eng.expert_cache_mib || 0) * 1048576;
   $("slots-text").textContent = eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
   $("slots-bar").style.width = hw.gpu_mem_total ? `${Math.min(100, (100 * cacheBytes) / hw.gpu_mem_total)}%` : "0%";
+
+  const ramSlots = eng.expert_cache_ram_slots || (eng.expert_slots ? Math.max(0, 24576 - eng.expert_slots) : 24576);
+  const ramCacheBytes = (eng.expert_cache_ram_mib || 0) * 1048576 || (ramSlots * 1382400);
+  if ($("ram-slots-text") && $("ram-slots-bar")) {
+    $("ram-slots-text").textContent = ramSlots ? `${fmt(ramSlots)} · ${gb(ramCacheBytes)} GB (RAM Cache)` : "–";
+    $("ram-slots-bar").style.width = hw.ram_total ? `${Math.min(100, (100 * ramCacheBytes) / hw.ram_total)}%` : "0%";
+  }
+
   $("ram-text").textContent = hw.ram_total ? `${gb(hw.ram_used)} / ${gb(hw.ram_total, 0)} GB` : "–";
   const ramPct = hw.ram_total ? (100 * hw.ram_used) / hw.ram_total : 0;
   $("ram-bar").style.width = `${ramPct}%`;
