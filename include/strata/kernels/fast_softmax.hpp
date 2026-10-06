@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <algorithm>
+#include <functional>
 #include <vector>
 #include <limits>
 
@@ -254,22 +255,69 @@ public:
     static void top_k_filter(float* __restrict__ logits, size_t n, int k) {
         if (k <= 0 || static_cast<size_t>(k) >= n) return;
 
-        std::vector<std::pair<float, size_t>> scored(n);
-        for (size_t i = 0; i < n; ++i) {
-            scored[i] = {logits[i], i};
+        const float threshold = kth_largest(logits, n, static_cast<size_t>(k));
+        const float neg_inf = -std::numeric_limits<float>::infinity();
+        size_t i = 0;
+#if defined(__AVX2__)
+        const __m256 thr = _mm256_set1_ps(threshold);
+        const __m256 ninf = _mm256_set1_ps(neg_inf);
+        for (; i + 8 <= n; i += 8) {
+            __m256 v = _mm256_loadu_ps(logits + i);
+            _mm256_storeu_ps(logits + i, _mm256_blendv_ps(v, ninf, _mm256_cmp_ps(v, thr, _CMP_LT_OQ)));
         }
-
-        std::nth_element(scored.begin(), scored.begin() + k, scored.end(),
-                         [](const auto& a, const auto& b) { return a.first > b.first; });
-
-        float threshold = scored[k - 1].first;
-        for (size_t i = 0; i < n; ++i) {
-            if (logits[i] < threshold) {
-                logits[i] = -std::numeric_limits<float>::infinity();
-            }
+#endif
+        for (; i < n; ++i) {
+            if (logits[i] < threshold) logits[i] = neg_inf;
         }
     }
 
+private:
+    // k-th largest value (1 <= k < n). Streams over x keeping a candidate buffer of the values above the running
+    // threshold; when the buffer fills, nth_element trims it to the top k and raises the threshold. Almost every
+    // element of a logits row is rejected by one compare, so no full-size copy or sort is needed.
+    static float kth_largest(const float* x, size_t n, size_t k) {
+        constexpr float kNegInf = -std::numeric_limits<float>::infinity();
+        std::vector<float>& buf = candidate_buffer();
+        const size_t cap = std::max<size_t>(2 * k, 256);
+        if (buf.size() < cap) buf.resize(cap);
+        float* b = buf.data();
+        size_t m = 0;
+        float t = kNegInf;
+        auto push = [&](float v) {
+            b[m++] = v;
+            if (m == cap) {
+                std::nth_element(b, b + (k - 1), b + m, std::greater<float>());
+                t = b[k - 1];
+                m = k;
+            }
+        };
+        size_t i = 0;
+#if defined(__AVX2__)
+        __m256 tv = _mm256_set1_ps(t);
+        for (; i + 8 <= n; i += 8) {
+            __m256 v = _mm256_loadu_ps(x + i);
+            int mask = _mm256_movemask_ps(_mm256_cmp_ps(v, tv, _CMP_GT_OQ));
+            if (mask == 0) continue;
+            for (int lane = 0; lane < 8; ++lane) {
+                if (mask & (1 << lane)) push(x[i + lane]);
+            }
+            tv = _mm256_set1_ps(t);
+        }
+#endif
+        for (; i < n; ++i) {
+            if (x[i] > t) push(x[i]);
+        }
+        if (m < k) return kNegInf; // fewer than k values above -inf: nothing to filter
+        std::nth_element(b, b + (k - 1), b + m, std::greater<float>());
+        return b[k - 1];
+    }
+
+    static std::vector<float>& candidate_buffer() {
+        static thread_local std::vector<float> buf;
+        return buf;
+    }
+
+public:
     // ------------------------------------------------------------------------
     // Min-P Filter: Keeps tokens with p >= min_p * p_max, sets rest to 0
     // ------------------------------------------------------------------------
