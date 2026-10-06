@@ -97,27 +97,49 @@ $("api-key").value = store.get("apikey", "");
 $("api-key").onchange = () => { store.set("apikey", $("api-key").value.trim()); toast("success", "API key saved", "Kept in this browser only."); };
 
 let health = {model: "strata", images: false, max_context: 0, models: []};
+
+function syncModelSelect(models) {
+  const sel = $("model-select");
+  if (!sel) return;
+  const list = models && models.length ? models : (health.models && health.models.length ? health.models : [{id: health.model, name: health.model}]);
+  const stored = store.get("active_model", health.model);
+  const currentVal = sel.value || stored;
+  
+  const currentOptions = Array.from(sel.options).map(o => o.value).join(",");
+  const newOptions = list.map(m => m.id).join(",");
+  if (currentOptions !== newOptions) {
+    sel.innerHTML = list.map(m => `<option value="${esc(m.id)}">${esc(m.name || m.id)}</option>`).join("");
+  }
+  
+  if (list.some(m => m.id === currentVal)) {
+    sel.value = currentVal;
+  } else if (list.length > 0) {
+    sel.value = list[0].id;
+  }
+  
+  sel.onchange = () => {
+    store.set("active_model", sel.value);
+    $("chat-empty-sub").textContent = `${sel.value} runs on this PC. Nothing leaves it.`;
+    toast("info", "Active Model", `Switched to ${sel.value}`);
+  };
+}
+
 function getSelectedModel() {
   const sel = $("model-select");
   return (sel && sel.value) || store.get("active_model", "") || health.model;
 }
+
 async function loadHealth() {
   try {
-    health = await (await fetch("health")).json();
-    $("attach-btn").title = health.images ? "Attach a text file or a picture (or drop it here)"
-                                          : "Attach a text file (or drop it here)";
-    const sel = $("model-select");
-    if (sel) {
-      const models = health.models && health.models.length ? health.models : [{id: health.model, name: health.model}];
-      const active = store.get("active_model", health.model);
-      sel.innerHTML = models.map(m => `<option value="${esc(m.id)}"${m.id === active ? " selected" : ""}>${esc(m.name || m.id)}</option>`).join("");
-      sel.onchange = () => {
-        store.set("active_model", sel.value);
-        $("chat-empty-sub").textContent = `${sel.value} runs on this PC. Nothing leaves it.`;
-      };
+    const r = await fetch("health", {headers: headers()});
+    if (r.ok) {
+      health = await r.json();
+      $("attach-btn").title = health.images ? "Attach a text file or a picture (or drop it here)"
+                                            : "Attach a text file (or drop it here)";
+      syncModelSelect(health.models);
+      const curModel = getSelectedModel();
+      $("chat-empty-sub").textContent = `${curModel} runs on this PC. Nothing leaves it.`;
     }
-    const curModel = getSelectedModel();
-    $("chat-empty-sub").textContent = `${curModel} runs on this PC. Nothing leaves it.`;
   } catch (e) {
     setTimeout(loadHealth, 2000);
   }
@@ -204,6 +226,7 @@ function render(m) {
   } else {
     setPill("idle", "Idle");
   }
+  if (eng.models) syncModelSelect(eng.models);
   if (live.queued > 0) setPill("queued", `${live.queued} queued`);
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
   if (tab === "monitor") renderConvCache(m.conversation_cache);

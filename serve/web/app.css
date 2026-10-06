@@ -11,8 +11,9 @@ main { flex: 1; min-height: 0; display: flex; }
 .card-title { font-weight: var(--st-fw-bold); font-size: var(--st-fs-base); color: var(--st-ink); }
 .st-header { position: relative; z-index: 2; flex: none; }
 .st-header__brand-row { display: flex; align-items: center; gap: var(--st-s-3); }
-.st-model-picker { display: flex; align-items: center; background: var(--st-surface-2); border: 1px solid var(--st-line); border-radius: var(--st-r-md); padding: 2px 6px; }
-.st-model-select { background: transparent; color: var(--st-ink); border: 0; font-size: var(--st-fs-xs); font-family: var(--st-font-mono); outline: none; cursor: pointer; max-width: 220px; text-overflow: ellipsis; }
+.st-model-picker { display: flex; align-items: center; background: var(--st-surface-2); border: 1px solid var(--st-line); border-radius: var(--st-r-md); padding: 2px 8px; position: relative; z-index: 10; }
+.st-model-select { background: transparent; color: var(--st-ink); border: 0; font-size: var(--st-fs-xs); font-family: var(--st-font-mono); outline: none; cursor: pointer; max-width: 260px; text-overflow: ellipsis; padding: 2px; }
+.st-model-select option { background: var(--st-surface); color: var(--st-ink); padding: 4px 8px; }
 .st-header .st-tabs { margin-left: var(--st-s-4); }
 #drawer-close .st-icon { transform: rotate(-90deg); }
 

@@ -4070,7 +4070,8 @@ def make_handler(svc: Service):
                 if path in ("/v1/load", "/v1/unload"):
                     if not self._own_page("the model can be loaded or unloaded"):
                         return
-                    if req.get("model") not in (None, svc.model):
+                    asked = req.get("model")
+                    if asked is not None and asked != svc.model and asked not in svc.aliases and not any(asked == m["id"] or asked in m.get("aliases", []) for m in svc.multi_model_catalog()):
                         self._json(404, {"error": {"message": "model not found"}})
                         return
                     if path == "/v1/unload":
@@ -4223,7 +4224,7 @@ def make_handler(svc: Service):
 
         def _props(self):
             model = parse_qs(urlsplit(self.path).query).get("model", [svc.model])[0]
-            if model not in svc.model_names():
+            if model not in svc.model_names() and not any(model == m["id"] or model in m.get("aliases", []) for m in svc.multi_model_catalog()):
                 self._json(404, {"error": {"message": "model not found"}})
                 return
             if not svc.loaded() and not getattr(svc.engine, "unloaded", False):
