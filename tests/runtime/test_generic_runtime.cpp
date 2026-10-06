@@ -72,6 +72,8 @@ void test_model_adapters() {
     assert(qwen->architecture_name() == "qwen_moe");
     assert(qwen->config().n_expert == 512);
     assert(qwen->config().active_experts == 10);
+    assert(qwen->supports_swa());
+    assert(qwen->sliding_window_size() == 4096);
     assert(qwen->is_full_attention_layer(3));  // QSA layer
     assert(!qwen->is_full_attention_layer(0)); // GDN layer
 
@@ -81,6 +83,8 @@ void test_model_adapters() {
     assert(mixtral->architecture_name() == "mixtral");
     assert(mixtral->config().n_expert == 8);
     assert(mixtral->config().active_experts == 2);
+    assert(mixtral->supports_swa());
+    assert(mixtral->sliding_window_size() == 4096);
     assert(mixtral->is_full_attention_layer(0));
 
     // Test DeepSeek MoE Adapter
@@ -90,6 +94,8 @@ void test_model_adapters() {
     assert(deepseek->config().n_expert == 160);
     assert(deepseek->config().active_experts == 6);
     assert(deepseek->config().n_shared_experts == 2);
+    assert(deepseek->supports_swa());
+    assert(deepseek->sliding_window_size() == 4096);
 
     // Test MiMo-V2.6 MoE Adapter
     auto mimo = reg.create("mimo_v2_6");
@@ -101,10 +107,18 @@ void test_model_adapters() {
     assert(mimo->config().n_layers == 70);
     assert(mimo->config().mtp_layers == 5);
     assert(mimo->config().sliding_window == 4096);
+    assert(mimo->supports_swa());
+    assert(mimo->sliding_window_size() == 4096);
     assert(mimo->is_full_attention_layer(3));
     assert(!mimo->is_full_attention_layer(0));
 
-    std::cout << "  Passed. Verified Qwen, Mixtral, DeepSeek, and MiMo-V2.6 model adapters." << std::endl;
+    // Test Generic MoE Adapter
+    auto generic_moe = reg.create("generic_moe");
+    assert(generic_moe != nullptr);
+    assert(generic_moe->supports_swa());
+    assert(generic_moe->sliding_window_size() == 4096);
+
+    std::cout << "  Passed. Verified Qwen, Mixtral, DeepSeek, MiMo-V2.6, and Generic MoE adapters with SWA." << std::endl;
 }
 
 void test_routing_algorithms() {

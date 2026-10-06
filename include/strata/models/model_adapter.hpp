@@ -106,6 +106,15 @@ public:
     virtual void route_token(const float* routing_logits, int64_t n_expert, int64_t top_k,
                              int32_t* selected_experts_out, float* weights_out) const = 0;
 
+    // Sliding Window Attention (SWA) support across all models
+    virtual bool supports_swa() const {
+        return config().sliding_window > 0;
+    }
+
+    virtual int64_t sliding_window_size() const {
+        return config().sliding_window;
+    }
+
     virtual std::unique_ptr<MoEModelAdapter> clone() const = 0;
 };
 

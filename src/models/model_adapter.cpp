@@ -60,6 +60,7 @@ public:
             cfg_.ssm_value_dim = 6144;
             cfg_.hc = 4;
             cfg_.hc_lr = 320;
+            cfg_.sliding_window = 4096;
             cfg_.routing_type = RoutingType::kTopKSigmoid;
             cfg_.attention_type = AttentionType::kSparseHybridAttn;
         }
@@ -144,6 +145,7 @@ public:
             cfg_.n_expert = 8;
             cfg_.active_experts = 2;
             cfg_.n_ff = 14336;
+            cfg_.sliding_window = 4096;
             cfg_.hc = 1;
             cfg_.routing_type = RoutingType::kTopKSoftmax;
             cfg_.attention_type = AttentionType::kGroupedQueryAttn;
@@ -223,6 +225,7 @@ public:
             cfg_.n_shared_experts = 2;
             cfg_.n_ff = 1536;
             cfg_.shared_n_ff = 3072;
+            cfg_.sliding_window = 4096;
             cfg_.hc = 1;
             cfg_.routing_type = RoutingType::kTopKSigmoid;
             cfg_.attention_type = AttentionType::kMultiHeadLatentAttn;
