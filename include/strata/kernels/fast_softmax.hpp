@@ -2,9 +2,9 @@
 // include/strata/kernels/fast_softmax.hpp - Online Fast Softmax & Logits Processor
 //
 // Provides high-performance, numerically stable probability distributions & logits operations:
-// 1. Online Flash-Softmax (2-pass & single-pass online max/sum tracking).
+// 1. Online Flash-Softmax (2-pass & single-pass online max/sum tracking with SIMD vectorization).
 // 2. Numerically Stable Log-Sum-Exp (LSE).
-// 3. Logits Temperature Scaling, Repetition Penalties, and Top-K/Top-P Filtering.
+// 3. Logits Temperature Scaling, Repetition Penalties, and Top-K/Top-P/Min-P Filtering.
 // 4. Fast ArgMax SIMD reduction for greedy decoding.
 
 #include "strata/kernels/fast_activations.hpp"
@@ -22,6 +22,27 @@
 namespace strata::kernels {
 
 class FastSoftmax {
+private:
+#if defined(__AVX2__)
+    static inline float hmax256_ps(__m256 v) {
+        __m128 vlow = _mm256_castps256_ps128(v);
+        __m128 vhigh = _mm256_extractf128_ps(v, 1);
+        __m128 max128 = _mm_max_ps(vlow, vhigh);
+        __m128 max64 = _mm_max_ps(max128, _mm_movehl_ps(max128, max128));
+        __m128 max32 = _mm_max_ss(max64, _mm_shuffle_ps(max64, max64, 0x55));
+        return _mm_cvtss_f32(max32);
+    }
+#endif
+
+#if defined(__AVX512F__)
+    static inline float hmax512_ps(__m512 v) {
+        __m256 vlow = _mm512_castps512_ps256(v);
+        __m256 vhigh = _mm512_extractf32x8_ps(v, 1);
+        __m256 max256 = _mm256_max_ps(vlow, vhigh);
+        return hmax256_ps(max256);
+    }
+#endif
+
 public:
     // ------------------------------------------------------------------------
     // Numerically Stable In-Place Softmax: x[i] = exp(x[i] - max) / sum(exp(x[j] - max))
@@ -30,41 +51,69 @@ public:
         if (n == 0) return;
         if (temperature <= 0.0f) {
             // Greedy delta function
-            size_t best_idx = 0;
-            float max_v = x[0];
-            for (size_t i = 1; i < n; ++i) {
-                if (x[i] > max_v) {
-                    max_v = x[i];
-                    best_idx = i;
-                }
-            }
+            int32_t best_idx = argmax(x, n);
             std::fill(x, x + n, 0.0f);
-            x[best_idx] = 1.0f;
+            if (best_idx >= 0 && static_cast<size_t>(best_idx) < n) {
+                x[best_idx] = 1.0f;
+            }
             return;
         }
 
         const float inv_temp = 1.0f / temperature;
 
-        // 1. Find Max for numerical stability
+        // 1. Vectorized Max Search for numerical stability
         float max_val = -std::numeric_limits<float>::infinity();
-        for (size_t i = 0; i < n; ++i) {
+        size_t i = 0;
+
+#if defined(__AVX512F__)
+        __m512 max_v = _mm512_set1_ps(-std::numeric_limits<float>::infinity());
+        __m512 inv_t_v = _mm512_set1_ps(inv_temp);
+        for (; i <= n - 16; i += 16) {
+            __m512 v = _mm512_mul_ps(_mm512_loadu_ps(x + i), inv_t_v);
+            max_v = _mm512_max_ps(max_v, v);
+        }
+        max_val = hmax512_ps(max_v);
+#elif defined(__AVX2__)
+        __m256 max_v = _mm256_set1_ps(-std::numeric_limits<float>::infinity());
+        __m256 inv_t_v = _mm256_set1_ps(inv_temp);
+        for (; i <= n - 8; i += 8) {
+            __m256 v = _mm256_mul_ps(_mm256_loadu_ps(x + i), inv_t_v);
+            max_v = _mm256_max_ps(max_v, v);
+        }
+        max_val = hmax256_ps(max_v);
+#endif
+        for (; i < n; ++i) {
             float v = x[i] * inv_temp;
             if (v > max_val) max_val = v;
         }
 
         // 2. Exponentiate & Sum
         float sum = 0.0f;
-        for (size_t i = 0; i < n; ++i) {
-            float e = fast_math::fast_exp((x[i] * inv_temp) - max_val);
-            x[i] = e;
+        for (size_t j = 0; j < n; ++j) {
+            float e = fast_math::fast_exp((x[j] * inv_temp) - max_val);
+            x[j] = e;
             sum += e;
         }
 
-        // 3. Normalize
+        // 3. Vectorized Normalize
         if (sum > 0.0f) {
             const float inv_sum = 1.0f / sum;
-            for (size_t i = 0; i < n; ++i) {
-                x[i] *= inv_sum;
+            size_t k = 0;
+#if defined(__AVX512F__)
+            __m512 inv_s_v = _mm512_set1_ps(inv_sum);
+            for (; k <= n - 16; k += 16) {
+                __m512 v = _mm512_loadu_ps(x + k);
+                _mm512_storeu_ps(x + k, _mm512_mul_ps(v, inv_s_v));
+            }
+#elif defined(__AVX2__)
+            __m256 inv_s_v = _mm256_set1_ps(inv_sum);
+            for (; k <= n - 8; k += 8) {
+                __m256 v = _mm256_loadu_ps(x + k);
+                _mm256_storeu_ps(x + k, _mm256_mul_ps(v, inv_s_v));
+            }
+#endif
+            for (; k < n; ++k) {
+                x[k] *= inv_sum;
             }
         }
     }
@@ -76,13 +125,27 @@ public:
         if (n == 0) return -std::numeric_limits<float>::infinity();
 
         float max_val = -std::numeric_limits<float>::infinity();
-        for (size_t i = 0; i < n; ++i) {
+        size_t i = 0;
+#if defined(__AVX512F__)
+        __m512 max_v = _mm512_set1_ps(-std::numeric_limits<float>::infinity());
+        for (; i <= n - 16; i += 16) {
+            max_v = _mm512_max_ps(max_v, _mm512_loadu_ps(x + i));
+        }
+        max_val = hmax512_ps(max_v);
+#elif defined(__AVX2__)
+        __m256 max_v = _mm256_set1_ps(-std::numeric_limits<float>::infinity());
+        for (; i <= n - 8; i += 8) {
+            max_v = _mm256_max_ps(max_v, _mm256_loadu_ps(x + i));
+        }
+        max_val = hmax256_ps(max_v);
+#endif
+        for (; i < n; ++i) {
             if (x[i] > max_val) max_val = x[i];
         }
 
         float sum = 0.0f;
-        for (size_t i = 0; i < n; ++i) {
-            sum += fast_math::fast_exp(x[i] - max_val);
+        for (size_t j = 0; j < n; ++j) {
+            sum += fast_math::fast_exp(x[j] - max_val);
         }
 
         return max_val + std::log(sum);

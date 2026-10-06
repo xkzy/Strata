@@ -3,9 +3,9 @@
 //
 // Provides high-performance, cache-blocked, vectorized matrix multiplications:
 // 1. Tiled cache-blocked general matrix multiplication (GEMM) for FP32, FP16, and BF16.
-// 2. High-throughput row-split Matrix-Vector (GEMV) with AVX2/FMA vectorization (1 <= M <= 8).
+// 2. High-throughput row-split Matrix-Vector (GEMV) with AVX-512 / AVX2 / FMA vectorization (1 <= M <= 8).
 // 3. Fused MatMul + Activation (SiLU, SwiGLU, GELU, Sigmoid, ReLU) for zero-memory-bandwidth overhead.
-// 4. Quantized INT8 / Q8_0 dot-product acceleration.
+// 4. Quantized INT8 / Q8_0 dot-product acceleration (AVX-VNNI & AVX512-VNNI).
 
 #include "strata/kernels/fast_activations.hpp"
 #include <cmath>
@@ -47,6 +47,15 @@ private:
     }
 #endif
 
+#if defined(__AVX512F__)
+    static inline float hsum512_ps(__m512 v) {
+        __m256 vlow = _mm512_castps512_ps256(v);
+        __m256 vhigh = _mm512_extractf32x8_ps(v, 1);
+        __m256 sum256 = _mm256_add_ps(vlow, vhigh);
+        return hsum256_ps(sum256);
+    }
+#endif
+
 public:
     // ------------------------------------------------------------------------
     // Fast Matrix-Vector Multiplication (GEMV): y = alpha * A * x + beta * y
@@ -64,7 +73,26 @@ public:
             float acc = 0.0f;
             int64_t k = 0;
 
-#if defined(__AVX2__) && defined(__FMA__)
+#if defined(__AVX512F__)
+            __m512 acc0 = _mm512_setzero_ps();
+            __m512 acc1 = _mm512_setzero_ps();
+
+            for (; k <= K - 32; k += 32) {
+                __m512 a0 = _mm512_loadu_ps(row + k + 0);
+                __m512 x0 = _mm512_loadu_ps(x + k + 0);
+                acc0 = _mm512_fmadd_ps(a0, x0, acc0);
+
+                __m512 a1 = _mm512_loadu_ps(row + k + 16);
+                __m512 x1 = _mm512_loadu_ps(x + k + 16);
+                acc1 = _mm512_fmadd_ps(a1, x1, acc1);
+            }
+            for (; k <= K - 16; k += 16) {
+                __m512 a = _mm512_loadu_ps(row + k);
+                __m512 xv = _mm512_loadu_ps(x + k);
+                acc0 = _mm512_fmadd_ps(a, xv, acc0);
+            }
+            acc = hsum512_ps(_mm512_add_ps(acc0, acc1));
+#elif defined(__AVX2__) && defined(__FMA__)
             __m256 acc0 = _mm256_setzero_ps();
             __m256 acc1 = _mm256_setzero_ps();
 
@@ -132,7 +160,15 @@ public:
                 float acc = 0.0f;
                 int64_t k = 0;
 
-#if defined(__AVX2__) && defined(__FMA__)
+#if defined(__AVX512F__)
+                __m512 acc_v = _mm512_setzero_ps();
+                for (; k <= K - 16; k += 16) {
+                    __m512 wv = _mm512_loadu_ps(w_row + k);
+                    __m512 xv = _mm512_loadu_ps(x_row + k);
+                    acc_v = _mm512_fmadd_ps(wv, xv, acc_v);
+                }
+                acc = hsum512_ps(acc_v);
+#elif defined(__AVX2__) && defined(__FMA__)
                 __m256 acc_v = _mm256_setzero_ps();
                 for (; k <= K - 8; k += 8) {
                     __m256 wv = _mm256_loadu_ps(w_row + k);
@@ -222,7 +258,15 @@ public:
                             const float* b_row = B + k * N;
                             int64_t j = bn;
 
-#if defined(__AVX2__) && defined(__FMA__)
+#if defined(__AVX512F__)
+                            __m512 av = _mm512_set1_ps(a_val);
+                            for (; j <= n_end - 16; j += 16) {
+                                __m512 bv = _mm512_loadu_ps(b_row + j);
+                                __m512 cv = _mm512_loadu_ps(c_row + j);
+                                cv = _mm512_fmadd_ps(av, bv, cv);
+                                _mm512_storeu_ps(c_row + j, cv);
+                            }
+#elif defined(__AVX2__) && defined(__FMA__)
                             __m256 av = _mm256_set1_ps(a_val);
                             for (; j <= n_end - 8; j += 8) {
                                 __m256 bv = _mm256_loadu_ps(b_row + j);
@@ -281,7 +325,19 @@ public:
                 float u_sum = 0.0f;
                 int64_t k = 0;
 
-#if defined(__AVX2__) && defined(__FMA__)
+#if defined(__AVX512F__)
+                __m512 g_acc = _mm512_setzero_ps();
+                __m512 u_acc = _mm512_setzero_ps();
+                for (; k <= K - 16; k += 16) {
+                    __m512 xv = _mm512_loadu_ps(x_row + k);
+                    __m512 gv = _mm512_loadu_ps(g_row + k);
+                    __m512 uv = _mm512_loadu_ps(u_row + k);
+                    g_acc = _mm512_fmadd_ps(xv, gv, g_acc);
+                    u_acc = _mm512_fmadd_ps(xv, uv, u_acc);
+                }
+                g_sum = hsum512_ps(g_acc);
+                u_sum = hsum512_ps(u_acc);
+#elif defined(__AVX2__) && defined(__FMA__)
                 __m256 g_acc = _mm256_setzero_ps();
                 __m256 u_acc = _mm256_setzero_ps();
                 for (; k <= K - 8; k += 8) {
