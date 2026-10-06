@@ -2255,6 +2255,62 @@ class Service:
                 names.append(x)
         self.aliases = names
 
+    def multi_model_catalog(self) -> list[dict]:
+        """Catalog of supported MoE model families with physical and virtual context capacities."""
+        active_ctx = getattr(self.engine, "max_context", 32768) or 32768
+        return [
+            {
+                "id": "qwen3.8-flash-next",
+                "name": "Qwen 3.8 Flash Next",
+                "architecture": "qwen_moe",
+                "n_ctx_physical": active_ctx if "qwen" in str(self.model).lower() else 32768,
+                "n_ctx_virtual": 1048576,
+                "swa_window": 4096,
+                "description": "Hybrid MoE with GDN linear attention, SWA ring buffer & monotonic routing",
+                "aliases": ["qwen", "qwen-coder", "swift-1.5", "unsloth-qwen-ud-q4_k_xl"],
+            },
+            {
+                "id": "mimo-v2.6",
+                "name": "MiMo-V2.6",
+                "architecture": "mimo_v2_6",
+                "n_ctx_physical": active_ctx if "mimo" in str(self.model).lower() else 65536,
+                "n_ctx_virtual": 2097152,
+                "swa_window": 8192,
+                "description": "High-throughput dual-state linear attention MoE with 64K physical / 2M virtual context",
+                "aliases": ["mimo", "mimo-v2"],
+            },
+            {
+                "id": "mixtral-8x7b",
+                "name": "Mixtral 8x7B",
+                "architecture": "mixtral",
+                "n_ctx_physical": active_ctx if "mixtral" in str(self.model).lower() else 32768,
+                "n_ctx_virtual": 524288,
+                "swa_window": 4096,
+                "description": "Top-2 Sparse Mixture of Experts with SWA acceleration",
+                "aliases": ["mixtral", "mixtral-8x22b"],
+            },
+            {
+                "id": "deepseek-v2-moe",
+                "name": "DeepSeek V2/V3 MoE",
+                "architecture": "deepseek_moe",
+                "n_ctx_physical": active_ctx if "deepseek" in str(self.model).lower() else 131072,
+                "n_ctx_virtual": 4194304,
+                "swa_window": 4096,
+                "description": "Multi-head Latent Attention (MLA) with fine-grained routed experts & 4M virtual context",
+                "aliases": ["deepseek", "deepseek-moe", "deepseek-v2", "deepseek-v3"],
+            },
+            {
+                "id": "generic-moe",
+                "name": "Generic MoE Adapter",
+                "architecture": "generic_moe",
+                "n_ctx_physical": active_ctx,
+                "n_ctx_virtual": 1048576,
+                "swa_window": 4096,
+                "description": "Configurable generic sparse MoE runtime adapter",
+                "aliases": ["generic", "custom-moe"],
+            },
+        ]
+
     def model_names(self) -> list[str]:
         return [self.model, *self.aliases]
 
@@ -2262,7 +2318,14 @@ class Service:
         """The name to answer with: the request's own when it is the model's name or an alias (#297), else the model's.
         Other names are still served, as before."""
         asked = req.get("model") if isinstance(req, dict) else None
-        return asked if isinstance(asked, str) and asked in self.aliases else self.model
+        if not isinstance(asked, str) or not asked:
+            return self.model
+        if asked in self.aliases or asked == self.model:
+            return asked
+        for m in self.multi_model_catalog():
+            if asked == m["id"] or asked in m.get("aliases", []):
+                return asked
+        return self.model
 
     def reasoning_budget(self, req) -> int | None:
         """#123: the most tokens this request may think, or None: the request's `reasoning_budget_tokens`, else the
@@ -2590,12 +2653,37 @@ class Service:
                         waiting=int(getattr(self.engine, "waiting", 0) or 0))
             if running and state == "idle":
                 live["state"] = "generating"
-        engine = {"model": self.model, "max_context": self.engine.max_context, "images": self.vision is not None,
+        m_lower = str(self.model).lower()
+        if "mimo" in m_lower:
+            arch = "mimo_v2_6"
+            swa_win = 8192
+            virt_limit = 2097152
+        elif "mixtral" in m_lower:
+            arch = "mixtral"
+            swa_win = 4096
+            virt_limit = 524288
+        elif "deepseek" in m_lower:
+            arch = "deepseek_moe"
+            swa_win = 4096
+            virt_limit = 4194304
+        else:
+            arch = "qwen_moe"
+            swa_win = 4096
+            virt_limit = 1048576
+
+        rt_stats = self.multi_tenant.summary_stats() if hasattr(self, "multi_tenant") else {}
+        engine = {"model": self.model, "max_context": self.engine.max_context,
+                  "n_ctx_physical": self.engine.max_context, "n_ctx_virtual": virt_limit,
+                  "virtual_context_limit": virt_limit,
+                  "virtual_expansion_ratio": round(virt_limit / self.engine.max_context, 1) if self.engine.max_context else 1.0,
+                  "architecture": arch, "swa_window": swa_win,
+                  "models": self.multi_model_catalog(), "images": self.vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
+                "runtime_stats": rt_stats,
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
                 tel["static"], "history": tel["history"], "time": now}
@@ -2620,19 +2708,28 @@ class Service:
         m_lower = str(self.model).lower()
         if "mimo" in m_lower:
             arch = "mimo_v2_6"
+            swa_win = 8192
+            virt_limit = 2097152
         elif "mixtral" in m_lower:
             arch = "mixtral"
+            swa_win = 4096
+            virt_limit = 524288
         elif "deepseek" in m_lower:
             arch = "deepseek_moe"
+            swa_win = 4096
+            virt_limit = 4194304
         else:
             arch = "qwen_moe"
+            swa_win = 4096
+            virt_limit = 1048576
 
         rt_stats = self.multi_tenant.summary_stats() if hasattr(self, "multi_tenant") else {}
 
         return {
             "service": "strata", "model": self.model,
             "architecture": arch,
-            "swa": {"enabled": True, "window_size": 4096},
+            "models": self.multi_model_catalog(),
+            "swa": {"enabled": True, "window_size": swa_win},
             "runtime_stats": rt_stats,
             "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
             "structured_output": {"formats": ["json_object", "json_schema"], "method": "prompt_and_validate",
@@ -2640,7 +2737,9 @@ class Service:
             "engine": (getattr(self.engine, "info", {}) or {}).get("version"),
             "started": int(self.started_at), "uptime_s": int(time.time() - self.started_at),
             "cache_max_tokens": ctx,
-            "context": {"native": ctx, "max_positions": ctx},
+            "context": {"native": ctx, "max_positions": ctx, "n_ctx_physical": ctx, "n_ctx_virtual": virt_limit,
+                        "virtual_context_limit": virt_limit,
+                        "virtual_expansion_ratio": round(virt_limit / ctx, 1) if ctx else 1.0},
             # one request at a time (more wait their turn), or "parallel": N batch slots (#465)
             "concurrency": {"serving": max(1, int(getattr(self.engine, "batch", 0) or 0)),
                             "requested": max(1, int(getattr(self.engine, "batch", 0) or 0))},
@@ -3822,7 +3921,28 @@ def make_handler(svc: Service):
                 self.end_headers()
                 self.wfile.write(body)
             elif path in ("/health", "/api/health"):
+                m_lower = str(svc.model).lower()
+                if "mimo" in m_lower:
+                    arch = "mimo_v2_6"
+                    virt_limit = 2097152
+                    swa_win = 8192
+                elif "mixtral" in m_lower:
+                    arch = "mixtral"
+                    virt_limit = 524288
+                    swa_win = 4096
+                elif "deepseek" in m_lower:
+                    arch = "deepseek_moe"
+                    virt_limit = 4194304
+                    swa_win = 4096
+                else:
+                    arch = "qwen_moe"
+                    virt_limit = 1048576
+                    swa_win = 4096
                 self._json(200, {"status": "ok", "max_context": svc.engine.max_context, "model": svc.model,
+                                 "architecture": arch, "n_ctx_physical": svc.engine.max_context,
+                                 "n_ctx_virtual": virt_limit, "virtual_context_limit": virt_limit,
+                                 "virtual_expansion_ratio": round(virt_limit / svc.engine.max_context, 1) if svc.engine.max_context else 1.0,
+                                 "swa_window": swa_win, "models": svc.multi_model_catalog(),
                                  "images": svc.vision is not None, "api_key": bool(svc.api_key),
                                  "loaded": svc.loaded(), "service": "strata"})
             elif path == "/status":
@@ -3842,9 +3962,28 @@ def make_handler(svc: Service):
             elif path in ("/v1/models", "/models"):
                 if self._authorized():
                     loaded = svc.loaded()
+                    m_lower = str(svc.model).lower()
+                    if "mimo" in m_lower:
+                        arch = "mimo_v2_6"
+                        virt_limit = 2097152
+                        swa_win = 8192
+                    elif "mixtral" in m_lower:
+                        arch = "mixtral"
+                        virt_limit = 524288
+                        swa_win = 4096
+                    elif "deepseek" in m_lower:
+                        arch = "deepseek_moe"
+                        virt_limit = 4194304
+                        swa_win = 4096
+                    else:
+                        arch = "qwen_moe"
+                        virt_limit = 1048576
+                        swa_win = 4096
                     model = {"id": svc.model, "object": "model", "status": {"value": "loaded"},
-                             "meta": {"n_ctx": svc.engine.max_context},
-                             "architecture": {"input_modalities": ["text", "image"] if svc.vision is not None else ["text"],
+                             "meta": {"n_ctx": svc.engine.max_context, "n_ctx_physical": svc.engine.max_context,
+                                      "n_ctx_virtual": virt_limit, "swa_window": swa_win},
+                             "architecture": {"name": arch,
+                                              "input_modalities": ["text", "image"] if svc.vision is not None else ["text"],
                                               "output_modalities": ["text"]}}
                     if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
                         model["status"] = {"value": "unloaded"}   # like llama-server's router: listed, loads on use

@@ -18,7 +18,12 @@
 </head>
 <body>
 <header class="st-header">
-  <span class="st-header__brand">Strata</span>
+  <div class="st-header__brand-row">
+    <span class="st-header__brand">Strata</span>
+    <div class="st-model-picker" id="model-picker-wrap" title="Active Model & Architecture">
+      <select id="model-select" class="st-model-select" aria-label="Select Model"></select>
+    </div>
+  </div>
   <nav class="st-tabs" role="tablist" aria-label="Views">
     <button class="st-tab" role="tab" id="tab-btn-chat" aria-controls="view-chat" aria-selected="true" data-tab="chat">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-chat"/></svg>Chat</button>
@@ -94,7 +99,7 @@
 
       <div class="monitor-row">
         <div class="st-card ctx-card">
-          <span class="card-title">Context fill</span>
+          <div class="req-head"><span class="card-title">Context Window</span><span class="muted small" id="ctx-summary-badge">Dual Context Active</span></div>
           <div class="ctx-gauge">
             <svg class="st-gauge" viewBox="0 0 120 120" aria-hidden="true">
               <circle class="st-gauge__track" cx="60" cy="60" r="50" fill="none" stroke-width="10" stroke-linecap="round"
@@ -104,6 +109,12 @@
             </svg>
             <div class="ctx-gauge__label"><span class="ctx-gauge__pct" id="ctx-pct">0%</span><span class="muted" id="ctx-sub">&ndash;</span></div>
           </div>
+          <div class="bar-row"><span>Physical KV Cache</span><span class="muted" id="ctx-phys-text">&ndash;</span></div>
+          <div class="st-progress" id="ctx-phys-progress"><div class="st-progress__bar" id="ctx-phys-bar" style="width:0%"></div></div>
+          <div class="bar-row"><span>Extended Virtual Window</span><span class="muted" id="ctx-virt-text">&ndash;</span></div>
+          <div class="st-progress" id="ctx-virt-progress" data-tone="info"><div class="st-progress__bar" id="ctx-virt-bar" style="width:0%"></div></div>
+          <div class="bar-row"><span>SWA Ring Buffer</span><span class="muted" id="ctx-swa-text">&ndash;</span></div>
+          <div class="st-progress" id="ctx-swa-progress"><div class="st-progress__bar" id="ctx-swa-bar" style="width:0%"></div></div>
           <div class="bar-row"><span>Experts in VRAM</span><span class="muted" id="slots-text">&ndash;</span></div>
           <div class="st-progress"><div class="st-progress__bar" id="slots-bar" style="width:0%"></div></div>
           <div class="bar-row"><span>System RAM</span><span class="muted" id="ram-text">&ndash;</span></div>

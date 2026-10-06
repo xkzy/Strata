@@ -394,20 +394,14 @@ class Telemetry:
             self.ps = None
         self.fallback = _CpuRamFallback()
 
-        # Build comprehensive device list
-        all_dev_names = []
-        for _, g in self.gpus:
-            if g.ok():
-                all_dev_names.append(g.name() or "?")
-        for ig in self.igpu_readers:
-            ig_name = ig.name()
-            if ig_name and ig_name not in all_dev_names:
-                all_dev_names.append(f"{ig_name} [iGPU]")
+        main_dev_names = [g.name() for _, g in self.gpus if g.ok() and g.name()]
+        igpu_name = self.igpu.name() if self.igpu else None
 
         self.static = {
-            "gpu_name": " + ".join(all_dev_names) if all_dev_names else (self.gpu.name() if self.gpu.ok() else None),
+            "gpu_name": " + ".join(main_dev_names) if main_dev_names else (self.gpu.name() if self.gpu.ok() else None),
             "gpu_count": len(self.gpus),
-            "igpu_name": self.igpu.name() if self.igpu else None,
+            "igpu_name": igpu_name,
+            "compute_devices": main_dev_names + ([f"{igpu_name} [iGPU]"] if igpu_name and igpu_name not in main_dev_names else []),
             "cpu_name": _cpu_name(),
             "cores": (self.ps.cpu_count(logical=False) if self.ps else None) or None,
             "threads": os.cpu_count(),

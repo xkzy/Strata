@@ -96,13 +96,28 @@ function headers(json = false) {
 $("api-key").value = store.get("apikey", "");
 $("api-key").onchange = () => { store.set("apikey", $("api-key").value.trim()); toast("success", "API key saved", "Kept in this browser only."); };
 
-let health = {model: "strata", images: false, max_context: 0};
+let health = {model: "strata", images: false, max_context: 0, models: []};
+function getSelectedModel() {
+  const sel = $("model-select");
+  return (sel && sel.value) || store.get("active_model", "") || health.model;
+}
 async function loadHealth() {
   try {
     health = await (await fetch("health")).json();
     $("attach-btn").title = health.images ? "Attach a text file or a picture (or drop it here)"
                                           : "Attach a text file (or drop it here)";
-    $("chat-empty-sub").textContent = `${health.model} runs on this PC. Nothing leaves it.`;
+    const sel = $("model-select");
+    if (sel) {
+      const models = health.models && health.models.length ? health.models : [{id: health.model, name: health.model}];
+      const active = store.get("active_model", health.model);
+      sel.innerHTML = models.map(m => `<option value="${esc(m.id)}"${m.id === active ? " selected" : ""}>${esc(m.name || m.id)}</option>`).join("");
+      sel.onchange = () => {
+        store.set("active_model", sel.value);
+        $("chat-empty-sub").textContent = `${sel.value} runs on this PC. Nothing leaves it.`;
+      };
+    }
+    const curModel = getSelectedModel();
+    $("chat-empty-sub").textContent = `${curModel} runs on this PC. Nothing leaves it.`;
   } catch (e) {
     setTimeout(loadHealth, 2000);
   }
@@ -307,15 +322,43 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   spark("sp-disk", h.disk_read_mb);
 
   // context fill: the running request, else the last one
-  const ctx = eng.max_context || 0;
+  const ctx = eng.max_context || eng.n_ctx_physical || 0;
+  const virtCtx = eng.virtual_context_limit || eng.n_ctx_virtual || (ctx ? ctx * 32 : 1048576);
+  const swaWin = eng.swa_window || 4096;
   let used = 0;
   if (live.state !== "idle") used = (live.prompt_tokens || 0) + (live.generated || 0);
   else if (last) used = (last.prompt_tokens || 0) + (last.output_tokens || 0);
-  const frac = ctx ? Math.min(1, used / ctx) : 0;
-  $("ctx-fill").setAttribute("stroke-dasharray", `${(235.6 * frac).toFixed(1)} 314.2`);
-  $("ctx-fill").style.opacity = 235.6 * frac >= 3 ? "1" : "0";         // a near-zero arc would draw just its round cap
-  $("ctx-pct").textContent = `${Math.round(frac * 100)}%`;
+
+  const rt = (window.lastMetrics && window.lastMetrics.runtime_stats) || {};
+  const virtUsed = (rt.total_virtual_tokens || 0) + used;
+  const virtRatio = rt.context_compression_ratio ? `${rt.context_compression_ratio}x` : `${Math.max(1, Math.round(virtCtx / Math.max(1, ctx)))}x`;
+
+  const physFrac = ctx ? Math.min(1, used / ctx) : 0;
+  const virtFrac = virtCtx ? Math.min(1, virtUsed / virtCtx) : 0;
+  const swaFrac = swaWin ? Math.min(1, Math.min(used, swaWin) / swaWin) : 0;
+
+  $("ctx-fill").setAttribute("stroke-dasharray", `${(235.6 * physFrac).toFixed(1)} 314.2`);
+  $("ctx-fill").style.opacity = 235.6 * physFrac >= 3 ? "1" : "0";         // a near-zero arc would draw just its round cap
+  $("ctx-pct").textContent = `${Math.round(physFrac * 100)}%`;
   $("ctx-sub").textContent = ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : "–";
+
+  if ($("ctx-summary-badge")) {
+    $("ctx-summary-badge").textContent = ctx ? `${ctxfmt(ctx)} Phys · ${ctxfmt(virtCtx)} Virt (${virtRatio})` : "Dual Context Active";
+  }
+  if ($("ctx-phys-text") && $("ctx-phys-bar")) {
+    $("ctx-phys-text").textContent = ctx ? `${kfmt(used)} / ${ctxfmt(ctx)} (${Math.round(physFrac * 100)}%)` : "–";
+    $("ctx-phys-bar").style.width = `${physFrac * 100}%`;
+  }
+  if ($("ctx-virt-text") && $("ctx-virt-bar")) {
+    $("ctx-virt-text").textContent = virtCtx ? `${kfmt(virtUsed)} / ${ctxfmt(virtCtx)} (${(virtFrac * 100).toFixed(1)}%)` : "–";
+    $("ctx-virt-bar").style.width = `${Math.max(1, virtFrac * 100)}%`;
+  }
+  if ($("ctx-swa-text") && $("ctx-swa-bar")) {
+    const swaUsed = Math.min(used, swaWin);
+    $("ctx-swa-text").textContent = `${kfmt(swaUsed)} / ${kfmt(swaWin)} window (${Math.round(swaFrac * 100)}%)`;
+    $("ctx-swa-bar").style.width = `${swaFrac * 100}%`;
+  }
+
   const cacheBytes = (eng.expert_cache_mib || 0) * 1048576;
   $("slots-text").textContent = eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
   $("slots-bar").style.width = hw.gpu_mem_total ? `${Math.min(100, (100 * cacheBytes) / hw.gpu_mem_total)}%` : "0%";
@@ -775,7 +818,7 @@ async function send() {
   busy = {controller, msg: m};
   setBusy(true);
 
-  const body = {model: health.model, messages: apiMessages(), stream: true,
+  const body = {model: getSelectedModel() || health.model, messages: apiMessages(), stream: true,
                 reasoning_effort: settings.thinking};
   if (settings.temperature > 0) {
     Object.assign(body, {temperature: +settings.temperature, top_p: +settings.top_p, top_k: +settings.top_k});
