@@ -4,9 +4,14 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <thread>
+
+#if defined(__linux__)
+#include <glob.h>
+#endif
 
 #if defined(STRATA_ENABLE_CUDA) || defined(STRATA_ENABLE_HIP)
 #include <cuda_runtime.h>
@@ -99,6 +104,98 @@ public:
 
 private:
     int id_;
+    DeviceMetrics metrics_;
+    double utilization_ = 0.0;
+    int queue_depth_ = 0;
+};
+
+// Generic Integrated GPU / APU Compute Device implementation (AMD / Intel / ARM / Apple)
+class IntegratedGpuDevice : public ComputeDevice {
+public:
+    IntegratedGpuDevice(int id, const std::string& name, uint64_t vram_bytes, uint64_t gtt_bytes)
+        : id_(id), name_(name), vram_bytes_(vram_bytes), gtt_bytes_(gtt_bytes) {
+        metrics_.num_compute_units = 12;
+        metrics_.clock_mhz = 2200;
+        // Estimate iGPU compute throughput (~4 TFLOPS FP16, ~8 TFLOPS INT8)
+        metrics_.compute_tflops_fp32 = 2.0;
+        metrics_.compute_tflops_fp16 = 4.0;
+        metrics_.compute_tflops_bf16 = 4.0;
+        metrics_.compute_tflops_int8 = 8.0;
+        metrics_.compute_tflops_int4 = 16.0;
+        metrics_.memory_bandwidth_gbps = 60.0; // Unified system memory bus bandwidth
+        metrics_.transfer_latency_us = 0.2;     // Zero-copy GTT / host unified memory
+        metrics_.synchronization_cost_us = 0.5;
+    }
+
+    int id() const override { return id_; }
+    DeviceType type() const override { return DeviceType::kAPU; }
+    std::string name() const override { return name_; }
+    std::string vendor_metadata() const override { return "Integrated GPU / APU (Unified Memory)"; }
+
+    uint64_t total_memory_bytes() const override {
+        return (gtt_bytes_ > 0) ? (vram_bytes_ + gtt_bytes_) : (vram_bytes_ > 0 ? vram_bytes_ : 16ULL * 1024 * 1024 * 1024);
+    }
+    uint64_t free_memory_bytes() const override {
+        return total_memory_bytes() / 2;
+    }
+
+    const DeviceMetrics& metrics() const override { return metrics_; }
+    double current_utilization() const override { return utilization_; }
+    int current_queue_depth() const override { return queue_depth_; }
+
+    bool supports_op(OpType) const override {
+        return true;
+    }
+
+    void* allocate(uint64_t bytes, uint64_t align = 256) override {
+        void* ptr = nullptr;
+#if defined(_MSC_VER)
+        ptr = _aligned_malloc(bytes, align);
+#else
+        if (posix_memalign(&ptr, align, bytes) != 0) {
+            ptr = nullptr;
+        }
+#endif
+        return ptr;
+    }
+
+    void deallocate(void* ptr) override {
+        if (!ptr) return;
+#if defined(_MSC_VER)
+        _aligned_free(ptr);
+#else
+        free(ptr);
+#endif
+    }
+
+    bool copy_to_device(void* dst, const void* src, uint64_t bytes, void* /*stream*/ = nullptr) override {
+        if (!dst || !src) return false;
+        std::memcpy(dst, src, bytes);
+        return true;
+    }
+
+    bool copy_to_host(void* dst, const void* src, uint64_t bytes, void* /*stream*/ = nullptr) override {
+        if (!dst || !src) return false;
+        std::memcpy(dst, src, bytes);
+        return true;
+    }
+
+    bool copy_p2p(void* dst, const void* src, uint64_t bytes, ComputeDevice* /*src_device*/, void* /*stream*/ = nullptr) override {
+        if (!dst || !src) return false;
+        std::memcpy(dst, src, bytes);
+        return true;
+    }
+
+    void synchronize() override {}
+    void* create_stream() override { return reinterpret_cast<void*>(1); }
+    void destroy_stream(void*) override {}
+    void synchronize_stream(void*) override {}
+
+private:
+    int id_;
+    std::string name_;
+    uint64_t vram_bytes_;
+    uint64_t gtt_bytes_;
     DeviceMetrics metrics_;
     double utilization_ = 0.0;
     int queue_depth_ = 0;
@@ -259,6 +356,46 @@ private:
 };
 #endif
 
+#if defined(__linux__)
+static void discover_linux_igpus(std::vector<std::shared_ptr<ComputeDevice>>& out_devices, int& next_id) {
+    glob_t g;
+    if (glob("/sys/class/drm/renderD*/device", 0, nullptr, &g) == 0) {
+        for (size_t i = 0; i < g.gl_pathc; ++i) {
+            std::string path = g.gl_pathv[i];
+            std::string vendor_file = path + "/vendor";
+            std::string gtt_file = path + "/mem_info_gtt_total";
+            std::string vram_file = path + "/mem_info_vram_total";
+            std::string prod_file = path + "/product_name";
+
+            std::string vendor;
+            std::ifstream vf(vendor_file);
+            if (vf) vf >> vendor;
+
+            uint64_t gtt_bytes = 0, vram_bytes = 0;
+            std::ifstream gf(gtt_file);
+            if (gf) gf >> gtt_bytes;
+            std::ifstream vrf(vram_file);
+            if (vrf) vrf >> vram_bytes;
+
+            std::string name;
+            std::ifstream pf(prod_file);
+            if (pf) std::getline(pf, name);
+
+            bool is_igpu = (gtt_bytes > 0 && vram_bytes <= 2ULL * 1024 * 1024 * 1024) ||
+                           (vendor == "0x1002" && gtt_bytes > 0) || vendor == "0x8086";
+
+            if (is_igpu) {
+                if (name.empty()) {
+                    name = (vendor == "0x1002") ? "AMD Radeon Graphics (iGPU)" : "Intel Graphics (iGPU)";
+                }
+                out_devices.push_back(std::make_shared<IntegratedGpuDevice>(next_id++, name, vram_bytes, gtt_bytes));
+            }
+        }
+        globfree(&g);
+    }
+}
+#endif
+
 } // anonymous namespace
 
 DeviceManager& DeviceManager::instance() {
@@ -302,6 +439,10 @@ void DeviceManager::discover_all() {
             register_device(std::make_shared<GpuDevice>(next_id++, i));
         }
     }
+#endif
+
+#if defined(__linux__)
+    discover_linux_igpus(devices_, next_id);
 #endif
 
     // Always register Host CPU compute device

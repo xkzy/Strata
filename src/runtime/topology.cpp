@@ -47,6 +47,22 @@ void HardwareTopology::discover() {
             dom->add_associated_device(dev->id());
             mem_top.register_domain(dom);
             next_mem_id++;
+        } else if (dev->type() == DeviceType::kAPU) {
+            MemoryCharacteristics chars;
+            chars.total_capacity_bytes = dev->total_memory_bytes();
+            chars.free_capacity_bytes = dev->free_memory_bytes();
+            chars.read_bandwidth_gbps = dev->metrics().memory_bandwidth_gbps;
+            chars.write_bandwidth_gbps = dev->metrics().memory_bandwidth_gbps;
+            chars.access_latency_ns = 55.0;
+            chars.direct_access_by_host = true;
+            chars.direct_access_by_device = true;
+
+            std::string dom_name = "Memory Domain " + std::to_string(next_mem_id) + " (" + dev->name() + " Unified Memory)";
+            auto dom = std::make_shared<MemoryDomain>(next_mem_id, dom_name,
+                                                      MemoryDomainType::kUnifiedHostDevice, chars);
+            dom->add_associated_device(dev->id());
+            mem_top.register_domain(dom);
+            next_mem_id++;
         } else if (dev->type() == DeviceType::kCPU) {
             if (host_mem_id < 0) {
                 MemoryCharacteristics chars;
