@@ -9,9 +9,10 @@ Work through the steps in order. Tell the user what you are doing in plain words
 
 ## 0. Ground rules
 
-- **Never expose the server without an API key.** Keep the default `--host 127.0.0.1`. Only if the user asks for
-  access from other devices, use `--host 0.0.0.0` **together with** `--api-key <a long random secret>`, and give the
-  user the key. Never put a tunnel or port forward in front of a server without a key.
+- **Never expose the server without an API key.** The default listens on every interface (`0.0.0.0`); pass
+  `--host 127.0.0.1` to keep it to this PC (safe without a key). When the user asks for access from other devices,
+  keep `0.0.0.0` **together with** `--api-key <a long random secret>`, and give the user the key. Never put a
+  tunnel or port forward in front of a server without a key.
 - Do not change the user's system beyond what setup does (setup installs Python for the user account if needed,
   and everything else inside the Strata folder and its `Strata-data` folder). Ask before installing drivers.
 - The model download is ~70 GB (94 GB for Unsloth's UD-IQ4_XS, 111 GB for UD-Q4_K_XL). Confirm the user is fine with that before you

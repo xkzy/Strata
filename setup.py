@@ -4,7 +4,7 @@
     START-HERE.bat  (Windows)   /   ./setup.sh  (Linux)      - they install Python if needed and run this file
 
 The first time it asks four questions - which model (the original Qwen3.8-Flash-Next or the Swift 1.5 fine-tune),
-which size, how much context, and whether the model should also read images - then installs everything and starts the model on http://127.0.0.1:8080 (OpenAI- and Anthropic-compatible
+which size, how much context, and whether the model should also read images - then installs everything and starts the model on http://0.0.0.0:8080 (OpenAI- and Anthropic-compatible
 API; a small page there shows that it runs). Every later start skips straight to running the model: nothing that
 is already downloaded, installed or prepared is done again.
 
@@ -3502,7 +3502,7 @@ def settings_summary(cfg: dict, port=None) -> str:
         if val is not None and ("/" in val or "\\" in val or val.lower().endswith((".gguf", ".bin"))):
             continue                                   # a path: --native, --mtp, --profile ...
         out.append(flag if val is None else f"{flag} {val}")
-    srv = [f"{cfg.get('host', '127.0.0.1')}:{port or cfg.get('port', 8080)}"]
+    srv = [f"{cfg.get('host', '0.0.0.0')}:{port or cfg.get('port', 8080)}"]
     if cfg.get("api_key"):
         srv.append("api key set")
     if cfg.get("open_browser") is False:               # #609
@@ -4062,8 +4062,8 @@ def main() -> int:
                                           "auto, placed from each GPU's free VRAM")
     ap.add_argument("--no-remote-expert-opt", action="store_true",
                     help="with two or more GPUs: leave out --remote-expert-opt, which setup adds there (#578)")
-    ap.add_argument("--host", help="where the server listens: 127.0.0.1 = this PC only (default), 0.0.0.0 = also other "
-                                   "devices on your network (issue #26; set --api-key too)")
+    ap.add_argument("--host", help="where the server listens: 0.0.0.0 = every interface (default), 127.0.0.1 = this "
+                                   "PC only (issue #26; set --api-key when others must reach it)")
     ap.add_argument("--api-key", help="require this key from clients (recommended with --host 0.0.0.0)")
     ap.add_argument("--no-browser", dest="browser", action="store_false", default=None,
                     help="do not open the chat page in the browser when the model is ready (for a harness or an app "
@@ -4943,9 +4943,9 @@ def main() -> int:
 
     say()
     say("All set.")
-    say(f"  API (OpenAI):     http://127.0.0.1:{port}/v1   (any API key; model name: anything)")
-    say(f"  API (Anthropic):  http://127.0.0.1:{port}/v1/messages")
-    if a.host and a.host not in ("127.0.0.1", "localhost"):
+    say(f"  API (OpenAI):     http://0.0.0.0:{port}/v1   (any API key; model name: anything)")
+    say(f"  API (Anthropic):  http://0.0.0.0:{port}/v1/messages")
+    if a.host and a.host not in ("0.0.0.0", "localhost"):
         say(f"  Other devices:    the server window prints this PC's address (http://<IP>:{port}/)"
             + ("" if a.api_key else " - no API key set: anyone on your network can use it"))
     say(f"  Next time:        just run {'START-HERE.bat' if WIN else './setup.sh'} (or {script.name}) - it starts right away")

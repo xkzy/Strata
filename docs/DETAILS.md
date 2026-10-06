@@ -665,15 +665,15 @@ print(r.choices[0].message.content)
   `reasoning_budget_tokens`, `fit_max_tokens`, `anthropic_thinking`, `effort_position`, `aliases`, `idle_unload_s`,
   `lazy_load`, `engine_silence_s`, `api_monitor`, `open_browser`, `power_policy`, `resource_adapt` and
   `--vram-reserve-mib`. The adaptive controller behind `power_policy` and `resource_adapt` is described in
-  [ADAPTIVE.md](ADAPTIVE.md). An empty field removes the
-  key (its default). Every other key of the file stays as it is, the earlier file is kept as
+  [ADAPTIVE.md](ADAPTIVE.md). An empty field removes the key (its default). Every other key of the file stays as it is, the earlier file is kept as
   `strata-<model>.json.bak`, and the model uses the change from its next start. Only Strata's own page can save
   (JSON, the API key when one is set, as for the Chat settings); the network, key, MCP and program keys are not
   editable there.
-- **From other devices on your network.** The server listens on your PC only (`127.0.0.1`) unless you say otherwise:
-  run setup with `START-HERE.bat --setup --host 0.0.0.0 --api-key some-long-secret` (or add `"host": "0.0.0.0"` and
-  `"api_key": "..."` to `strata-<model>.json`). The server window then prints this PC's addresses
-  (`from other devices: http://192.168.x.x:8080/`); open that on the other device, or use `.../v1` as an API base URL.
+- **From other devices on your network.** The server listens on every interface (`0.0.0.0`) by default: the
+  server window prints this PC's addresses (`from other devices: http://192.168.x.x:8080/`); open that on the
+  other device, or use `.../v1` as an API base URL. Set an API key first (`--api-key some-long-secret` on setup,
+  or `"api_key": "..."` in `strata-<model>.json`) - without one the server warns. `--host 127.0.0.1` (or
+  `"host": "127.0.0.1"`) keeps it to this PC only.
   On Windows the firewall blocks it until you allow it: accept its prompt for Python (private networks), or run
   `New-NetFirewallRule -DisplayName "Strata 8080" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow -Profile Private`
   in an admin PowerShell, and make sure the network is set to Private.

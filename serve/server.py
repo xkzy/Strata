@@ -5147,8 +5147,8 @@ def main() -> int:
     ap.add_argument("--config", help="strata engine config (JSON: exe, args, cwd, tokenizer, model_name), "
                                      "written by setup.py")
     ap.add_argument("--host", default=None,
-                    help="the address to listen on: 127.0.0.1 = this PC only (the default), 0.0.0.0 = also other devices "
-                         "on your network (set an API key); also \"host\" in the config")
+                    help="the address to listen on: 0.0.0.0 = every interface (the default), 127.0.0.1 = this PC "
+                         "only (set an API key when others must reach it); also \"host\" in the config")
     ap.add_argument("--script", action="append",
                     help="the mock engine's answer (default: a short greeting); given more than once, requests get "
                          "them in turn and the last one repeats")
@@ -5186,8 +5186,9 @@ def main() -> int:
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
     if a.gpu is not None:
         cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
-    a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can
-    try:                                                # before the minutes of loading: is the port free?
+    a.host = a.host or cfg.get("host") or "0.0.0.0"   # issue #26: the run scripts pass no --host; the config's
+    #                                                # "host" can still choose; 0.0.0.0 = every interface
+    try:                                               # before the minutes of loading: is the port free?
         Server((a.host, a.port), BaseHTTPRequestHandler).server_close()
     except OSError as e:
         ap.error(listen_problem(a.host, a.port, e))

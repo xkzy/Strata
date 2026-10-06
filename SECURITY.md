@@ -16,12 +16,14 @@ Supported: the latest release. Fixes go into the next release, not into older on
 
 ## What the server exposes
 
-Strata runs a model on your PC and serves it over HTTP (`serve/server.py`). Out of the box it is reachable from
-this PC only. The details and every setting are in [docs/DETAILS.md](docs/DETAILS.md) ("From other devices",
-"Host names", "Web pages without an API key", "Tools from MCP servers").
+Strata runs a model on your PC and serves it over HTTP (`serve/server.py`). Out of the box it listens on every
+interface (`0.0.0.0`), so devices on your network can reach it - set an API key, or pass `--host 127.0.0.1`, to
+keep it to this PC. The details and every setting are in [docs/DETAILS.md](docs/DETAILS.md) ("From other
+devices", "Host names", "Web pages without an API key", "Tools from MCP servers").
 
-- **Where it listens.** `127.0.0.1` by default. `--host 0.0.0.0` (or `"host"` in `strata-<model>.json`) opens it to
-  your network, and the server then warns when no API key is set.
+- **Where it listens.** `0.0.0.0` by default - every interface. `--host 127.0.0.1` (or `"host"` in
+  `strata-<model>.json`) keeps it to this PC. On any non-loopback address the server warns when no API key is
+  set.
 - **API key.** `"api_key"` in the run config (or `STRATA_API_KEY`) is required on `/v1/*` and on every endpoint
   that shows the model's state, requests or answers (`/status`, `/metrics`, `/settings`, `/mcp`, `/props`, `/slots`,
   `/api/requests`, `/config`) and on every `POST`. It is compared in constant time. Set one before you open the
