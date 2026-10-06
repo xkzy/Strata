@@ -28,8 +28,8 @@ public:
     // ------------------------------------------------------------------------
     static void f32_to_f16(const float* __restrict__ in, uint16_t* __restrict__ out, size_t n) {
         size_t i = 0;
-#if defined(__F16C__) || defined(__AVX2__)
-        for (; i <= n - 8; i += 8) {
+#if defined(__F16C__)
+        for (; i + 8 <= n; i += 8) {
             __m256 v = _mm256_loadu_ps(in + i);
             __m128i h = _mm256_cvtps_ph(v, _MM_FROUND_TO_NEAREST_INT |_MM_FROUND_NO_EXC);
             _mm_storeu_si128(reinterpret_cast<__m128i*>(out + i), h);
@@ -45,8 +45,8 @@ public:
     // ------------------------------------------------------------------------
     static void f16_to_f32(const uint16_t* __restrict__ in, float* __restrict__ out, size_t n) {
         size_t i = 0;
-#if defined(__F16C__) || defined(__AVX2__)
-        for (; i <= n - 8; i += 8) {
+#if defined(__F16C__)
+        for (; i + 8 <= n; i += 8) {
             __m128i h = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + i));
             __m256 v = _mm256_cvtph_ps(h);
             _mm256_storeu_ps(out + i, v);
@@ -66,7 +66,7 @@ public:
         const __m256i c_0x7fff = _mm256_set1_epi32(0x7FFF);
         const __m256i c_one = _mm256_set1_epi32(1);
 
-        for (; i <= n - 8; i += 8) {
+        for (; i + 8 <= n; i += 8) {
             __m256i u = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(in + i));
             __m256i lsb = _mm256_and_si256(_mm256_srli_epi32(u, 16), c_one);
             __m256i rounded = _mm256_add_epi32(u, _mm256_add_epi32(c_0x7fff, lsb));
@@ -90,7 +90,7 @@ public:
     static void bf16_to_f32(const uint16_t* __restrict__ in, float* __restrict__ out, size_t n) {
         size_t i = 0;
 #if defined(__AVX2__)
-        for (; i <= n - 8; i += 8) {
+        for (; i + 8 <= n; i += 8) {
             __m128i h = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + i));
             __m256i u = _mm256_cvtepu16_epi32(h);
             __m256i shifted = _mm256_slli_epi32(u, 16);

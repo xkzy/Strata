@@ -68,7 +68,7 @@ public:
 #if defined(__AVX512F__)
         __m512 max_v = _mm512_set1_ps(-std::numeric_limits<float>::infinity());
         __m512 inv_t_v = _mm512_set1_ps(inv_temp);
-        for (; i <= n - 16; i += 16) {
+        for (; i + 16 <= n; i += 16) {
             __m512 v = _mm512_mul_ps(_mm512_loadu_ps(x + i), inv_t_v);
             max_v = _mm512_max_ps(max_v, v);
         }
@@ -76,7 +76,7 @@ public:
 #elif defined(__AVX2__)
         __m256 max_v = _mm256_set1_ps(-std::numeric_limits<float>::infinity());
         __m256 inv_t_v = _mm256_set1_ps(inv_temp);
-        for (; i <= n - 8; i += 8) {
+        for (; i + 8 <= n; i += 8) {
             __m256 v = _mm256_mul_ps(_mm256_loadu_ps(x + i), inv_t_v);
             max_v = _mm256_max_ps(max_v, v);
         }
@@ -101,13 +101,13 @@ public:
             size_t k = 0;
 #if defined(__AVX512F__)
             __m512 inv_s_v = _mm512_set1_ps(inv_sum);
-            for (; k <= n - 16; k += 16) {
+            for (; k + 16 <= n; k += 16) {
                 __m512 v = _mm512_loadu_ps(x + k);
                 _mm512_storeu_ps(x + k, _mm512_mul_ps(v, inv_s_v));
             }
 #elif defined(__AVX2__)
             __m256 inv_s_v = _mm256_set1_ps(inv_sum);
-            for (; k <= n - 8; k += 8) {
+            for (; k + 8 <= n; k += 8) {
                 __m256 v = _mm256_loadu_ps(x + k);
                 _mm256_storeu_ps(x + k, _mm256_mul_ps(v, inv_s_v));
             }
@@ -128,13 +128,13 @@ public:
         size_t i = 0;
 #if defined(__AVX512F__)
         __m512 max_v = _mm512_set1_ps(-std::numeric_limits<float>::infinity());
-        for (; i <= n - 16; i += 16) {
+        for (; i + 16 <= n; i += 16) {
             max_v = _mm512_max_ps(max_v, _mm512_loadu_ps(x + i));
         }
         max_val = hmax512_ps(max_v);
 #elif defined(__AVX2__)
         __m256 max_v = _mm256_set1_ps(-std::numeric_limits<float>::infinity());
-        for (; i <= n - 8; i += 8) {
+        for (; i + 8 <= n; i += 8) {
             max_v = _mm256_max_ps(max_v, _mm256_loadu_ps(x + i));
         }
         max_val = hmax256_ps(max_v);

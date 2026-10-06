@@ -55,14 +55,14 @@ public:
 
 #if defined(__AVX512F__)
         __m512 sq_acc = _mm512_setzero_ps();
-        for (; i <= dim - 16; i += 16) {
+        for (; i + 16 <= dim; i += 16) {
             __m512 v = _mm512_loadu_ps(x + i);
             sq_acc = _mm512_fmadd_ps(v, v, sq_acc);
         }
         sum_sq = hsum512_ps(sq_acc);
 #elif defined(__AVX2__) && defined(__FMA__)
         __m256 sq_acc = _mm256_setzero_ps();
-        for (; i <= dim - 8; i += 8) {
+        for (; i + 8 <= dim; i += 8) {
             __m256 v = _mm256_loadu_ps(x + i);
             sq_acc = _mm256_fmadd_ps(v, v, sq_acc);
         }
@@ -78,7 +78,7 @@ public:
         size_t j = 0;
 #if defined(__AVX512F__)
         __m512 scale_v = _mm512_set1_ps(rsqrt_scale);
-        for (; j <= dim - 16; j += 16) {
+        for (; j + 16 <= dim; j += 16) {
             __m512 xv = _mm512_loadu_ps(x + j);
             __m512 wv = weight ? _mm512_loadu_ps(weight + j) : _mm512_set1_ps(1.0f);
             __m512 res = _mm512_mul_ps(_mm512_mul_ps(xv, scale_v), wv);
@@ -86,7 +86,7 @@ public:
         }
 #elif defined(__AVX2__)
         __m256 scale_v = _mm256_set1_ps(rsqrt_scale);
-        for (; j <= dim - 8; j += 8) {
+        for (; j + 8 <= dim; j += 8) {
             __m256 xv = _mm256_loadu_ps(x + j);
             __m256 wv = weight ? _mm256_loadu_ps(weight + j) : _mm256_set1_ps(1.0f);
             __m256 res = _mm256_mul_ps(_mm256_mul_ps(xv, scale_v), wv);
@@ -115,7 +115,7 @@ public:
 
 #if defined(__AVX512F__)
         __m512 sq_acc = _mm512_setzero_ps();
-        for (; i <= dim - 16; i += 16) {
+        for (; i + 16 <= dim; i += 16) {
             __m512 rv = _mm512_loadu_ps(inout_residual + i);
             __m512 xv = _mm512_loadu_ps(x + i);
             __m512 sum_v = _mm512_add_ps(rv, xv);
@@ -125,7 +125,7 @@ public:
         sum_sq = hsum512_ps(sq_acc);
 #elif defined(__AVX2__) && defined(__FMA__)
         __m256 sq_acc = _mm256_setzero_ps();
-        for (; i <= dim - 8; i += 8) {
+        for (; i + 8 <= dim; i += 8) {
             __m256 rv = _mm256_loadu_ps(inout_residual + i);
             __m256 xv = _mm256_loadu_ps(x + i);
             __m256 sum_v = _mm256_add_ps(rv, xv);
@@ -145,7 +145,7 @@ public:
         size_t j = 0;
 #if defined(__AVX512F__)
         __m512 scale_v = _mm512_set1_ps(rsqrt_scale);
-        for (; j <= dim - 16; j += 16) {
+        for (; j + 16 <= dim; j += 16) {
             __m512 rv = _mm512_loadu_ps(inout_residual + j);
             __m512 wv = weight ? _mm512_loadu_ps(weight + j) : _mm512_set1_ps(1.0f);
             __m512 res = _mm512_mul_ps(_mm512_mul_ps(rv, scale_v), wv);
@@ -153,7 +153,7 @@ public:
         }
 #elif defined(__AVX2__)
         __m256 scale_v = _mm256_set1_ps(rsqrt_scale);
-        for (; j <= dim - 8; j += 8) {
+        for (; j + 8 <= dim; j += 8) {
             __m256 rv = _mm256_loadu_ps(inout_residual + j);
             __m256 wv = weight ? _mm256_loadu_ps(weight + j) : _mm256_set1_ps(1.0f);
             __m256 res = _mm256_mul_ps(_mm256_mul_ps(rv, scale_v), wv);
