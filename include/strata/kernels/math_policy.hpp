@@ -21,6 +21,8 @@ struct MathContext {
 
         PolicyProxy() = default;
         PolicyProxy(MathContext* p, MathPolicy v) : parent(p), value(v) {}
+        PolicyProxy(const PolicyProxy& other) : parent(nullptr), value(other.value) {}
+        PolicyProxy(PolicyProxy&& other) noexcept : parent(nullptr), value(other.value) {}
 
         PolicyProxy& operator=(MathPolicy p) {
             value = p;
@@ -28,6 +30,14 @@ struct MathContext {
                 parent->apply_policy(p);
             }
             return *this;
+        }
+
+        PolicyProxy& operator=(const PolicyProxy& other) {
+            return *this = other.value;
+        }
+
+        PolicyProxy& operator=(PolicyProxy&& other) noexcept {
+            return *this = other.value;
         }
 
         operator MathPolicy() const { return value; }

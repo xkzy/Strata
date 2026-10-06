@@ -53,6 +53,19 @@ int main() {
     assert(ctx_copy.policy == MathPolicy::kStrict);
     assert(ctx_fast.policy == MathPolicy::kFast); // original untouched
 
+    // Member proxy assignment and cross-context pointer isolation
+    MathContext c1;
+    MathContext c2(MathPolicy::kFast);
+    c1.policy = c2.policy;
+    assert(c1.policy == MathPolicy::kFast);
+    assert(c1.allow_fast_exp == true);
+
+    c1.policy = MathPolicy::kStrict;
+    assert(c1.policy == MathPolicy::kStrict);
+    assert(c1.allow_fast_exp == false);
+    assert(c2.policy == MathPolicy::kFast);
+    assert(c2.allow_fast_exp == true);
+
     // Bounds sanitization and validation tests
     assert(sanitize_logit(100.0f, ctx) == 88.0f);
     assert(sanitize_logit(-100.0f, ctx) == -88.0f);
