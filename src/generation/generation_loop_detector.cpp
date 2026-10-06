@@ -164,8 +164,9 @@ GenerationLoopVerdict GenerationLoopDetector::feed_token(int32_t token_id, const
             }
         }
 
-        size_t threshold = in_structured_mode ? (config_.max_periodic_repetitions + 2)
-                                             : config_.max_periodic_repetitions;
+        bool is_ngram = (p <= 4 || std::find(config_.ngram_sizes.begin(), config_.ngram_sizes.end(), p) != config_.ngram_sizes.end());
+        size_t base_limit = is_ngram ? config_.max_ngram_repetitions : config_.max_periodic_repetitions;
+        size_t threshold = in_structured_mode ? (base_limit + 2) : base_limit;
 
         if (reps >= threshold) {
             verdict.should_stop = true;

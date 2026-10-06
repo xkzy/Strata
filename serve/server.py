@@ -2179,6 +2179,7 @@ class Service:
         self.anti_loop = AntiLoopManager.instance()
         self.generation_loop_config = GenerationLoopConfig()
         self.dynamic_temp_config = DynamicTemperatureConfig()
+        self.generation_loop_detection = False
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
@@ -3042,6 +3043,7 @@ class Service:
                     before = getattr(self.engine, "last", None)
                     last_print = time.time()
                     prompt, thought = ids, 0            # thought: the reasoning tokens so far (the budget's count)
+                    enable_loop_det = bool(getattr(self, "generation_loop_detection", False) or (sampling or {}).get("generation_loop_detection") or (sampling or {}).get("strata_loop_detection"))
                     loop_detector = GenerationLoopDetector(getattr(self, "generation_loop_config", None))
                     dyn_temp_controller = DynamicTemperatureController(getattr(self, "dynamic_temp_config", None))
                     base_temp = float((sampling or {}).get("temperature") or 0.0)
@@ -3081,18 +3083,19 @@ class Service:
                                 piece = detok.push(t)
 
                                 # Generation Loop Online Detection & Dynamic Temperature
-                                gen_verdict = loop_detector.feed_token(t, piece)
-                                if dyn_temp_controller.config.enabled:
-                                    new_temp = dyn_temp_controller.update(gen_verdict, t)
-                                    if sampling is not None and "temperature" in sampling:
-                                        sampling["temperature"] = new_temp
+                                if enable_loop_det and parser.state not in ("rcall", "tool_call", "call") and not force:
+                                    gen_verdict = loop_detector.feed_token(t, piece)
+                                    if dyn_temp_controller.config.enabled:
+                                        new_temp = dyn_temp_controller.update(gen_verdict, t)
+                                        if sampling is not None and "temperature" in sampling:
+                                            sampling["temperature"] = new_temp
 
-                                if gen_verdict.should_stop:
-                                    gen_loop_triggered = True
-                                    gen_loop_reason = gen_verdict.reason
-                                    finish = "generation_loop"
-                                    print(f"[strata] online generation loop intercepted: {gen_verdict.reason} (finish_reason=generation_loop, tokens_saved={loop_detector.tokens_saved})", flush=True)
-                                    break
+                                    if gen_verdict.should_stop and parser.state not in ("reasoning", "rcall", "tool_call", "call"):
+                                        gen_loop_triggered = True
+                                        gen_loop_reason = gen_verdict.reason
+                                        finish = "generation_loop"
+                                        print(f"[strata] online generation loop intercepted: {gen_verdict.reason} (finish_reason=generation_loop, tokens_saved={loop_detector.tokens_saved})", flush=True)
+                                        break
 
                                 tail = (tail + piece)[-2:]
                                 evs = cut(parser.feed(piece))

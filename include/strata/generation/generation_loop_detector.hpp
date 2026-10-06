@@ -27,18 +27,18 @@ enum class LoopType {
 };
 
 struct GenerationLoopConfig {
-    size_t max_single_token_repeat = 16;
+    size_t max_single_token_repeat = 32;
     std::vector<size_t> ngram_sizes = {2, 3, 4, 8, 16};
-    size_t max_ngram_repetitions = 3;
-    size_t max_span_repetitions = 3;
+    size_t max_ngram_repetitions = 5;
+    size_t max_span_repetitions = 4;
     size_t min_span_length = 12;
     size_t window_size = 128;
-    double entropy_threshold = 0.25;
-    double min_diversity_ratio = 0.15;
+    double entropy_threshold = 0.20;
+    double min_diversity_ratio = 0.12;
     bool code_protection_enabled = true;
     bool structured_output_protection = true;
     size_t max_periodic_period = 32;
-    size_t max_periodic_repetitions = 3;
+    size_t max_periodic_repetitions = 4;
 };
 
 struct GenerationLoopVerdict {

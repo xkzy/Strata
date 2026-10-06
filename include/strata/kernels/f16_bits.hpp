@@ -25,16 +25,18 @@
 #include <cstdint>
 #include <cstring>
 
+#ifndef STRATA_HD
 #if defined(__CUDACC__) || defined(__HIPCC__)
-#define STRATA_HD __host__ __device__
+#define STRATA_HD __host__ __device__ inline
 #else
-#define STRATA_HD
+#define STRATA_HD inline
+#endif
 #endif
 
 namespace strata::kernels {
 
 /// Round-to-nearest-even f32 -> fp16, returned as raw bits.
-STRATA_HD inline uint16_t f16_from_f32(float f) {
+STRATA_HD uint16_t f16_from_f32(float f) {
     uint32_t x;
 #if defined(__HIP_DEVICE_COMPILE__)
     __builtin_memcpy(&x, &f, 4);
@@ -70,7 +72,7 @@ STRATA_HD inline uint16_t f16_from_f32(float f) {
 
 /// Exact fp16 bits -> f32.  No rounding, no exceptions: every one of the 65,536 inputs maps to a value f32
 /// represents exactly, including the subnormals (which is why the `ex == 0` case cannot be skipped).
-STRATA_HD inline float f32_from_f16(uint16_t h) {
+STRATA_HD float f32_from_f16(uint16_t h) {
     const uint32_t sign = (uint32_t) (h & 0x8000u) << 16;
     const uint32_t ex = (h >> 10) & 0x1Fu, man = h & 0x3FFu;
     uint32_t out;

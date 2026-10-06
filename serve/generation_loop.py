@@ -24,18 +24,18 @@ class LoopType(str, Enum):
 
 @dataclass
 class GenerationLoopConfig:
-    max_single_token_repeat: int = 16
+    max_single_token_repeat: int = 32
     ngram_sizes: List[int] = field(default_factory=lambda: [2, 3, 4, 8, 16])
-    max_ngram_repetitions: int = 3
-    max_span_repetitions: int = 3
+    max_ngram_repetitions: int = 5
+    max_span_repetitions: int = 4
     min_span_length: int = 12
     window_size: int = 128
-    entropy_threshold: float = 0.25
-    min_diversity_ratio: float = 0.15
+    entropy_threshold: float = 0.20
+    min_diversity_ratio: float = 0.12
     code_protection_enabled: bool = True
     structured_output_protection: bool = True
     max_periodic_period: int = 32
-    max_periodic_repetitions: int = 3
+    max_periodic_repetitions: int = 4
 
 
 @dataclass
@@ -186,7 +186,9 @@ class GenerationLoopDetector:
                 else:
                     break
 
-            thresh = (self.config.max_periodic_repetitions + 2) if in_structured_mode else self.config.max_periodic_repetitions
+            is_ngram = (p <= 4 or p in self.config.ngram_sizes)
+            base_limit = self.config.max_ngram_repetitions if is_ngram else self.config.max_periodic_repetitions
+            thresh = (base_limit + 2) if in_structured_mode else base_limit
             if reps >= thresh:
                 verdict.should_stop = True
                 verdict.confidence = LoopConfidence.CONFIRMED_LOOP

@@ -46,8 +46,8 @@ public:
     // ------------------------------------------------------------------------
     // Fast RMSNorm: out[i] = (x[i] / sqrt(mean(x^2) + eps)) * weight[i]
     // ------------------------------------------------------------------------
-    static void rmsnorm(const float* __restrict__ x, const float* __restrict__ weight,
-                        float* __restrict__ out, size_t dim, float eps = 1e-6f) {
+    static void rmsnorm(const float* x, const float* weight,
+                        float* out, size_t dim, float eps = 1e-6f) {
         if (dim == 0) return;
 
         float sum_sq = 0.0f;
