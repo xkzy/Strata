@@ -65,6 +65,10 @@ from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
 from serve.virtual_context import VirtualContextServerRuntime  # noqa: E402
 from serve.multi_tenant import MultiTenantServerManager, SecurityScope, SharingScope  # noqa: E402
+from serve.anti_loop import (AntiLoopManager, ActionRecord, ActionKind, EscalationState,  # noqa: E402
+                             ErrorCategory, ExecutionBudget, GuardVerdict, LoopDetector)
+from serve.generation_loop import (GenerationLoopConfig, GenerationLoopDetector,  # noqa: E402
+                                   DynamicTemperatureConfig, DynamicTemperatureController)
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
@@ -2172,6 +2176,9 @@ class Service:
             default_physical_limit=getattr(engine, "max_context", 32768)
         )
         self.context_runtime = self.multi_tenant.get_or_create_session(SecurityScope())
+        self.anti_loop = AntiLoopManager.instance()
+        self.generation_loop_config = GenerationLoopConfig()
+        self.dynamic_temp_config = DynamicTemperatureConfig()
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
@@ -2672,6 +2679,7 @@ class Service:
             virt_limit = 1048576
 
         rt_stats = self.multi_tenant.summary_stats() if hasattr(self, "multi_tenant") else {}
+        loop_stats = self.anti_loop.stats() if hasattr(self, "anti_loop") else {}
         engine = {"model": self.model, "max_context": self.engine.max_context,
                   "n_ctx_physical": self.engine.max_context, "n_ctx_virtual": virt_limit,
                   "virtual_context_limit": virt_limit,
@@ -2684,6 +2692,7 @@ class Service:
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
                 "runtime_stats": rt_stats,
+                "anti_loop": loop_stats,
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
                 tel["static"], "history": tel["history"], "time": now}
@@ -2724,6 +2733,7 @@ class Service:
             virt_limit = 1048576
 
         rt_stats = self.multi_tenant.summary_stats() if hasattr(self, "multi_tenant") else {}
+        loop_stats = self.anti_loop.stats() if hasattr(self, "anti_loop") else {}
 
         return {
             "service": "strata", "model": self.model,
@@ -2731,6 +2741,7 @@ class Service:
             "models": self.multi_model_catalog(),
             "swa": {"enabled": True, "window_size": swa_win},
             "runtime_stats": rt_stats,
+            "anti_loop": loop_stats,
             "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
             "structured_output": {"formats": ["json_object", "json_schema"], "method": "prompt_and_validate",
                                   "constrained_decoding": False, "stream_buffered": True},
@@ -3031,6 +3042,12 @@ class Service:
                     before = getattr(self.engine, "last", None)
                     last_print = time.time()
                     prompt, thought = ids, 0            # thought: the reasoning tokens so far (the budget's count)
+                    loop_detector = GenerationLoopDetector(getattr(self, "generation_loop_config", None))
+                    dyn_temp_controller = DynamicTemperatureController(getattr(self, "dynamic_temp_config", None))
+                    base_temp = float((sampling or {}).get("temperature") or 0.0)
+                    dyn_temp_controller.reset(base_temp)
+                    gen_loop_triggered = False
+                    gen_loop_reason = ""
                     for ev in opening:
                         yield "event", ev
                     while True:
@@ -3062,6 +3079,21 @@ class Service:
                                     repeated = True     # #606: a degenerate output, not an answer: end it here
                                     break
                                 piece = detok.push(t)
+
+                                # Generation Loop Online Detection & Dynamic Temperature
+                                gen_verdict = loop_detector.feed_token(t, piece)
+                                if dyn_temp_controller.config.enabled:
+                                    new_temp = dyn_temp_controller.update(gen_verdict, t)
+                                    if sampling is not None and "temperature" in sampling:
+                                        sampling["temperature"] = new_temp
+
+                                if gen_verdict.should_stop:
+                                    gen_loop_triggered = True
+                                    gen_loop_reason = gen_verdict.reason
+                                    finish = "generation_loop"
+                                    print(f"[strata] online generation loop intercepted: {gen_verdict.reason} (finish_reason=generation_loop, tokens_saved={loop_detector.tokens_saved})", flush=True)
+                                    break
+
                                 tail = (tail + piece)[-2:]
                                 evs = cut(parser.feed(piece))
                                 self._note(n, evs, st, rate)
@@ -3171,6 +3203,8 @@ class Service:
                         prompt = prompt + seg + extra
                     if cancel.is_set():
                         finish = "cancel"
+                    elif gen_loop_triggered:
+                        finish = "generation_loop"
                     elif looped:
                         print(f"[strata] the thinking repeated the same passages (coverage={repeat_coverage:.3f}) at "
                               f"{n} tokens: ended as \"length\" (reasoning_loop_recovery: \"stop\" in "
@@ -3626,7 +3660,7 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
                 yield close()
             stop = "stop_sequence" if x.get("stop_sequence") is not None else \
                 "tool_use" if used_tool and streamed <= finished and x["finish"] == "stop" else \
-                {"stop": "end_turn", "length": "max_tokens", "cancel": "end_turn"}[x["finish"]]
+                {"stop": "end_turn", "length": "max_tokens", "cancel": "end_turn", "generation_loop": "generation_loop"}.get(x["finish"], x["finish"])
             # the final counts, Anthropic's way: input_tokens leaves out what the conversation cache already held,
             # which is cache_read_input_tokens (message_start could only say the whole prompt)
             reused = min(x.get("reused") or 0, len(ids))
@@ -4021,6 +4055,9 @@ def make_handler(svc: Service):
                 if self._authorized():
                     scope = SecurityScope.from_headers_and_body(self.headers, {})
                     self._json(200, svc.multi_tenant.get_tenant_metrics(scope.tenant_id) if hasattr(svc, "multi_tenant") else {})
+            elif path == "/v1/strata/guard":
+                if self._authorized():
+                    self._json(200, svc.anti_loop.stats() if hasattr(svc, "anti_loop") else {})
             else:
                 self._json(404, {"error": {"message": "not found"}})
 
@@ -4187,6 +4224,89 @@ def make_handler(svc: Service):
                         hits = [{"item_id": item.item_id, "score": round(score, 2), "content": item.raw_content}
                                 for item, score in res]
                     self._json(200, {"query": q, "hits": hits})
+                elif path == "/v1/strata/guard/check":
+                    scope = SecurityScope.from_headers_and_body(self.headers, req)
+                    target = req.get("target_name", req.get("tool", "inference"))
+                    payload = req.get("payload", req.get("arguments", req.get("query", "")))
+                    norm, h = LoopDetector.canonicalize_payload(target, payload)
+                    kind_str = req.get("kind", "tool_call").lower()
+                    kind = ActionKind.TOOL_CALL
+                    if "retriev" in kind_str:
+                        kind = ActionKind.RETRIEVAL
+                    elif "infer" in kind_str or "gen" in kind_str:
+                        kind = ActionKind.INFERENCE
+                    elif "delegat" in kind_str:
+                        kind = ActionKind.AGENT_DELEGATION
+
+                    act = ActionRecord(
+                        action_id=req.get("action_id", f"act_{uuid.uuid4().hex[:8]}"),
+                        parent_id=req.get("parent_id", ""),
+                        tenant_id=scope.tenant_id,
+                        user_id=scope.user_id,
+                        agent_id=scope.agent_id,
+                        session_id=scope.session_id,
+                        kind=kind,
+                        target_name=target,
+                        normalized_payload=norm,
+                        canonical_hash=h,
+                    )
+                    v = svc.anti_loop.evaluate_action(act)
+                    self._json(200, {
+                        "allowed": v.allowed,
+                        "state": v.state.value,
+                        "is_throttled": v.is_throttled,
+                        "throttle_delay_ms": v.throttle_delay_ms,
+                        "reason": v.reason,
+                        "suggested_remediation": v.suggested_remediation,
+                        "structured_observation": v.structured_observation,
+                        "progress_score": v.progress_score,
+                        "current_step": v.current_step,
+                        "no_progress_streak": v.no_progress_streak,
+                    })
+                elif path == "/v1/strata/guard/outcome":
+                    scope = SecurityScope.from_headers_and_body(self.headers, req)
+                    target = req.get("target_name", req.get("tool", "inference"))
+                    payload = req.get("payload", req.get("arguments", req.get("query", "")))
+                    norm, h = LoopDetector.canonicalize_payload(target, payload)
+                    kind_str = req.get("kind", "tool_call").lower()
+                    kind = ActionKind.TOOL_CALL
+                    if "retriev" in kind_str:
+                        kind = ActionKind.RETRIEVAL
+                    elif "infer" in kind_str or "gen" in kind_str:
+                        kind = ActionKind.INFERENCE
+
+                    is_err = bool(req.get("is_error", False))
+                    err_msg = str(req.get("error_message", ""))
+                    err_cat = LoopDetector.categorize_error(err_msg) if is_err else ErrorCategory.NONE
+
+                    act = ActionRecord(
+                        action_id=req.get("action_id", f"act_{uuid.uuid4().hex[:8]}"),
+                        parent_id=req.get("parent_id", ""),
+                        tenant_id=scope.tenant_id,
+                        user_id=scope.user_id,
+                        agent_id=scope.agent_id,
+                        session_id=scope.session_id,
+                        kind=kind,
+                        target_name=target,
+                        normalized_payload=norm,
+                        canonical_hash=h,
+                        is_error=is_err,
+                        error_category=err_cat,
+                        error_message=err_msg,
+                        result_summary=str(req.get("result_summary", "")),
+                    )
+                    state_changed = bool(req.get("state_changed", not is_err))
+                    progress_delta = float(req.get("progress_delta", 0.1 if state_changed else 0.0))
+                    tokens = int(req.get("tokens_used", 0))
+
+                    svc.anti_loop.record_action_outcome(act, state_changed, progress_delta, tokens)
+                    self._json(200, {"status": "recorded", "action_id": act.action_id, "state_changed": state_changed})
+                elif path == "/v1/strata/guard/cross_session":
+                    s_src = req.get("source_session", "")
+                    s_tgt = req.get("target_session", "")
+                    r_key = req.get("resource_key", "default_resource")
+                    allowed = svc.anti_loop.check_cross_session_trigger(s_src, s_tgt, r_key)
+                    self._json(200, {"allowed": allowed, "source_session": s_src, "target_session": s_tgt, "resource_key": r_key})
                 else:
                     self._json(404, {"error": {"message": "not found"}})
             except ValueError as e:

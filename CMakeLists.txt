@@ -542,6 +542,47 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     set_tests_properties(test_tool_runtime PROPERTIES TIMEOUT 60)
   endif()
 
+  # ---- Anti-Loop & Runaway Guard Subsystem ----
+  add_library(strata_guard STATIC
+    src/guard/execution_graph.cpp
+    src/guard/loop_detector.cpp
+    src/guard/execution_guard.cpp
+    src/guard/anti_loop_manager.cpp)
+  target_include_directories(strata_guard PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(strata_guard PUBLIC strata_tools)
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/guard/test_anti_loop_guard.cpp")
+    enable_testing()
+    add_executable(test_anti_loop_guard tests/guard/test_anti_loop_guard.cpp)
+    target_link_libraries(test_anti_loop_guard PRIVATE strata_guard)
+    add_test(NAME test_anti_loop_guard COMMAND test_anti_loop_guard)
+    set_tests_properties(test_anti_loop_guard PROPERTIES TIMEOUT 60)
+  endif()
+
+  # ---- Online Generation Loop Detector & Dynamic Temperature Subsystem ----
+  add_library(strata_generation STATIC
+    src/generation/generation_loop_detector.cpp
+    src/generation/dynamic_temperature.cpp)
+  target_include_directories(strata_generation PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(strata_generation PUBLIC strata_tools)
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/generation/test_generation_loop.cpp")
+    enable_testing()
+    add_executable(test_generation_loop tests/generation/test_generation_loop.cpp)
+    target_link_libraries(test_generation_loop PRIVATE strata_generation)
+    add_test(NAME test_generation_loop COMMAND test_generation_loop)
+    set_tests_properties(test_generation_loop PROPERTIES TIMEOUT 60)
+  endif()
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/test_cache_correctness.cpp")
+    enable_testing()
+    add_executable(test_cache_correctness tests/core/test_cache_correctness.cpp)
+    target_include_directories(test_cache_correctness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(test_cache_correctness PRIVATE strata_tools)
+    add_test(NAME test_cache_correctness COMMAND test_cache_correctness)
+    set_tests_properties(test_cache_correctness PROPERTIES TIMEOUT 60)
+  endif()
+
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/file_expert_source_test.cpp")
     enable_testing()
     add_executable(file_expert_source_test tests/core/file_expert_source_test.cpp)
