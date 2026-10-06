@@ -63,6 +63,7 @@ from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
+from serve.virtual_context import VirtualContextServerRuntime  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
@@ -2166,6 +2167,9 @@ class Service:
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
         self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
                             tokenizer.encode("<|endoftext|>", parse_special=True))
+        self.context_runtime = VirtualContextServerRuntime(
+            physical_context_limit=getattr(engine, "max_context", 32768)
+        )
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
@@ -2699,6 +2703,13 @@ class Service:
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context.  `force` (forced_call): without thinking the reply starts with it, so it ends the
         prompt; with thinking, Service.run writes it once the thinking is over."""
+        # Server-Side Virtual Context & Bounded Tool Observation handling
+        ctx_val = getattr(self.engine, "max_context", 0) or getattr(self.engine, "known_ctx", 0)
+        if ctx_val > 0 and hasattr(self, "context_runtime") and self.context_runtime is not None:
+            reserve = max_new if (max_new is not None and max_new > 0) else 1024
+            target_budget = max(256, ctx_val - CTX_SLACK - reserve)
+            messages = self.context_runtime.process_messages(messages, target_budget, self.tok)
+
         fetched = self._note_unreadable_tool_images(messages)
         ids = self.encode_prompt(messages, tools, kwargs)
         if force and kwargs.get("enable_thinking", True) is False:
@@ -3828,6 +3839,12 @@ def make_handler(svc: Service):
             elif path == "/v1/status":
                 if self._authorized():
                     self._json(200, svc.v1_status())
+            elif path == "/v1/strata/context":
+                if self._authorized():
+                    self._json(200, svc.context_runtime.stats() if hasattr(svc, "context_runtime") else {})
+            elif path == "/v1/strata/tools":
+                if self._authorized():
+                    self._json(200, svc.context_runtime.tool_store.stats() if hasattr(svc, "context_runtime") else {})
             else:
                 self._json(404, {"error": {"message": "not found"}})
 
@@ -3928,6 +3945,27 @@ def make_handler(svc: Service):
                     self._anthropic(req)
                 elif path == "/v1/messages/count_tokens":
                     self._count_tokens(req)
+                elif path == "/v1/strata/tools/retrieve":
+                    rid = req.get("result_id", "")
+                    s_line = int(req.get("start_line", 1))
+                    e_line = int(req.get("end_line", 0))
+                    if hasattr(svc, "context_runtime"):
+                        if e_line > 0:
+                            content = svc.context_runtime.tool_store.get_fragment(rid, s_line, e_line)
+                        else:
+                            content = svc.context_runtime.tool_store.get_raw_by_id(rid)
+                    else:
+                        content = ""
+                    self._json(200, {"result_id": rid, "content": content})
+                elif path == "/v1/strata/context/query":
+                    q = req.get("query", "")
+                    k = int(req.get("top_k", 5))
+                    hits = []
+                    if hasattr(svc, "context_runtime"):
+                        res = svc.context_runtime.index.search(q, top_k=k)
+                        hits = [{"item_id": item.item_id, "score": round(score, 2), "content": item.raw_content}
+                                for item, score in res]
+                    self._json(200, {"query": q, "hits": hits})
                 else:
                     self._json(404, {"error": {"message": "not found"}})
             except ValueError as e:
