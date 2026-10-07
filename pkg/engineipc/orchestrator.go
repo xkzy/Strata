@@ -409,9 +409,11 @@ func (eo *EngineOrchestrator) readLoop(r *bufio.Reader, lines chan string, ready
 		if !ready {
 			if strings.HasPrefix(line, "INFO ") {
 				eo.mu.Lock()
-				for _, kv := range strings.Fields(line[5:]) {
-					if p := strings.SplitN(kv, "=", 2); len(p) == 2 {
-						eo.info[p[0]] = p[1]
+				if eo.readyCh == readyCh { // not an earlier process's output after a restart
+					for _, kv := range strings.Fields(line[5:]) {
+						if p := strings.SplitN(kv, "=", 2); len(p) == 2 {
+							eo.info[p[0]] = p[1]
+						}
 					}
 				}
 				eo.mu.Unlock()
@@ -420,6 +422,10 @@ func (eo *EngineOrchestrator) readLoop(r *bufio.Reader, lines chan string, ready
 			if strings.HasPrefix(line, "READY") {
 				f := strings.Fields(line)
 				eo.mu.Lock()
+				if eo.readyCh != readyCh { // an earlier process's READY after a restart: the new one is not ready
+					eo.mu.Unlock()
+					return
+				}
 				if len(f) >= 2 {
 					if n, err := strconv.Atoi(f[1]); err == nil && n > 0 {
 						eo.maxContext = n
@@ -446,7 +452,7 @@ func (eo *EngineOrchestrator) watchProcess(cmd *exec.Cmd) {
 	err := cmd.Wait()
 	eo.mu.Lock()
 	defer eo.mu.Unlock()
-	if eo.state == StateStopped {
+	if eo.state == StateStopped || eo.cmd != cmd { // stopped, or an earlier process's exit after a restart
 		return
 	}
 	why := "the engine process exited"
