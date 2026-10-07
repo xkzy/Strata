@@ -129,7 +129,7 @@ func (s *StrataServer) setShared(d map[string]interface{}) (map[string]interface
 		if len(clean) == 0 {
 			_ = os.Remove(p)
 		} else if b, err := json.MarshalIndent(clean, "", " "); err == nil {
-			_ = os.WriteFile(p, b, 0o644)
+			_ = os.WriteFile(p, b, 0o600)
 		}
 	}
 	return clean, nil

@@ -104,3 +104,19 @@ func TestSaveKeepsBackup(t *testing.T) {
 		t.Errorf("reload = %v, %v", cfg, err)
 	}
 }
+
+func TestSaveKeepsOwnerOnlyMode(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "strata-m.json")
+	if err := os.WriteFile(p, []byte(`{"api_key":"k"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bak, err := SaveRaw(p, map[string]interface{}{"api_key": "k", "fit_max_tokens": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{p, bak} {
+		if st, _ := os.Stat(f); st.Mode().Perm() != 0o600 {
+			t.Errorf("%s mode = %v, want 0600", f, st.Mode().Perm())
+		}
+	}
+}

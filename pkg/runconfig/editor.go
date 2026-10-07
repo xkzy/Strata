@@ -309,7 +309,12 @@ func SaveRaw(path string, cfg map[string]interface{}) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(bak, old, 0o644); err != nil {
+	// the file may hold an api_key: the backup and the new file keep its mode, never wider than owner-only read/write
+	mode := os.FileMode(0o600)
+	if st, err := os.Stat(path); err == nil {
+		mode = st.Mode().Perm() & 0o600
+	}
+	if err := os.WriteFile(bak, old, mode); err != nil {
 		return "", err
 	}
 	data, err := json.MarshalIndent(cfg, "", " ")
@@ -317,7 +322,10 @@ func SaveRaw(path string, cfg map[string]interface{}) (string, error) {
 		return "", err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, mode); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(bak, mode); err != nil { // WriteFile keeps the mode of a backup left by an earlier save
 		return "", err
 	}
 	return bak, os.Rename(tmp, path)
