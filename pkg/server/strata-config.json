@@ -1,0 +1,21 @@
+{
+  "host": "127.0.0.1",
+  "port": 8080,
+  "api_key": "",
+  "model": "Qwen3.8-Flash-Next-Q4_K_M",
+  "model_path": "",
+  "engine_binary": "",
+  "max_context": 65536,
+  "virtual_limit": 1048576,
+  "fit_max_tokens": true,
+  "reasoning_budget_tokens": 0,
+  "anthropic_thinking": "model",
+  "power_policy": "BALANCED",
+  "resource_adapt": true,
+  "sampling": {
+    "temperature": 0,
+    "top_p": 0.95,
+    "top_k": 40,
+    "min_p": 0.05
+  }
+}
