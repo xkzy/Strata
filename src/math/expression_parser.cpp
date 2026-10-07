@@ -133,43 +133,43 @@ bool ExpressionValidator::is_pure_arithmetic(const std::string& expression) cons
 
 ExpressionParser::ExpressionParser() = default;
 
+// Normalizes spelling only; it must never change what the text means. (An earlier version removed every space and every
+// comma-before-three-digits: "gcd(12,345)" became "gcd(12345)" and "2 3" (a product) became "23". Both collided with
+// different expressions in the result cache.)
 std::string ExpressionParser::canonicalize(const std::string& expr) {
     std::string clean;
     clean.reserve(expr.length());
+    int depth = 0;   // inside (), [] or {} a comma separates arguments and is never a thousands separator
+    auto is_operand_end = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == ')' || c == ']' || c == '}' || c == '_' || c == '.' || c == '!'; };
+    auto is_operand_start = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '(' || c == '[' || c == '{' || c == '_' || c == '.'; };
+    bool pending_space = false;
 
     for (size_t i = 0; i < expr.length(); ++i) {
-        char c = expr[i];
-        // Remove thousands separator commas in numbers (e.g. 2,384 -> 2384, but keep [1,2] and C(10, 3))
-        if (c == ',' && i > 0 && std::isdigit(static_cast<unsigned char>(expr[i - 1])) &&
-            (i + 3 < expr.length() && std::isdigit(static_cast<unsigned char>(expr[i + 1])) &&
-             std::isdigit(static_cast<unsigned char>(expr[i + 2])) &&
-             std::isdigit(static_cast<unsigned char>(expr[i + 3])) &&
-             (i + 4 >= expr.length() || !std::isdigit(static_cast<unsigned char>(expr[i + 4]))))) {
-            continue;
-        }
-        // Normalize unicode multiplication / division
-        if (static_cast<unsigned char>(c) == 0xC3 && i + 1 < expr.length()) {
-            if (static_cast<unsigned char>(expr[i + 1]) == 0x97) { // ×
-                clean.push_back('*');
-                i++;
-                continue;
-            }
-            if (static_cast<unsigned char>(expr[i + 1]) == 0xB7) { // ·
-                clean.push_back('*');
-                i++;
-                continue;
-            }
-            if (static_cast<unsigned char>(expr[i + 1]) == 0xB7) { // ÷
-                clean.push_back('/');
-                i++;
-                continue;
-            }
-        }
-        if (!std::isspace(static_cast<unsigned char>(c))) {
-            clean.push_back(c);
-        }
-    }
+        const unsigned char c = static_cast<unsigned char>(expr[i]);
+        if (c == '(' || c == '[' || c == '{') ++depth;
+        else if ((c == ')' || c == ']' || c == '}') && depth > 0) --depth;
 
+        // thousands separator in a plain number at top level only: 2,384 -> 2384 (but never gcd(12,345) or {1,234})
+        if (c == ',' && depth == 0 && i > 0 && std::isdigit(static_cast<unsigned char>(expr[i - 1])) && i + 3 < expr.length() &&
+            std::isdigit(static_cast<unsigned char>(expr[i + 1])) && std::isdigit(static_cast<unsigned char>(expr[i + 2])) &&
+            std::isdigit(static_cast<unsigned char>(expr[i + 3])) && (i + 4 >= expr.length() || !std::isdigit(static_cast<unsigned char>(expr[i + 4])))) {
+            size_t b = i;
+            while (b > 0 && (std::isdigit(static_cast<unsigned char>(expr[b - 1])) || expr[b - 1] == ',')) --b;   // the number's digit groups so far
+            const bool leading_group_ok = (i - b) <= 3 || expr[i - 4] == ',';
+            if (leading_group_ok) continue;
+        }
+        // unicode operators: x (C3 97) -> *, ÷ (C3 B7) -> /, . (C2 B7) -> *, minus (E2 88 92) -> -
+        if (c == 0xC3 && i + 1 < expr.length() && static_cast<unsigned char>(expr[i + 1]) == 0x97) { clean.push_back('*'); ++i; pending_space = false; continue; }
+        if (c == 0xC3 && i + 1 < expr.length() && static_cast<unsigned char>(expr[i + 1]) == 0xB7) { clean.push_back('/'); ++i; pending_space = false; continue; }
+        if (c == 0xC2 && i + 1 < expr.length() && static_cast<unsigned char>(expr[i + 1]) == 0xB7) { clean.push_back('*'); ++i; pending_space = false; continue; }
+        if (c == 0xE2 && i + 2 < expr.length() && static_cast<unsigned char>(expr[i + 1]) == 0x88 && static_cast<unsigned char>(expr[i + 2]) == 0x92) { clean.push_back('-'); i += 2; pending_space = false; continue; }
+
+        if (std::isspace(c)) { pending_space = true; continue; }
+        // a space between two operands is meaning (implicit multiplication: "2 3", "x y"); around operators it is not
+        if (pending_space && !clean.empty() && is_operand_end(clean.back()) && is_operand_start(static_cast<char>(c))) clean.push_back(' ');
+        pending_space = false;
+        clean.push_back(static_cast<char>(c));
+    }
     return clean;
 }
 

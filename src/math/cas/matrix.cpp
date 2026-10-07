@@ -1,40 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // src/math/cas/matrix.cpp - Det, Inverse, Transpose, Dot and exact combinatorics on top of the evaluator
 #include "strata/math/cas/engine.hpp"
+#include "matrix_util.hpp"
 
 #include <algorithm>
 
 namespace strata::math::cas {
-
-namespace {
-
-using Matrix = std::vector<std::vector<Expr>>;
-
-bool as_matrix(const Expr& e, Matrix& m) {
-    if (!e->has_head("List") || e->args.empty()) return false;
-    m.clear();
-    size_t cols = 0;
-    for (const auto& row : e->args) {
-        if (!row->has_head("List") || row->args.empty()) return false;
-        if (cols == 0) cols = row->args.size();
-        if (row->args.size() != cols) throw CasMathError("matrix rows have different lengths");
-        m.push_back(row->args);
-    }
-    return true;
-}
-
-Expr from_matrix(const Matrix& m) {
-    std::vector<Expr> rows;
-    for (const auto& r : m) rows.push_back(app("List", r));
-    return app("List", rows);
-}
-
-bool all_numbers(const Matrix& m) {
-    for (const auto& r : m) for (const auto& e : r) if (!e->is_number()) return false;
-    return true;
-}
-
-} // namespace
 
 // Determinant by cofactor expansion for symbolic entries; Gauss elimination over Q for numeric ones.
 static Expr det_impl(Engine& en, const Matrix& m) {

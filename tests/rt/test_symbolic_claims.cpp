@@ -87,6 +87,17 @@ int main() {
     auto d2 = check("The determinant of [[1, 2], [3, 4]] is 5.");
     CHECK(d2.state == VerificationState::kContradicted && d2.corrected_value == "-2", "wrong determinant corrected");
 
+    CHECK(check("The rank of [[1, 2], [2, 4]] is 1.").state == VerificationState::kVerified, "rank");
+    auto rk = check("The rank of [[1, 2], [2, 4]] is 2.");
+    CHECK(rk.state == VerificationState::kContradicted && rk.corrected_value == "1", "wrong rank corrected");
+    CHECK(check("The trace of [[1, 2], [3, 4]] is 5.").state == VerificationState::kVerified, "trace");
+    CHECK(check("The trace of [[1, 2], [3, 4]] is 6.").state == VerificationState::kContradicted, "wrong trace");
+
+    CHECK(check("The matrix [[1, 2], [3, 4]] is invertible.").state == VerificationState::kVerified, "invertible matrix");
+    auto inv = check("The matrix [[1, 2], [2, 4]] is invertible.");
+    CHECK(inv.state == VerificationState::kContradicted && inv.corrected_value == "singular", "a singular matrix is not invertible");
+    CHECK(check("The matrix [[1, 2], [2, 4]] is singular.").state == VerificationState::kVerified, "singular");
+
     std::printf("[4] things that are not claims\n");
     CHECK(no_claim("The line is y = 2x + 1."), "a definition is not an identity");
     CHECK(no_claim("The solution of the problem is x = 5."), "no equation, no claim");

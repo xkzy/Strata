@@ -464,6 +464,7 @@ Expr Engine::eval_function(const std::string& head, std::vector<Expr> args) {
     }
     if (Expr mf = matrix_function(head, args)) return mf;
     if (Expr nf = number_theory(head, args)) return nf;
+    if (Expr xf = extended_math(head, args)) return xf;
     if (args.size() != 1) return keep();
     const Expr& a = args[0];
 
@@ -583,11 +584,28 @@ Expr Engine::eval_apply(const Expr& e) {
     if (h == "List" || h == "Equal" || h == "Rule") return app(h, std::move(args));
     if (h == "Expand" && args.size() == 1) return expand(args[0]);
     if (h == "Simplify" && args.size() == 1) return simplify(args[0]);
-    if (h == "D" && args.size() >= 2 && args[1]->is_symbol()) {
+    if (h == "D" && args.size() >= 2) {
+        // D[f, x], D[f, x, y] (mixed partial), D[f, {x, n}] (n-th derivative), and Sage's diff(f, x, n)
         Expr r = args[0];
-        int n = 1;
-        if (args.size() == 3 && args[2]->is_integer()) { int64_t k = 0; args[2]->q.num.to_int64(k); n = static_cast<int>(k); }
-        for (int i = 0; i < n; ++i) r = diff(r, args[1]->name);
+        for (size_t k = 1; k < args.size(); ++k) {
+            const Expr& a = args[k];
+            if (a->is_symbol()) {
+                int n = 1;
+                if (k + 1 < args.size() && args[k + 1]->is_integer()) {   // diff(f, x, 2)
+                    int64_t t = 0;
+                    if (!args[k + 1]->q.num.to_int64(t) || t < 0 || t > 64) throw CasMathError("derivative order must be between 0 and 64");
+                    n = static_cast<int>(t);
+                    ++k;
+                }
+                for (int i = 0; i < n; ++i) r = diff(r, a->name);
+            } else if (a->has_head("List", 2) && a->args[0]->is_symbol() && a->args[1]->is_integer()) {
+                int64_t t = 0;
+                if (!a->args[1]->q.num.to_int64(t) || t < 0 || t > 64) throw CasMathError("derivative order must be between 0 and 64");
+                for (int i = 0; i < t; ++i) r = diff(r, a->args[0]->name);
+            } else {
+                throw CasParseError("D: the variables must be symbols or {symbol, order}");
+            }
+        }
         return r;
     }
     if (h == "Factor" && args.size() == 1) return factor(args[0]);

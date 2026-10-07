@@ -38,4 +38,12 @@ struct Factorization {
 // Factors a non-zero polynomial over Q into irreducibles. Throws CasLimitError when the work exceeds the budget.
 Factorization factor_over_q(const Poly& f, const TickFn& tick);
 
+struct ModFactorization {
+    uint64_t content = 1;                                           // leading coefficient
+    std::vector<std::pair<std::vector<uint64_t>, int>> factors;     // monic irreducibles (coefficients low to high) with multiplicity
+};
+// Factors a non-zero polynomial over GF(p) (p prime, p < 2^31): square-free decomposition (including p-th roots), distinct-degree and
+// equal-degree factorization. Coefficients are reduced mod p, low to high.
+ModFactorization factor_over_gfp(std::vector<uint64_t> f, uint64_t p, const TickFn& tick);
+
 } // namespace strata::math::cas

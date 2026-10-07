@@ -1,6 +1,12 @@
 // src/math/math_runtime.cpp - Unified Mathematical Runtime Implementation
 #include "strata/math/math_runtime.hpp"
 
+#include <thread>
+#include <unordered_map>
+#include <atomic>
+
+#include <chrono>
+
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
@@ -95,12 +101,12 @@ void MathRuntime::normalize_result(MathResult& result, const MathRequest& req) c
 }
 
 MathResult MathRuntime::process_request(const MathRequest& request) {
-    stats_.total_calculations++;
+    { std::lock_guard<std::mutex> g(stats_mu_); stats_.total_calculations++; }
 
     // Step 1: Validate Expression
     std::string val_err;
     if (!validator_->validate(request.expression, val_err)) {
-        stats_.security_rejections++;
+        { std::lock_guard<std::mutex> g(stats_mu_); stats_.security_rejections++; }
         MathResult res;
         res.request_id = request.request_id;
         res.status = MathStatus::kInvalidExpression;
@@ -114,11 +120,11 @@ MathResult MathRuntime::process_request(const MathRequest& request) {
     // Step 2: Cache Lookup
     MathResult cached_res;
     if (cache_->get(request, cached_res)) {
-        stats_.cache_hits++;
+        { std::lock_guard<std::mutex> g(stats_mu_); stats_.cache_hits++; }
         cached_res.complexity_score = complexity;
         return cached_res;
     }
-    stats_.cache_misses++;
+    { std::lock_guard<std::mutex> g(stats_mu_); stats_.cache_misses++; }
 
     // Step 3: Calculation Routing
     IMathBackend* backend = route_backend(request, complexity);
@@ -130,10 +136,10 @@ MathResult MathRuntime::process_request(const MathRequest& request) {
         return res;
     }
 
-    if (backend->backend_type() == MathBackendType::kFastNumeric) {
-        stats_.fast_path_count++;
-    } else {
-        stats_.mathics_count++;
+    {
+        std::lock_guard<std::mutex> g(stats_mu_);
+        if (backend->backend_type() == MathBackendType::kFastNumeric) stats_.fast_path_count++;
+        else stats_.mathics_count++;
     }
 
     // Step 4: Execution
@@ -141,15 +147,31 @@ MathResult MathRuntime::process_request(const MathRequest& request) {
     if (backend->backend_type() == MathBackendType::kFastNumeric && res.status != MathStatus::kSuccess &&
         mathics_backend_->is_available() && mathics_backend_->supports_operation(request.operation, request.mode)) {
         // the int64 fast path could not produce an exact result (overflow, unsupported syntax): the CAS takes over
-        stats_.fast_path_count--;
-        stats_.mathics_count++;
+        { std::lock_guard<std::mutex> g(stats_mu_); stats_.fast_path_count--; stats_.mathics_count++; }
         res = mathics_backend_->execute(request);
     }
     res.complexity_score = complexity;
-    stats_.total_execution_time_ms += res.execution_time_ms;
+    { std::lock_guard<std::mutex> g(stats_mu_); stats_.total_execution_time_ms += res.execution_time_ms; }
 
     // Step 5: Normalization
     normalize_result(res, request);
+
+    // Provenance: what produced this result and under which assumptions (reproducibility, cache correctness)
+    {
+        MathProvenance& pv = res.provenance;
+        pv.normalized_expression = res.canonical_expression.empty() ? ExpressionParser::canonicalize(request.expression) : res.canonical_expression;
+        pv.operation = math_operation_to_string(request.operation);
+        pv.backend = res.backend_name;
+        pv.backend_version = res.backend_version;
+        pv.algorithm = res.backend_type == MathBackendType::kFastNumeric ? "int64 rational fast path (overflow-checked)" : "exact CAS evaluation";
+        pv.assumptions = request.assumptions;
+        pv.precision_digits = request.mode == MathMode::kNumeric ? request.precision_digits : 0;
+        pv.exact = request.mode != MathMode::kNumeric;
+        pv.ir_version = MathResultCache::ir_version();
+        pv.input_hashes = {MathResultCache::content_hash(request.expression)};
+        pv.expression_hash = MathResultCache::content_hash(MathResultCache::make_cache_key(request));
+        pv.timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    }
 
     // Step 6: Cache Put (if successful)
     if (res.status == MathStatus::kSuccess) {
@@ -158,10 +180,81 @@ MathResult MathRuntime::process_request(const MathRequest& request) {
 
     // Step 7: Virtual Context Integration (External State Store)
     if (vctx_ && res.status == MathStatus::kSuccess) {
+        std::lock_guard<std::mutex> g(vctx_mu_);
         vctx_->append_tool_result("mathics", request.expression, res.raw_result, 0, res.observation_tokens);
     }
 
     return res;
+}
+
+MathCost MathRuntime::estimate_cost(const MathRequest& request) const {
+    MathCost c;
+    const uint32_t complexity = validator_->compute_complexity(request.expression);
+    IMathBackend* b = route_backend(request, complexity);
+    c.backend = b ? b->name() : "none";
+    // work grows with the expression and with the operation; a matrix of n x n entries costs about n^3
+    double op = 1.0;
+    switch (request.operation) {
+        case MathOperation::kEvaluate: op = 1.0; break;
+        case MathOperation::kSimplify: case MathOperation::kExpand: op = 3.0; break;
+        case MathOperation::kDifferentiate: op = 2.0; break;
+        case MathOperation::kFactor: op = 6.0; break;
+        case MathOperation::kSolve: case MathOperation::kSeries: op = 8.0; break;
+        case MathOperation::kIntegrate: case MathOperation::kLimit: op = 12.0; break;
+        case MathOperation::kMatrixOp: case MathOperation::kDeterminant: op = 5.0; break;
+        default: op = 2.0; break;
+    }
+    const bool fast = b && b->backend_type() == MathBackendType::kFastNumeric;
+    c.precision_cost = request.mode == MathMode::kNumeric ? 1.0 + std::pow(std::max(1, request.precision_digits) / 15.0, 1.6) : 1.0;
+    c.cpu_units = (fast ? 0.001 : 0.05) * (1.0 + complexity / 50.0) * op * c.precision_cost;
+    c.latency_ms = c.cpu_units;
+    c.memory_bytes = static_cast<uint64_t>(request.expression.size()) * 64 + (fast ? 4096 : 262144);
+    MathResult probe;
+    c.cached = cache_ && const_cast<MathResultCache&>(*cache_).get(request, probe);
+    if (c.cached) { c.cpu_units = 0.0005; c.latency_ms = 0.0005; }
+    return c;
+}
+
+std::vector<MathResult> MathRuntime::process_batch(const std::vector<MathRequest>& requests, size_t max_threads) {
+    std::vector<MathResult> out(requests.size());
+    if (requests.empty()) return out;
+    // identical requests are computed once (request-local cache)
+    std::vector<size_t> unique;               // index of the first request with each key
+    std::vector<size_t> first_of(requests.size());
+    {
+        std::unordered_map<std::string, size_t> seen;
+        for (size_t i = 0; i < requests.size(); ++i) {
+            auto key = MathResultCache::make_cache_key(requests[i]);
+            auto it = seen.find(key);
+            if (it == seen.end()) { seen[key] = i; unique.push_back(i); first_of[i] = i; }
+            else first_of[i] = it->second;
+        }
+    }
+    double total = 0;
+    std::vector<double> cost(requests.size(), 0.0);
+    for (size_t i : unique) { cost[i] = estimate_cost(requests[i]).cpu_units; total += cost[i]; }
+    size_t threads = max_threads ? max_threads : std::min<size_t>(limits_.max_concurrent_evaluations, std::max(1u, std::thread::hardware_concurrency()));
+    threads = std::min(threads, unique.size());
+    // threads cost about 0.1 ms each to start: run in parallel only when the work is clearly larger than that
+    if (threads <= 1 || total < 0.4) {
+        for (size_t i : unique) out[i] = process_request(requests[i]);
+    } else {
+        std::sort(unique.begin(), unique.end(), [&](size_t a, size_t b) { return cost[a] > cost[b]; });   // largest first
+        std::atomic<size_t> next{0};
+        auto worker = [&]() {
+            while (true) {
+                const size_t k = next.fetch_add(1);
+                if (k >= unique.size()) return;
+                out[unique[k]] = process_request(requests[unique[k]]);
+            }
+        };
+        std::vector<std::thread> pool;
+        for (size_t t = 0; t + 1 < threads; ++t) pool.emplace_back(worker);
+        worker();
+        for (auto& t : pool) t.join();
+    }
+    for (size_t i = 0; i < requests.size(); ++i) if (first_of[i] != i) { out[i] = out[first_of[i]]; out[i].request_id = requests[i].request_id; }
+    return out;
 }
 
 MathResult MathRuntime::evaluate(const std::string& expression, MathMode mode,

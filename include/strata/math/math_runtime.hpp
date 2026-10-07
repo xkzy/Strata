@@ -11,12 +11,26 @@
 #include "strata/math/math_types.hpp"
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
 namespace strata::math {
 
+// What running a request is expected to cost (heuristic, deterministic): the scheduler uses it to decide whether
+// running independent requests in parallel is worth the threads. Not a measurement.
+struct MathCost {
+    double cpu_units = 0;          // relative work; 1.0 is about a millisecond of one core
+    uint64_t memory_bytes = 0;
+    double latency_ms = 0;         // estimate on one core
+    bool parallelizable = true;    // independent of other requests
+    double precision_cost = 1.0;   // multiplier from the requested digits
+    bool cached = false;           // an exact cache hit costs next to nothing
+    std::string backend;           // the backend the router would pick
+};
+
 class MathRuntime {
+public:
 public:
     explicit MathRuntime(std::shared_ptr<context::VirtualContextManager> vctx = nullptr,
                          const MathSecurityLimits& limits = MathSecurityLimits());
@@ -63,8 +77,14 @@ public:
                                 const std::string& tenant_id = "default_tenant",
                                 const std::string& session_id = "default_session");
 
-    // Generic Request Processing via Calculator Router
+    // Generic Request Processing via Calculator Router (thread-safe)
     MathResult process_request(const MathRequest& request);
+
+    // Estimated cost of a request (see MathCost); cheap, no evaluation.
+    MathCost estimate_cost(const MathRequest& request) const;
+    // Runs independent requests, in the order given. Identical requests (same cache key) are computed once. Runs in parallel only when the
+    // estimated total work is large enough to repay the threads; max_threads 0 = the configured limit.
+    std::vector<MathResult> process_batch(const std::vector<MathRequest>& requests, size_t max_threads = 0);
 
     // Verification Loop: Verifies whether an LLM generation's arithmetic matches deterministic computation
     MathVerificationResult verify_calculation(const std::string& llm_output, const std::string& expected_expression);
@@ -96,6 +116,8 @@ private:
     std::unique_ptr<SageBackend> sage_backend_;
 
     mutable MathRuntimeStats stats_;
+    mutable std::mutex stats_mu_;
+    std::mutex vctx_mu_;
 
     IMathBackend* route_backend(const MathRequest& request, uint32_t complexity) const;
     void normalize_result(MathResult& result, const MathRequest& req) const;

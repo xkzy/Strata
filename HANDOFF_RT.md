@@ -112,6 +112,45 @@ one `HybridIndex` per context. Not a tool, no new endpoint.
   vector index (rebuilt per process), real embedding model, resource-aware parallel retrieval (retrievers run sequentially), per-tenant quotas, graph
   retrieval beyond definitions/callers/imports, concurrency stress tests, term-level invalidation of ranked results (only negative entries have it).
 
+## Math Engine additions (CAS, verification, units, provenance, scheduling)
+- **IR:** `strata::math::cas::Expr` is the Strata Math IR (backend-neutral: no Sage/Mathics objects exist anywhere; the Mathics-syntax names and the
+  Sage-syntax front end `SageBackend` translate to it at the boundary). Sage and Mathics are not installed or linked: they are behaviour references.
+- **New CAS functions** (`src/math/cas/extended.cpp`, exact only, otherwise CasUnsupported / CasMathError): Rank, Tr, NullSpace, CharacteristicPolynomial,
+  Eigenvalues / Eigenvectors (exact, with multiplicity; eigenvectors only for rational eigenvalues), LU (Sage convention P, L, U), IdentityMatrix, Grad,
+  Jacobian, Hessian, Collect, Apart, Reduce / Solve for polynomial and rational inequalities in one variable (returns Or / And of Less / Greater ...),
+  ChineseRemainder, ModularInverse, PartitionsP, GF(p) (PolynomialMod, PolynomialGCDMod, FactorMod: square-free + distinct-degree + equal-degree factorization incl. p-th powers and characteristic 2, for prime p < 2^31;
+  MultiplicativeOrder, PrimitiveRoot, n < 2^62 by trial division); comparison operators `< > <= >= !=` parse and compare numbers.
+  Not done: extension fields GF(p^k), polynomial rings beyond Q[x] and GF(p)[x], symbolic rank / null space, SVD / QR, complex eigenvalues, systems of inequalities,
+  integer partitions as a list, graph mathematics, statistics.
+- **Verification** (`include/strata/math/verify.hpp`, `src/math/verify.cpp`): `MathVerifier::{verify_equal, verify_not_equal, verify_identity,
+  verify_equation, verify_inequality, verify}` -> VERIFIED / CONTRADICTED / UNKNOWN with `assumptions_used`, `conditions` (denominators that must be
+  non-zero), a witness, and provenance. `verify_equal` of a statement with free variables that holds for some values only is UNKNOWN (it may be an
+  equation to solve); `verify_identity` reports the counterexample as CONTRADICTED. Assumptions (`x >= 0`, `x real`, `n integer`, `x != 0`, ...) are parsed
+  explicitly; `sqrt(x^2)` becomes `x` / `-x` / `Abs(x)` only under the matching assumption. Counterexample search uses a fixed deterministic sample set;
+  a statement that survives sampling but is not proven stays UNKNOWN.
+- **Units** (`src/math/units.cpp`): dimensional analysis over SI base units + bits (`V*A = W`, `kg*m/s^2 = N`, `km = 1000 m`, `bytes = 8 bits`); a different
+  dimension is CONTRADICTED, an unknown unit symbol is UNKNOWN. Not wired into claim detection yet (API + tests only).
+- **Bugs found and fixed on the way:** `ExpressionParser::canonicalize` removed every space and every comma before three digits, so `gcd(12,345)` and
+  `gcd(12345)` shared a cache key (the second was served the first one's answer), `2 3` (a product) became `23`, and the division sign became a product;
+  the int64 fast path evaluated `2 3` as 3 (it skipped what it did not understand). Both fixed with regression tests (`test_math_runtime` [Test 9]).
+- **Provenance and cache:** every `MathResult` carries `MathProvenance` (hash, normalized expression, backend and version, algorithm, assumptions, precision,
+  rounding, IR version, input hashes, timestamp). The cache key includes engine version, IR version, operation, mode, variable, point, order, assumptions,
+  precision (numeric only) and the parsed expression.
+- **Scheduling:** `MathRuntime::estimate_cost` (heuristic, not a measurement) and `process_batch` (deduplicates identical requests, runs in parallel only when the
+  estimated work repays the threads; `process_request` is thread-safe). No SIMD / BLAS / GPU kernels were added: the CAS is exact rational arithmetic and nothing
+  here is numerically heavy.
+- **Claims:** "the rank / trace / determinant of [[..]] is N" and "[[..]] is invertible / singular" are checked by the transparent runtime (`src/rt/symbolic.cpp`).
+- Tests: `build/test_cas` (209), `build/test_math_verify`, `build/test_math_runtime` (10 suites), `build/test_symbolic_claims`.
+  Differential test against Mathics3: `tools/differential_mathics.py` with `build/strata_cas_cli`. Mathics3 10.0.1 needs Python 3.13 (3.14 breaks its start-up),
+  `packaging` and `setuptools<81` in the venv, or its session fails with an unhelpful `ValueError`. Result on 124 fixed + random cases (a 459-case run, seed 11, before the GF(p) additions):
+  all agree, 0 disagree, 1 known gap (`Limit[x Log[x], x -> 0]`: Strata refuses the two-sided limit of a function that is complex for x < 0), 0 the reference
+  cannot do (number-theory functions Mathics lacks are compared with SymPy, which Mathics itself builds on); inequalities are checked against the inequality itself at sample points because Mathics does not solve them. The comparison
+  found two real bugs, fixed: `D[f, x, y]` ignored `y`; equal-degree splitting in characteristic 2 failed ("did not converge"; it needs the trace map). A later 365-case run (seed 5, with random `FactorMod` checked by SymPy for product and irreducibility): all agree. SageMath is not installed here, so there is no Sage differential run.
+- **Benchmarks** (`build/bench_math_engine`, one process, AMD Ryzen 9 9950X3D, 32 threads): cold -> cache hit: exact arithmetic 0.20 -> 0.004 ms, `2^10000`
+  0.33 -> 0.0015 ms, `1000!` 0.36 -> 0.0012 ms, expand `(x+1)^40` 1.5 -> 0.0016 ms, factor `x^24-1` 0.76 -> 0.002 ms, integrate `x^3 e^x` 0.17 -> 0.002 ms.
+  A batch of 400 distinct symbolic requests: 180 ms on 1 thread, 104 ms on 2, 54 ms on 4, 34 ms on 8 (5.2x). Not measured: memory, large symbolic expressions,
+  cache behaviour under many tenants.
+
 ## Running it
 ```
 go build -o bin/strata ./cmd/strata            # Go server (rebuild after pulling; the running process keeps the old binary)
@@ -138,7 +177,7 @@ CORS allowlist + `Host` validation (DNS rebinding); loopback bind by default; CA
 
 ## Build / test
 ```
-cd build && cmake .. && ninja test_cas test_math_runtime test_transparent_runtime test_virtual_window test_json test_symbolic_claims test_hybrid_retrieval strata_rt_server
+cd build && cmake .. && ninja test_cas test_math_runtime test_transparent_runtime test_virtual_window test_json test_symbolic_claims test_hybrid_retrieval test_math_verify strata_cas_cli strata_rt_server
 ./test_cas; ./test_math_runtime; ./test_transparent_runtime; ./test_virtual_window; ./test_json; ./test_symbolic_claims; ./test_hybrid_retrieval
 cd .. && go test ./...      # TestRuntime* use build/strata_rt_server; tokenizer tests use the pack tokenizer dir (skip if absent)
 ```

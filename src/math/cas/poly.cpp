@@ -269,9 +269,16 @@ void equal_degree(const Fp& fp, const ModPoly& g, size_t d, Rng& rng, std::vecto
         for (auto& c : a) c = rng.next() % fp.p;
         fp.trim(a);
         if (a.size() < 2) continue;
-        ModPoly b = fp.powmod_big(a, expo, g);
-        ModPoly bm1 = fp.sub(b, ModPoly{1});
-        ModPoly g1 = fp.gcd(g, bm1);
+        ModPoly splitter;
+        if (fp.p == 2) {
+            // characteristic 2: the trace map a + a^2 + a^4 + ... + a^(2^(d-1)) is 0 or 1 modulo each irreducible factor
+            ModPoly t = fp.mod(a, g), cur = t;
+            for (size_t k = 1; k < d; ++k) { cur = fp.mod(fp.mul(cur, cur), g); t = fp.add(t, cur); }
+            splitter = t;
+        } else {
+            splitter = fp.sub(fp.powmod_big(a, expo, g), ModPoly{1});   // (a^((p^d-1)/2) - 1)
+        }
+        ModPoly g1 = fp.gcd(g, splitter);
         if (g1.size() > 1 && g1.size() < g.size()) {
             ModPoly q, r;
             fp.divmod(g, g1, q, r);
@@ -609,6 +616,83 @@ Factorization factor_over_q(const Poly& f, const TickFn& tick) {
         return a.second < b.second;
     });
     return result;
+}
+
+
+// ---------------------------------------------------------------------------------------------------------------
+// public factorization over GF(p)
+// ---------------------------------------------------------------------------------------------------------------
+namespace {
+
+ModPoly gfp_derivative(const Fp& fp, const ModPoly& a) {
+    ModPoly d;
+    for (size_t i = 1; i < a.size(); ++i) d.push_back(fp.mulm(a[i], static_cast<u64>(i) % fp.p));
+    fp.trim(d);
+    return d;
+}
+
+// f = g(x^p): the coefficients at multiples of p
+ModPoly gfp_pth_root(const Fp& fp, const ModPoly& a) {
+    ModPoly r;
+    for (size_t i = 0; i < a.size(); i += fp.p) r.push_back(a[i]);
+    fp.trim(r);
+    return r;
+}
+
+void gfp_squarefree(const Fp& fp, ModPoly f, int mult, std::vector<std::pair<ModPoly, int>>& out, const TickFn& tick, int depth = 0) {
+    if (f.size() <= 1) return;
+    if (depth > 64) throw CasLimitError("modular factorization: too deep");
+    f = fp.monic(f);
+    ModPoly d = gfp_derivative(fp, f);
+    if (d.empty()) {   // f is a p-th power of g(x)
+        gfp_squarefree(fp, gfp_pth_root(fp, f), mult * static_cast<int>(fp.p), out, tick, depth + 1);
+        return;
+    }
+    ModPoly c = fp.gcd(f, d), q, r;
+    fp.divmod(f, c, q, r);
+    ModPoly w = fp.monic(q);
+    int i = 1;
+    while (w.size() > 1) {
+        tick(w.size() * w.size() + 8);
+        ModPoly y = fp.gcd(w, c);
+        ModPoly fac, rem;
+        fp.divmod(w, y, fac, rem);
+        if (fac.size() > 1) out.push_back({fp.monic(fac), i * mult});
+        w = y;
+        ModPoly c2, r2;
+        fp.divmod(c, y, c2, r2);
+        c = fp.monic(c2);
+        ++i;
+    }
+    if (c.size() > 1) gfp_squarefree(fp, gfp_pth_root(fp, c), mult * static_cast<int>(fp.p), out, tick, depth + 1);
+}
+
+} // namespace
+
+ModFactorization factor_over_gfp(std::vector<uint64_t> f, uint64_t p, const TickFn& tick) {
+    Fp fp(p);
+    for (auto& c : f) c %= p;
+    fp.trim(f);
+    ModFactorization res;
+    if (f.empty()) return res;
+    res.content = f.back();
+    if (f.size() == 1) return res;
+    std::vector<std::pair<ModPoly, int>> parts;
+    gfp_squarefree(fp, f, 1, parts, tick);
+    for (auto& [g, m] : parts)
+        for (auto& irr : factor_mod_p(fp, g, tick)) res.factors.push_back({irr, m});
+    // merge equal factors found in different square-free parts, then order by degree and coefficients
+    std::sort(res.factors.begin(), res.factors.end(), [](const auto& a, const auto& b) {
+        if (a.first.size() != b.first.size()) return a.first.size() < b.first.size();
+        return a.first < b.first;
+    });
+    std::vector<std::pair<std::vector<uint64_t>, int>> merged;
+    for (auto& fm : res.factors) {
+        if (!merged.empty() && merged.back().first == fm.first) merged.back().second += fm.second;
+        else merged.push_back(fm);
+    }
+    res.factors = std::move(merged);
+    return res;
 }
 
 } // namespace strata::math::cas

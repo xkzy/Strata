@@ -83,7 +83,7 @@ MathResult MathicsBackend::execute(const MathRequest& request) {
         cas::Budget budget;
         if (request.timeout_ms > 0) budget.timeout_ms = request.timeout_ms;
         cas::Engine engine(budget);
-        cas::Expr e = cas::parse(request.expression);
+        cas::Expr e = cas::parse(res.canonical_expression);
 
         cas::Expr out;
         switch (request.operation) {

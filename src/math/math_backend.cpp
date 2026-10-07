@@ -203,6 +203,40 @@ bool FastNumericBackend::evaluate_arithmetic_exact(const std::string& raw_expr, 
         return true;
     }
 
+    {   // grammar check: this evaluator used to skip anything it did not recognize ("2 3" evaluated to 3). Refuse instead; the CAS takes over.
+        bool want_operand = true;
+        int depth = 0;
+        for (size_t i = 0; i < expr.length(); ++i) {
+            const char c = expr[i];
+            if (c == ' ') {
+                // a space between two operands is implicit multiplication, which this evaluator does not do
+                size_t j = i;
+                while (j < expr.length() && expr[j] == ' ') ++j;
+                if (!want_operand && j < expr.length() && (std::isdigit(static_cast<unsigned char>(expr[j])) || expr[j] == '(')) { err = "implicit multiplication"; return false; }
+                i = j - 1;
+            } else if (std::isdigit(static_cast<unsigned char>(c)) || (c == '.' && i + 1 < expr.length() && std::isdigit(static_cast<unsigned char>(expr[i + 1])))) {
+                if (!want_operand) { err = "missing operator"; return false; }
+                while (i + 1 < expr.length() && (std::isdigit(static_cast<unsigned char>(expr[i + 1])) || expr[i + 1] == '.')) ++i;
+                want_operand = false;
+            } else if (c == '(') {
+                if (!want_operand) { err = "implicit multiplication"; return false; }
+                ++depth;
+            } else if (c == ')') {
+                if (want_operand || depth == 0) { err = "unbalanced parentheses"; return false; }
+                --depth;
+            } else if (c == '+' || c == '-') {
+                want_operand = true;   // binary or unary
+            } else if (c == '*' || c == '/' || c == '^') {
+                if (want_operand) { err = "operator without an operand"; return false; }
+                want_operand = true;
+            } else {
+                err = std::string("unsupported character '") + c + "'";
+                return false;
+            }
+        }
+        if (want_operand || depth != 0) { err = "incomplete expression"; return false; }
+    }
+
     for (size_t i = 0; i < expr.length(); ++i) {
         if (expr[i] == ' ') continue;
 
@@ -263,8 +297,8 @@ bool FastNumericBackend::evaluate_arithmetic_exact(const std::string& raw_expr, 
         ops.pop();
     }
 
-    if (values.empty()) {
-        err = "No values computed";
+    if (values.size() != 1) {
+        err = "malformed expression";
         return false;
     }
 

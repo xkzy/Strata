@@ -548,6 +548,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     src/math/cas/poly.cpp
     src/math/cas/algebra.cpp
     src/math/cas/series.cpp
+    src/math/cas/extended.cpp
+    src/math/verify.cpp
+    src/math/units.cpp
     src/math/cas/limit.cpp
     src/math/cas/integrate.cpp
     src/math/cas/matrix.cpp
@@ -571,6 +574,23 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(test_math_runtime PRIVATE strata_math strata_tools)
     add_test(NAME test_math_runtime COMMAND test_math_runtime)
     set_tests_properties(test_math_runtime PROPERTIES TIMEOUT 60)
+  endif()
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/math/cas_cli.cpp")
+    add_executable(strata_cas_cli tests/math/cas_cli.cpp)
+    target_link_libraries(strata_cas_cli PRIVATE strata_math)
+  endif()
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/math/bench_math_engine.cpp")
+    add_executable(bench_math_engine tests/math/bench_math_engine.cpp)
+    target_link_libraries(bench_math_engine PRIVATE strata_math strata_tools)
+  endif()
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/math/test_math_verify.cpp")
+    add_executable(test_math_verify tests/math/test_math_verify.cpp)
+    target_link_libraries(test_math_verify PRIVATE strata_math)
+    add_test(NAME test_math_verify COMMAND test_math_verify)
+    set_tests_properties(test_math_verify PROPERTIES TIMEOUT 60)
   endif()
 
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/math/test_sage_backend.cpp")

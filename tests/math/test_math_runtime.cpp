@@ -282,6 +282,87 @@ void test_unified_system_integration() {
     std::cout << "  Passed. Math runtime integrated with StrataUnifiedRuntime." << std::endl;
 }
 
+void test_canonical_form_and_cache_correctness() {
+    std::cout << "[Test 9] Canonical form never changes meaning; cache keys and provenance..." << std::endl;
+    using namespace strata::math;
+    // These used to collide: "gcd(12,345)" became "gcd(12345)", "2 3" (a product) became "23", and the division sign became a product.
+    assert(ExpressionParser::canonicalize("gcd(12,345)") == "gcd(12,345)");
+    assert(ExpressionParser::canonicalize("gcd(12,345)") != ExpressionParser::canonicalize("gcd(12345)"));
+    assert(ExpressionParser::canonicalize("{1,234}") == "{1,234}");
+    assert(ExpressionParser::canonicalize("2 3") == "2 3");
+    assert(ExpressionParser::canonicalize("x y") != ExpressionParser::canonicalize("xy"));
+    assert(ExpressionParser::canonicalize("6\xC3\xB7" "3") == "6/3");
+    assert(ExpressionParser::canonicalize("2\xC3\x97" "3") == "2*3");
+    assert(ExpressionParser::canonicalize("2,384 * 7,291") == "2384*7291");
+
+    MathRuntime rt;
+    auto g1 = rt.evaluate("gcd(12,345)");
+    auto g2 = rt.evaluate("gcd(12345)");
+    assert(g1.status == MathStatus::kSuccess && g2.status == MathStatus::kSuccess);
+    assert(g1.exact_result == "3" && g2.exact_result == "12345");      // the second is not served the first one's cached answer
+    assert(!g2.cache_hit);
+    assert(rt.evaluate("2 3").exact_result == "6");                    // implicit multiplication, not "the last number"
+    assert(rt.evaluate("6\xC3\xB7" "3").exact_result == "2");
+    assert(rt.evaluate("2 +* 3").status != MathStatus::kSuccess);
+
+    // the cache key includes everything a result depends on
+    MathRequest a; a.expression = "x^2"; a.operation = MathOperation::kEvaluate;
+    MathRequest b = a; b.assumptions = "x > 0";
+    MathRequest c = a; c.mode = MathMode::kNumeric; c.precision_digits = 20;
+    MathRequest d = c; d.precision_digits = 30;
+    MathRequest e = a; e.operation = MathOperation::kSimplify;
+    const auto ka = MathResultCache::make_cache_key(a);
+    assert(ka != MathResultCache::make_cache_key(b));   // assumptions
+    assert(ka != MathResultCache::make_cache_key(c));   // mode
+    assert(MathResultCache::make_cache_key(c) != MathResultCache::make_cache_key(d));   // precision
+    assert(ka != MathResultCache::make_cache_key(e));   // operation
+    assert(ka.find(MathResultCache::engine_version()) != std::string::npos && ka.find(MathResultCache::ir_version()) != std::string::npos);
+
+    auto r = rt.evaluate("1/3 + 1/6");
+    assert(r.provenance.exact && !r.provenance.expression_hash.empty() && !r.provenance.backend.empty() && !r.provenance.backend_version.empty());
+    assert(!r.provenance.ir_version.empty() && r.provenance.timestamp_ms > 0 && !r.provenance.normalized_expression.empty());
+    std::cout << "  Passed." << std::endl;
+}
+
+void test_batch_cost_and_concurrency() {
+    std::cout << "[Test 10] Cost estimates, deduplicated and parallel batches..." << std::endl;
+    using namespace strata::math;
+    std::vector<MathRequest> reqs;
+    const char* polys[] = {"x^5 + 3*x^4 - x^2 + 7", "(x+1)^8", "x^6 - 1", "x^4 - 5*x^2 + 4", "(x^2+1)*(x-3)*(x+2)", "x^7 - x", "(x-1)^3*(x+4)", "x^3 + 2*x^2 - 5*x - 6"};
+    int id = 0;
+    for (int rep = 0; rep < 4; ++rep)
+        for (const char* p : polys) {
+            for (auto op : {MathOperation::kExpand, MathOperation::kFactor, MathOperation::kDifferentiate, MathOperation::kIntegrate, MathOperation::kSolve}) {
+                MathRequest r; r.request_id = ++id; r.expression = std::string(op == MathOperation::kSolve ? std::string(p) + " == 0" : p); r.operation = op; r.variable = "x";
+                reqs.push_back(r);
+            }
+        }
+    MathRuntime seq_rt, par_rt;
+    std::vector<MathResult> seq;
+    for (const auto& r : reqs) seq.push_back(seq_rt.process_request(r));
+    auto par = par_rt.process_batch(reqs, 4);
+    assert(par.size() == reqs.size());
+    for (size_t i = 0; i < reqs.size(); ++i) {
+        assert(par[i].request_id == reqs[i].request_id);
+        assert(par[i].status == seq[i].status);
+        assert(par[i].exact_result == seq[i].exact_result);   // parallel and sequential agree exactly
+    }
+    // 4 repetitions of each distinct request: computed once each
+    assert(par_rt.get_stats().total_calculations == reqs.size() / 4);
+
+    // cost model: more work costs more; numeric precision costs more; a cached request is nearly free
+    MathRuntime rt;
+    MathRequest ev; ev.expression = "2+3"; ev.operation = MathOperation::kEvaluate;
+    MathRequest in; in.expression = "x^3*Exp(x)"; in.operation = MathOperation::kIntegrate; in.variable = "x";
+    assert(rt.estimate_cost(in).cpu_units > rt.estimate_cost(ev).cpu_units);
+    MathRequest n15 = in; n15.mode = MathMode::kNumeric; n15.precision_digits = 15;
+    MathRequest n60 = n15; n60.precision_digits = 60;
+    assert(rt.estimate_cost(n60).cpu_units > rt.estimate_cost(n15).cpu_units);
+    rt.process_request(ev);
+    assert(rt.estimate_cost(ev).cached && rt.estimate_cost(ev).cpu_units < 0.01);
+    std::cout << "  Passed." << std::endl;
+}
+
 int main() {
     std::cout << "======================================================================" << std::endl;
     std::cout << "        STRATA MATHEMATICAL BACKING ENGINE (MATHICS) TEST SUITE       " << std::endl;
@@ -296,9 +377,11 @@ int main() {
     test_verification_loop();
     test_llm_calculation_interception();
     test_unified_system_integration();
+    test_canonical_form_and_cache_correctness();
+    test_batch_cost_and_concurrency();
 
     std::cout << "======================================================================" << std::endl;
-    std::cout << "ALL 8 MATHEMATICAL ENGINE TEST SUITES PASSED SUCCESSFULLY!" << std::endl;
+    std::cout << "ALL 10 MATHEMATICAL ENGINE TEST SUITES PASSED SUCCESSFULLY!" << std::endl;
     std::cout << "======================================================================" << std::endl;
     return 0;
 }

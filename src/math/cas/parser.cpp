@@ -42,6 +42,16 @@ const std::map<std::string, std::string>& function_names() {
         {"quotient", "Quotient"}, {"coprimeq", "CoprimeQ"}, {"divisible", "Divisible"}, {"evenq", "EvenQ"},
         {"oddq", "OddQ"}, {"integerq", "IntegerQ"}, {"range", "Range"}, {"table", "Table"}, {"sum", "Sum"},
         {"product", "Product"}, {"total", "Total"}, {"length", "Length"},
+        {"apart", "Apart"}, {"collect", "Collect"}, {"rank", "Rank"}, {"matrixrank", "Rank"}, {"tr", "Tr"}, {"trace", "Tr"},
+        {"nullspace", "NullSpace"}, {"kernel", "NullSpace"}, {"characteristicpolynomial", "CharacteristicPolynomial"}, {"charpoly", "CharacteristicPolynomial"},
+        {"eigenvalues", "Eigenvalues"}, {"eigenvectors", "Eigenvectors"}, {"lu", "LU"}, {"identitymatrix", "IdentityMatrix"},
+        {"grad", "Grad"}, {"gradient", "Grad"}, {"jacobian", "Jacobian"}, {"hessian", "Hessian"}, {"reduce", "Reduce"},
+        {"chineseremainder", "ChineseRemainder"}, {"crt", "ChineseRemainder"}, {"modularinverse", "ModularInverse"}, {"modinv", "ModularInverse"},
+        {"inverse_mod", "ModularInverse"}, {"partitionsp", "PartitionsP"}, {"number_of_partitions", "PartitionsP"},
+        {"less", "Less"}, {"greater", "Greater"}, {"lessequal", "LessEqual"}, {"greaterequal", "GreaterEqual"}, {"unequal", "Unequal"},
+        {"and", "And"}, {"or", "Or"}, {"not", "Not"},
+        {"polynomialmod", "PolynomialMod"}, {"factormod", "FactorMod"}, {"polynomialgcdmod", "PolynomialGCDMod"}, {"multiplicativeorder", "MultiplicativeOrder"},
+        {"multiplicative_order", "MultiplicativeOrder"}, {"primitiveroot", "PrimitiveRoot"}, {"primitive_root", "PrimitiveRoot"},
     };
     return m;
 }
@@ -141,6 +151,11 @@ private:
     Expr parse_equation() {
         Expr lhs = parse_sum();
         if (is_op("==")) { ++i_; return apply2("Equal", lhs, parse_sum()); }
+        if (is_op("<")) { ++i_; return apply2("Less", lhs, parse_sum()); }
+        if (is_op(">")) { ++i_; return apply2("Greater", lhs, parse_sum()); }
+        if (is_op("<=")) { ++i_; return apply2("LessEqual", lhs, parse_sum()); }
+        if (is_op(">=")) { ++i_; return apply2("GreaterEqual", lhs, parse_sum()); }
+        if (is_op("!=")) { ++i_; return apply2("Unequal", lhs, parse_sum()); }
         if (is_op("->")) { ++i_; return apply2("Rule", lhs, parse_sum()); }
         return lhs;
     }

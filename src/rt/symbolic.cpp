@@ -123,15 +123,25 @@ std::vector<SymbolicSpec> find_symbolic_claims(const std::string& sentence) {
     };
 
     for (size_t i = 0; i < w.size(); ++i) {
-        // ---- "the determinant of [[1, 2], [3, 4]] is -2" ----
-        if (at(i, "determinant") && at(i + 1, "of")) {
+        // ---- "the determinant / rank / trace of [[1, 2], [3, 4]] is D" ----
+        if ((at(i, "determinant") || at(i, "rank") || at(i, "trace")) && at(i + 1, "of")) {
+            const std::string head = at(i, "determinant") ? "Det" : at(i, "rank") ? "Rank" : "Tr";
             size_t j = 0;
             std::string m = span_after(w, i + 2, &j, false);
             if (j < w.size() && (at(j, "is") || at(j, "equals") || at(j, "="))) {
                 size_t k = 0;
                 std::string d = span_after(w, j + 1, &k, false);
                 if (m.rfind("[[", 0) == 0 && !d.empty() && parses(m) && parses(d))
-                    add({"det", m, d, "", "the determinant of " + m + " is " + d});
+                    add({"matfn", m, d, head, "the " + w[i].bare + " of " + m + " is " + d});
+            }
+            continue;
+        }
+        // ---- "[[1, 2], [3, 4]] is invertible / singular" ----
+        if ((at(i, "invertible") || at(i, "singular") || at(i, "non-singular") || at(i, "nonsingular")) && i >= 2 && at(i - 1, "is")) {
+            const std::string m = span_before(w, i - 1);
+            if (m.rfind("[[", 0) == 0 && parses(m)) {
+                const std::string want = at(i, "singular") ? "singular" : "invertible";
+                add({"invertible", m, want, "", m + " is " + w[i].bare});
             }
             continue;
         }
@@ -318,14 +328,25 @@ VerifyOutcome SymbolicVerifier::verify(const Claim& claim, const EvidenceSet&, C
             return out;
         }
 
-        if (s.kind == "det") {
-            Expr truth = en.eval(app("Det", {parse(s.f)}));
-            if (truth->has_head("Det")) { out.explanation = "could not evaluate the determinant"; return out; }
+        if (s.kind == "matfn") {
+            Expr truth = en.eval(app(s.var, {parse(s.f)}));
+            if (truth->has_head(s.var.c_str())) { out.explanation = "could not evaluate it"; return out; }
             std::string w2;
-            if (equivalent(en, truth, parse(s.g), w2) == Eq::kEqual) { out.state = VerificationState::kVerified; out.explanation = stmt + " (determinant computed exactly)"; return out; }
+            if (equivalent(en, truth, parse(s.g), w2) == Eq::kEqual) { out.state = VerificationState::kVerified; out.explanation = stmt + " (computed exactly)"; return out; }
             out.state = VerificationState::kContradicted;
             out.corrected_value = to_string(truth);
-            out.explanation = stmt + " is false: the determinant is " + out.corrected_value + " (computed exactly)";
+            out.explanation = stmt + " is false: the value is " + out.corrected_value + " (computed exactly)";
+            return out;
+        }
+
+        if (s.kind == "invertible") {
+            Expr d = en.eval(app("Det", {parse(s.f)}));
+            if (!d->is_number()) { out.explanation = "the determinant is not a number: invertibility depends on the entries"; return out; }
+            const bool invertible = !d->q.is_zero();
+            const bool claim_invertible = s.g == "invertible";
+            out.state = invertible == claim_invertible ? VerificationState::kVerified : VerificationState::kContradicted;
+            out.explanation = stmt + (out.state == VerificationState::kVerified ? " (determinant " : " is false: the determinant is ") + to_string(d) + ")";
+            if (out.state == VerificationState::kContradicted) out.corrected_value = invertible ? "invertible" : "singular";
             return out;
         }
 

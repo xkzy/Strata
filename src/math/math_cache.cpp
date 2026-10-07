@@ -1,8 +1,10 @@
 // src/math/math_cache.cpp - Mathematical Result Cache & Content Store Implementation
 #include "strata/math/math_cache.hpp"
+#include "strata/math/cas/engine.hpp"
 #include "strata/math/expression_parser.hpp"
 
 #include <chrono>
+#include <cstdio>
 #include <sstream>
 
 namespace strata::math {
@@ -10,19 +12,30 @@ namespace strata::math {
 MathResultCache::MathResultCache(size_t max_entries)
     : max_entries_(max_entries) {}
 
+std::string MathResultCache::content_hash(const std::string& text) {
+    uint64_t a = 14695981039346656037ULL, b = 0x9E3779B97F4A7C15ULL;
+    for (unsigned char c : text) { a = (a ^ c) * 1099511628211ULL; b = (b ^ c) * 0x100000001B3ULL + 0x9E3779B97F4A7C15ULL; }
+    char buf[40];
+    std::snprintf(buf, sizeof buf, "%016llx%016llx", static_cast<unsigned long long>(a), static_cast<unsigned long long>(b ^ (a >> 7)));
+    return buf;
+}
+
 std::string MathResultCache::make_cache_key(const MathRequest& req) {
     std::ostringstream ss;
+    // the normalized IR text when the expression parses (spelling-insensitive, meaning-preserving); else the canonical text
     std::string canon = ExpressionParser::canonicalize(req.expression);
+    try { canon = cas::to_string(cas::parse(canon)); } catch (const std::exception&) {}
 
-    ss << math_operation_to_string(req.operation) << "|"
+    ss << engine_version() << "|" << ir_version() << "|"
+       << math_operation_to_string(req.operation) << "|"
        << math_mode_to_string(req.mode) << "|"
        << canon << "|"
        << req.variable << "|"
        << req.point << "|"
        << req.order << "|"
        << req.assumptions << "|"
-       << req.precision_digits;
-
+       << (req.mode == MathMode::kNumeric ? req.precision_digits : 0) << "|"
+       << "round-half-even";
     return ss.str();
 }
 

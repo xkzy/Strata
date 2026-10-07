@@ -540,6 +540,79 @@ static void test_number_theory_and_iteration() {
     CHECK(run("sum(i,{i,1,100000000})").rfind("LIMIT", 0) == 0, "huge explicit sum is stopped");
 }
 
+static void test_extended_math() {
+    std::printf("[extended] linear algebra, vector calculus, partial fractions, inequalities, modular arithmetic\n");
+    CHECK(run("rank({{1,2},{2,4}})") == "1", "rank of a singular matrix");
+    CHECK(run("rank({{1,2,3},{4,5,6},{7,8,10}})") == "3", "rank of a regular 3x3");
+    CHECK(run("tr({{1,2},{3,4}})") == "5", "trace");
+    CHECK(run("charpoly({{1,2},{3,4}}, x)") == "x^2 - 5*x - 2", "characteristic polynomial");
+    CHECK(run("eigenvalues({{2,1},{1,2}})") == "{3, 1}", "eigenvalues, with the larger first");
+    CHECK(run("eigenvalues({{2,0},{0,2}})") == "{2, 2}", "eigenvalue multiplicity");
+    CHECK(run("eigenvectors({{2,1},{1,2}})") == "{{1, 1}, {-1, 1}}", "eigenvectors in the order of the eigenvalues");
+    CHECK(run("nullspace({{1,2},{2,4}})") == "{{-2, 1}}", "null space");
+    {   // every null-space vector really is in the kernel
+        Engine en;
+        Expr ns = en.eval(parse("nullspace({{1,2,3},{2,4,6},{1,0,1}})"));
+        bool ok = !ns->args.empty();
+        for (const auto& v : ns->args) ok = ok && to_string(en.eval(app("Dot", {parse("{{1,2,3},{2,4,6},{1,0,1}}"), v}))) == "{0, 0, 0}";
+        CHECK(ok, "null space vectors are annihilated by the matrix");
+    }
+    CHECK(run("lu({{4,3},{6,3}})") == "{{{1, 0}, {0, 1}}, {{1, 0}, {3/2, 1}}, {{4, 3}, {0, -3/2}}}", "LU: P, L, U");
+    CHECK(run("lu({{0,1},{1,0}})").find("{{0, 1}, {1, 0}}") != std::string::npos, "LU pivots a zero");
+    CHECK(run("D[x^3*y^2, x, y]") == "6*x^2*y", "mixed partial derivative D[f, x, y] differentiates by both variables (it used to ignore y)");
+    CHECK(run("D[x^4, {x, 2}]") == "12*x^2", "D[f, {x, n}]");
+    CHECK(run("diff(x^4, x, 2)") == "12*x^2", "Sage's diff(f, x, n)");
+    CHECK(run("D[x^3*y^2, x, 2]") == "6*x*y^2", "an integer after a variable is the order");
+    CHECK(run("D[x^3, 5]").find("ERROR") == 0, "a non-variable derivative argument is an error, not ignored");
+    CHECK(run("grad(x^2*y, {x,y})") == "{2*x*y, x^2}", "gradient");
+    CHECK(run("jacobian({x*y, x+y}, {x,y})") == "{{y, x}, {1, 1}}", "Jacobian");
+    CHECK(run("hessian(x^2*y, {x,y})") == "{{2*y, 2*x}, {2*x, 0}}", "Hessian");
+    CHECK(run("collect(x*y + x*z + y, x)") == "x*(y + z) + y", "collect");
+    CHECK(run("apart(1/(x^2-1), x)") == "-1/(2*(x + 1)) + 1/(2*(x - 1))", "partial fractions, linear factors");
+    for (const char* f : {"(x^3+2)/(x^2*(x+1))", "(x^2+1)/((x-1)*(x^2+x+1))", "(3*x+5)/((x+1)^2*(x-2))", "1/(x^3-x)"}) {   // apart must give back the same function
+        Engine en;
+        Expr orig = parse(f), parts = en.eval(parse(std::string("apart(") + f + ", x)"));
+        bool same = true;
+        for (double x : {0.5, 3.0, -4.5, 7.25}) {
+            double a = 0, b = 0;
+            same = same && numeric_at(en, orig, "x", x, a) && numeric_at(en, parts, "x", x, b) && std::fabs(a - b) < 1e-9 * (1 + std::fabs(a));
+        }
+        CHECK(same, std::string("apart(") + f + ") equals the original at sample points");
+    }
+    CHECK(run("reduce(x^2 > 4, x)") == "Or(Less(x, -2), Greater(x, 2))", "quadratic inequality");
+    CHECK(run("reduce(x^2 - 5*x + 6 <= 0, x)") == "And(GreaterEqual(x, 2), LessEqual(x, 3))", "closed interval");
+    CHECK(run("reduce((x-1)/(x+2) > 0, x)") == "Or(Less(x, -2), Greater(x, 1))", "rational inequality: the pole is excluded");
+    CHECK(run("reduce(x^2 + 1 < 0, x)") == "False" && run("reduce(x^2 + 1 > 0, x)") == "True", "no real roots");
+    CHECK(run("chineseremainder({2,3,2},{3,5,7})") == "23", "CRT");
+    CHECK(run("chineseremainder({1,2},{4,6})").find("no common solution") != std::string::npos, "inconsistent congruences are refused");
+    CHECK(run("modularinverse(3, 7)") == "5", "modular inverse");
+    CHECK(run("modularinverse(4, 8)").find("no inverse") != std::string::npos, "no inverse when not coprime");
+    CHECK(run("partitionsp(100)") == "190569292", "partition numbers");
+    CHECK(run("partitionsp(0)") == "1", "p(0) = 1");
+    CHECK(run("PolynomialMod[x^3 + 5 x^2 + 7, 3]") == "x^3 + 2*x^2 + 1", "PolynomialMod, one variable inferred");
+    CHECK(run("PolynomialMod[x^3 + 5 x^2 + 7, x, 3]") == "x^3 + 2*x^2 + 1", "PolynomialMod, named variable");
+    CHECK(run("PolynomialGCDMod[x^2 - 1, x^2 + 2 x + 1, x, 5]") == "x + 1", "gcd in GF(5)[x]");
+    CHECK(run("PolynomialGCDMod[x^2 + 1, x + 3, x, 5]") == "1" || run("PolynomialGCDMod[x^2 + 1, x + 3, x, 5]") == "x + 3", "gcd in GF(5)[x]: x^2+1 = (x+3)(x+2) mod 5");
+    CHECK(run("MultiplicativeOrder[2, 101]") == "100" && run("MultiplicativeOrder[3, 7]") == "6", "multiplicative order");
+    CHECK(run("MultiplicativeOrder[4, 8]").find("not coprime") != std::string::npos, "order of a non-unit is refused");
+    CHECK(run("PrimitiveRoot[7]") == "3" && run("PrimitiveRoot[23]") == "5" && run("PrimitiveRoot[101]") == "2", "smallest primitive roots");
+    CHECK(run("PrimitiveRoot[8]").find("no primitive root") != std::string::npos && run("PrimitiveRoot[15]").find("no primitive root") != std::string::npos, "no primitive root for non-cyclic groups");
+    CHECK(run("FactorMod[x^4 + 1, x, 2]") == "(x + 1)^4", "a p-th power in GF(2)[x]");
+    CHECK(run("FactorMod[x^2 + 1, x, 5]") == "(x + 2)*(x + 3)", "splits mod 5");
+    CHECK(run("FactorMod[x^2 + 1, x, 3]") == "x^2 + 1", "irreducible mod 3");
+    CHECK(run("FactorMod[x^5 - x, x, 5]") == "x*(x + 1)*(x + 2)*(x + 3)*(x + 4)", "x^p - x is the product of all linear factors");
+    CHECK(run("FactorMod[x^7 - 1, x, 2]") == "(x + 1)*(x^3 + x^2 + 1)*(x^3 + x + 1)", "cyclotomic structure mod 2");
+    CHECK(run("FactorMod[3 x^3 + 2 x + 1, x, 7]") == "3*(x^3 + 3*x + 5)", "the leading coefficient is the content");
+    {   // characteristic 2 needs the trace map: x^15 - 1 = (x+1)(x^2+x+1)(x^4+x+1)(x^4+x^3+1)(x^4+x^3+x^2+x+1) over GF(2)
+        const std::string f = run("FactorMod[x^15 - 1, x, 2]");
+        bool all = true;
+        for (const char* t : {"(x + 1)", "(x^2 + x + 1)", "(x^4 + x + 1)", "(x^4 + x^3 + 1)", "(x^4 + x^3 + x^2 + x + 1)"}) all = all && f.find(t) != std::string::npos;
+        CHECK(all, "equal-degree splitting in characteristic 2");
+    }
+    CHECK(run("FactorMod[x^2 + 1, x, 9]").find("prime modulus") != std::string::npos, "a composite modulus is refused");
+    CHECK(run("3 < 5") == "True" && run("5 <= 3") == "False" && run("2 != 2") == "False", "comparisons of numbers");
+}
+
 int main() {
     std::printf("=================================================================\n");
     std::printf("   STRATA NATIVE CAS TEST SUITE                                  \n");
@@ -558,6 +631,7 @@ int main() {
     test_matrices_and_combinatorics();
     test_parse_print_roundtrip_and_backend();
     test_number_theory_and_iteration();
+    test_extended_math();
     std::printf("=================================================================\n");
     std::printf("   %d checks, %d failed\n", g_checks, g_failed);
     std::printf("=================================================================\n");

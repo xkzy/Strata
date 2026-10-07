@@ -79,6 +79,23 @@ struct MathRequest {
     double timeout_ms = 5000.0;
 };
 
+// Where a result came from: enough to reproduce it and to decide whether a cached copy may be reused.
+struct MathProvenance {
+    std::string expression_hash;        // content hash of normalized expression + operation + assumptions + precision
+    std::string normalized_expression;
+    std::string operation;
+    std::string backend;
+    std::string backend_version;
+    std::string algorithm;              // e.g. "exact rational CAS evaluation", "int64 fast path (overflow-checked)"
+    std::string assumptions;
+    int precision_digits = 0;           // 0 = exact
+    std::string rounding_mode = "n/a";  // numeric results are rounded to precision_digits by printf %g (round-half-even on the binary value)
+    bool exact = true;
+    std::string ir_version;
+    std::vector<std::string> input_hashes;
+    int64_t timestamp_ms = 0;
+};
+
 struct MathResult {
     int64_t result_id = 0;
     int64_t request_id = 0;
@@ -99,6 +116,8 @@ struct MathResult {
     bool cache_hit = false;
     int64_t observation_tokens = 0;
     std::string error_message;
+
+    MathProvenance provenance;
 
     std::unordered_map<std::string, std::string> metadata;
 };

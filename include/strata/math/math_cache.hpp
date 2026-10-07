@@ -17,8 +17,12 @@ class MathResultCache {
 public:
     explicit MathResultCache(size_t max_entries = 10000);
 
-    // Compute canonical cache key factoring in expression, operation, mode, assumptions, and precision
+    // Everything a result depends on: the normalized expression (parsed, so spelling cannot collide with meaning), operation,
+    // mode, variable, point, order, assumptions, precision, rounding mode, engine version and IR version.
     static std::string make_cache_key(const MathRequest& req);
+    static const char* engine_version() { return "cas-0.3.0"; }
+    static const char* ir_version() { return "ir-1"; }
+    static std::string content_hash(const std::string& text);
 
     // Retrieve cached result if available and valid
     bool get(const MathRequest& req, MathResult& out_result);
