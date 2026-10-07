@@ -17,6 +17,13 @@ const store = {
   set(k, v) { try { localStorage.setItem("strata." + k, JSON.stringify(v)); } catch (e) { /* private mode: in memory only */ } },
 };
 
+// The API key is a credential: it lives in this tab's sessionStorage (gone when the tab closes), never in localStorage,
+// which every page script on this origin and every later session can read. An old localStorage copy is removed.
+const secret = {
+  get() { try { localStorage.removeItem("strata.apikey"); return sessionStorage.getItem("strata.apikey") || ""; } catch (e) { return ""; } },
+  set(v) { try { v ? sessionStorage.setItem("strata.apikey", v) : sessionStorage.removeItem("strata.apikey"); } catch (e) { /* in memory only */ } },
+};
+
 // ------------------------------------------------------------------ toasts
 function toast(kind, title, text = "", ms = 3500, action = null) {
   const names = {info: "info", success: "check", warn: "warning", error: "error"};
@@ -98,14 +105,14 @@ function getSessionId() {
 
 function headers(json = false) {
   const h = {};
-  const key = store.get("apikey", "");
+  const key = secret.get();
   if (key) h.Authorization = "Bearer " + key;
   h["X-Session-ID"] = getSessionId();
   if (json) h["Content-Type"] = "application/json";
   return h;
 }
-$("api-key").value = store.get("apikey", "");
-$("api-key").onchange = () => { store.set("apikey", $("api-key").value.trim()); toast("success", "API key saved", "Kept in this browser only."); };
+$("api-key").value = secret.get();
+$("api-key").onchange = () => { secret.set($("api-key").value.trim()); toast("success", "API key saved", "Kept for this tab only; enter it again after closing the tab."); };
 
 let health = {model: "strata", images: false, max_context: 0, models: []};
 
