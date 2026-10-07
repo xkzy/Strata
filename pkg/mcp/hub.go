@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -388,4 +389,30 @@ func (c *StdioMcpClient) Close() error {
 		return c.cmd.Process.Kill()
 	}
 	return nil
+}
+
+// Status is what the web app's MCP card shows: the connected external servers and the tools each one offers. The
+// built-in tools are not listed as a server (they are always there and need no switch).
+func (h *McpHub) Status(ctx context.Context) map[string]interface{} {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	servers := []map[string]interface{}{}
+	total := 0
+	for name, client := range h.clients {
+		entry := map[string]interface{}{"name": name, "transport": "stdio", "status": "ready", "tools": []map[string]interface{}{}}
+		tools, err := client.ListTools(ctx)
+		if err != nil {
+			entry["status"], entry["error"] = "failed", err.Error()
+		}
+		list := make([]map[string]interface{}, 0, len(tools))
+		for _, t := range tools {
+			list = append(list, map[string]interface{}{"tool": t.Name, "description": t.Description})
+		}
+		entry["tools"] = list
+		total += len(list)
+		servers = append(servers, entry)
+	}
+	sort.Slice(servers, func(i, j int) bool { return servers[i]["name"].(string) < servers[j]["name"].(string) })
+	return map[string]interface{}{"servers": servers, "tools": total}
 }

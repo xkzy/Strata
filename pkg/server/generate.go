@@ -114,9 +114,17 @@ func (s *StrataServer) startGeneration(ctx context.Context, spec genSpec) (<-cha
 	engOut := make(chan engineipc.TokenEvent, 64)
 	go s.EngineIPC.GenerateIDs(ctx, ids, spec.Sampling, maxNew, stopIDs, spec.Stops, engOut)
 
+	rq := s.mon.begin(len(ids), maxNew)
 	out := make(chan genEvent, 64)
 	go func() {
 		defer close(out)
+		defer func() { // a request that ended without an End event: the client left, or the engine stopped
+			if ctx.Err() != nil {
+				rq.finish("disconnect", 0, 0)
+			} else {
+				rq.finish("error", 0, 0)
+			}
+		}()
 		var parser *outParser
 		if !spec.Raw {
 			parser = newOutParser(startInReasoning, spec.Tools)
@@ -132,12 +140,14 @@ func (s *StrataServer) startGeneration(ctx context.Context, spec genSpec) (<-cha
 		alive := true // false once the consumer is gone: keep draining the engine, stop forwarding
 		for ev := range engOut {
 			if ev.Error != nil {
+				rq.finish("error", ev.GenTokens, 0)
 				if alive {
 					send(genEvent{End: true, Err: ev.Error, GenTokens: ev.GenTokens})
 				}
 				continue
 			}
 			if !ev.IsEnd {
+				rq.token()
 				if !alive {
 					continue
 				}
@@ -152,6 +162,7 @@ func (s *StrataServer) startGeneration(ctx context.Context, spec genSpec) (<-cha
 				}
 				continue
 			}
+			rq.finish(endFinish(ev.FinishReason), ev.GenTokens, ev.TokPerSec)
 			if !alive {
 				continue
 			}
@@ -175,4 +186,12 @@ func (s *StrataServer) startGeneration(ctx context.Context, spec genSpec) (<-cha
 		}
 	}()
 	return out, len(ids), nil
+}
+
+// endFinish is the finish reason the Monitor records for an engine end event.
+func endFinish(reason string) string {
+	if reason == "" {
+		return "stop"
+	}
+	return reason
 }

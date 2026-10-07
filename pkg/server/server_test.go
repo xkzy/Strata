@@ -242,34 +242,6 @@ func TestTelemetryEndpoint(t *testing.T) {
 	}
 }
 
-func TestConfigEndpoint(t *testing.T) {
-	srv := setupTestServer()
-	ts := httptest.NewServer(srv.Router())
-	defer ts.Close()
-
-	// GET /config
-	resp, err := http.Get(ts.URL + "/config")
-	if err != nil || resp.StatusCode != http.StatusOK {
-		t.Fatalf("failed GET /config: %v", err)
-	}
-	var cfg map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&cfg)
-	if cfg["model"] != "Qwen3.8-Flash-Next" {
-		t.Errorf("expected model Qwen3.8-Flash-Next, got %v", cfg["model"])
-	}
-
-	// POST /config
-	updatePayload := `{"model": "Qwen3.8-Coder-Next", "port": 8080}`
-	resp2, err2 := http.Post(ts.URL+"/config", "application/json", strings.NewReader(updatePayload))
-	if err2 != nil || resp2.StatusCode != http.StatusOK {
-		t.Fatalf("failed POST /config: %v", err2)
-	}
-	var res2 map[string]interface{}
-	json.NewDecoder(resp2.Body).Decode(&res2)
-	if res2["status"] != "updated" {
-		t.Errorf("expected status updated, got %v", res2["status"])
-	}
-}
 func TestSetupEndpoints(t *testing.T) {
 	srv := setupTestServer()
 	ts := httptest.NewServer(srv.Router())

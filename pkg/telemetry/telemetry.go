@@ -50,6 +50,8 @@ type TelemetryCollector struct {
 	historyTokS     []float64
 	historyRAMUtil  []float64
 	historyCPUUtil  []float64
+
+	tokSource func() float64 // decode speed of the running request (nil or 0: idle)
 }
 
 func NewTelemetryCollector() *TelemetryCollector {
@@ -166,6 +168,13 @@ func (tc *TelemetryCollector) detectStaticHardware() {
 	}
 }
 
+// SetTokSource sets where each sample's tokens-per-second comes from (the server's running request).
+func (tc *TelemetryCollector) SetTokSource(f func() float64) {
+	tc.mu.Lock()
+	tc.tokSource = f
+	tc.mu.Unlock()
+}
+
 func (tc *TelemetryCollector) Start() {
 	tc.mu.Lock()
 	if tc.running {
@@ -212,6 +221,7 @@ func (tc *TelemetryCollector) sampleOnce() {
 	defer tc.mu.Unlock()
 
 	tc.now["cpu_util"] = cpuPct
+	tc.now["cpu"] = cpuPct // the name the web app reads
 	tc.now["ram_used"] = ramUsedBytes
 	tc.now["ram_total"] = ramTotalBytes
 	tc.now["ram_util"] = ramPct
@@ -232,7 +242,11 @@ func (tc *TelemetryCollector) sampleOnce() {
 	tc.pushHistory(&tc.historyVRAMUsed, float64(vramUsedBytes))
 	tc.pushHistory(&tc.historyGPUTemp, gpuTemp)
 	tc.pushHistory(&tc.historyGPUPower, gpuPower)
-	tc.pushHistory(&tc.historyTokS, 0.0)
+	tokS := 0.0
+	if tc.tokSource != nil {
+		tokS = tc.tokSource()
+	}
+	tc.pushHistory(&tc.historyTokS, tokS)
 }
 
 func (tc *TelemetryCollector) pushHistory(slice *[]float64, val float64) {
@@ -386,6 +400,7 @@ func (tc *TelemetryCollector) Snapshot() map[string]interface{} {
 		"tok_s":        copySlice(tc.historyTokS),
 		"ram_util":     copySlice(tc.historyRAMUtil),
 		"cpu_util":     copySlice(tc.historyCPUUtil),
+		"cpu":          copySlice(tc.historyCPUUtil),
 	}
 
 	return map[string]interface{}{

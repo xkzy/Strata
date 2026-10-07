@@ -28,6 +28,7 @@ func main() {
 	modelPath := flag.String("model-path", "", "Path to the model pack (legacy; prefer --config)")
 	binaryPath := flag.String("binary-path", "", "Path to the C++ strata engine binary")
 	configFile := flag.String("config", "", "Path to strata-<model>.json (engine command line)")
+	apiMonitor := flag.Bool("api-monitor", false, "Keep the last 100 requests' prompts and answers in memory for /api-monitor (also \"api_monitor\": true in the run config)")
 	flag.Parse()
 
 	cfg := server.ServerConfig{
@@ -43,6 +44,7 @@ func main() {
 		RuntimeMode:   *rtMode,
 		RuntimeBinary: *rtBinary,
 		WindowTokens:  *window,
+		APIMonitor:    *apiMonitor,
 	}
 
 	if err := server.CheckBind(*host, *apiKey); err != nil {
