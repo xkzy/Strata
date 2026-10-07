@@ -229,9 +229,18 @@ func (b *FastNumericBackend) Execute(req MathRequest) MathResult {
 	case OpModInverse:
 		parts := strings.Split(cleanExpr, "mod")
 		if len(parts) == 2 {
-			a, _ := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
-			m, _ := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
-			inv, err := ModInverse(a, m)
+			a, errA := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
+			m, errM := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+			var inv int64
+			err := errA
+			if err == nil {
+				err = errM
+			}
+			if err != nil {
+				err = fmt.Errorf("mod_inverse needs two integers that fit in 64 bits: %v", err)
+			} else {
+				inv, err = ModInverse(a, m)
+			}
 			if err == nil {
 				res.ExactResult = fmt.Sprintf("%d", inv)
 				res.NumericResult = res.ExactResult
@@ -252,14 +261,31 @@ func (b *FastNumericBackend) Execute(req MathRequest) MathResult {
 		if len(powParts) == 2 {
 			modParts := strings.Split(powParts[1], "mod")
 			if len(modParts) == 2 {
-				a, _ := strconv.ParseInt(strings.TrimSpace(powParts[0]), 10, 64)
-				bExp, _ := strconv.ParseInt(strings.TrimSpace(modParts[0]), 10, 64)
-				m, _ := strconv.ParseInt(strings.TrimSpace(modParts[1]), 10, 64)
-				val := ModPow(a, bExp, m)
-				res.ExactResult = fmt.Sprintf("%d", val)
-				res.NumericResult = res.ExactResult
-				res.RawResult = res.ExactResult
-				res.Status = StatusSuccess
+				a, errA := strconv.ParseInt(strings.TrimSpace(powParts[0]), 10, 64)
+				bExp, errE := strconv.ParseInt(strings.TrimSpace(modParts[0]), 10, 64)
+				m, errM := strconv.ParseInt(strings.TrimSpace(modParts[1]), 10, 64)
+				for _, e := range []error{errA, errE, errM} {
+					if e != nil && res.ErrorMessage == "" {
+						res.ErrorMessage = fmt.Sprintf("mod_pow needs three integers that fit in 64 bits: %v", e)
+					}
+				}
+				if res.ErrorMessage == "" {
+					val, err := ModPow(a, bExp, m)
+					if err != nil {
+						res.ErrorMessage = err.Error()
+					} else {
+						res.ExactResult = fmt.Sprintf("%d", val)
+						res.NumericResult = res.ExactResult
+						res.RawResult = res.ExactResult
+						res.Status = StatusSuccess
+					}
+				}
+			}
+		}
+		if res.Status != StatusSuccess {
+			res.Status = StatusExecutionError
+			if res.ErrorMessage == "" {
+				res.ErrorMessage = "invalid mod_pow format: use a^b mod m"
 			}
 		}
 
@@ -330,13 +356,19 @@ func (b *FastNumericBackend) Execute(req MathRequest) MathResult {
 			re := regexp.MustCompile(`\d+`)
 			nums := re.FindAllString(cleanExpr, 2)
 			if len(nums) == 2 {
-				n, _ := strconv.ParseInt(nums[0], 10, 64)
-				k, _ := strconv.ParseInt(nums[1], 10, 64)
-				val := big.NewInt(0).Binomial(n, k)
-				res.ExactResult = val.String()
-				res.NumericResult = val.String()
-				res.RawResult = val.String()
-				res.Status = StatusSuccess
+				n, errN := strconv.ParseInt(nums[0], 10, 64)
+				k, errK := strconv.ParseInt(nums[1], 10, 64)
+				switch {
+				case errN != nil || errK != nil || n > maxBinomialN:
+					res.Status = StatusExecutionError
+					res.ErrorMessage = fmt.Sprintf("C(n, k) is limited to n <= %d (the result has up to n bits)", maxBinomialN)
+				default:
+					val := big.NewInt(0).Binomial(n, k)
+					res.ExactResult = val.String()
+					res.NumericResult = val.String()
+					res.RawResult = val.String()
+					res.Status = StatusSuccess
+				}
 			}
 		} else {
 			res.Status = StatusExecutionError
@@ -363,8 +395,10 @@ func (b *FastNumericBackend) Execute(req MathRequest) MathResult {
 				aBig, _ := new(big.Int).SetString(nums[0], 10)
 				bBig, _ := new(big.Int).SetString(nums[1], 10)
 				g := new(big.Int).GCD(nil, nil, aBig, bBig)
-				prod := new(big.Int).Mul(aBig, bBig)
-				l := new(big.Int).Quo(prod, g)
+				l := new(big.Int) // lcm(0, 0) = 0: gcd(0, 0) = 0 must not divide
+				if g.Sign() != 0 {
+					l.Quo(new(big.Int).Mul(aBig, bBig), g)
+				}
 				res.ExactResult = l.String()
 				res.NumericResult = l.String()
 				res.RawResult = l.String()
@@ -401,7 +435,7 @@ func (b *FastNumericBackend) Execute(req MathRequest) MathResult {
 				} else {
 					res.ExactResult = rat.RatString()
 				}
-				res.NumericResult = fmt.Sprintf("%.*g", req.PrecisionDigits, dbl)
+				res.NumericResult = fmt.Sprintf("%.*g", min(max(req.PrecisionDigits, 1), maxPrecisionDigits), dbl)
 				if req.Mode == ModeNumeric {
 					res.RawResult = res.NumericResult
 				} else {
@@ -458,23 +492,28 @@ func (b *FastNumericBackend) evalExactRational(expr string) (*big.Rat, float64, 
 			}
 			res.Quo(val1, val2)
 		case '^':
-			if !val2.IsInt() {
+			if val2.IsInt() && val2.Num().IsInt64() && val2.Sign() >= 0 {
+				// exact, when the result stays small: each ^n multiplies the size by n, and a few nested ones would
+				// otherwise ask for gigabytes
+				p := val2.Num().Int64()
+				if p > maxRationalBits || int64(ratBits(val1))*p > maxRationalBits {
+					return fmt.Errorf("result too large (more than %d bits)", maxRationalBits)
+				}
+				num := new(big.Int).Exp(val1.Num(), big.NewInt(p), nil)
+				denom := new(big.Int).Exp(val1.Denom(), big.NewInt(p), nil)
+				res.SetFrac(num, denom)
+			} else {
 				f1, _ := val1.Float64()
 				f2, _ := val2.Float64()
 				fRes := math.Pow(f1, f2)
-				res.SetFloat64(fRes)
-			} else {
-				p := val2.Num().Int64()
-				if p >= 0 && p <= 100 {
-					num := new(big.Int).Exp(val1.Num(), big.NewInt(p), nil)
-					denom := new(big.Int).Exp(val1.Denom(), big.NewInt(p), nil)
-					res.SetFrac(num, denom)
-				} else {
-					f1, _ := val1.Float64()
-					f2, _ := val2.Float64()
-					res.SetFloat64(math.Pow(f1, f2))
+				if math.IsNaN(fRes) || math.IsInf(fRes, 0) {
+					return fmt.Errorf("result is not a finite number")
 				}
+				res.SetFloat64(fRes)
 			}
+		}
+		if ratBits(res) > maxRationalBits {
+			return fmt.Errorf("result too large (more than %d bits)", maxRationalBits)
 		}
 		values = append(values, res)
 		return nil

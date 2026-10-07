@@ -102,17 +102,24 @@ func ParseNumbers(s string) ([]float64, error) {
 	return nums, nil
 }
 
-// ModPow computes (base^exp) mod modulus efficiently using big.Int.
-func ModPow(base, exp, mod int64) int64 {
-	b := big.NewInt(base)
-	e := big.NewInt(exp)
-	m := big.NewInt(mod)
-	res := new(big.Int).Exp(b, e, m)
-	return res.Int64()
+// ModPow computes (base^exp) mod modulus efficiently using big.Int. The modulus must be positive and the exponent not
+// negative: big.Int.Exp reads a zero modulus as "no modulus" and would compute base^exp in full.
+func ModPow(base, exp, mod int64) (int64, error) {
+	if mod <= 0 {
+		return 0, fmt.Errorf("modulus must be a positive integer, got %d", mod)
+	}
+	if exp < 0 {
+		return 0, fmt.Errorf("exponent must not be negative, got %d", exp)
+	}
+	res := new(big.Int).Exp(big.NewInt(base), big.NewInt(exp), big.NewInt(mod))
+	return res.Int64(), nil
 }
 
 // ModInverse computes x such that (a * x) % m == 1 using Extended Euclidean Algorithm.
 func ModInverse(a, m int64) (int64, error) {
+	if m <= 0 {
+		return 0, fmt.Errorf("modulus must be a positive integer, got %d", m)
+	}
 	g, x, _ := extendedGCD(a, m)
 	if g != 1 {
 		return 0, fmt.Errorf("modular inverse does not exist (gcd(%d, %d) = %d != 1)", a, m, g)
