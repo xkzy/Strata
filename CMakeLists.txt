@@ -534,6 +534,74 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     set_tests_properties(test_multi_tenant PROPERTIES TIMEOUT 60)
   endif()
 
+  # ---- Mathematical Backing Engine & Math Runtime Subsystem ----
+  add_library(strata_math STATIC
+    src/math/expression_parser.cpp
+    src/math/math_backend.cpp
+    src/math/mathics_backend.cpp
+    src/math/sage_backend.cpp
+    src/math/cas/bigint.cpp
+    src/math/cas/expr.cpp
+    src/math/cas/parser.cpp
+    src/math/cas/printer.cpp
+    src/math/cas/engine.cpp
+    src/math/cas/poly.cpp
+    src/math/cas/algebra.cpp
+    src/math/cas/series.cpp
+    src/math/cas/limit.cpp
+    src/math/cas/integrate.cpp
+    src/math/cas/matrix.cpp
+    src/math/cas/numtheory.cpp
+    src/math/math_cache.cpp
+    src/math/math_runtime.cpp)
+  target_include_directories(strata_math PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(strata_math PUBLIC strata_context strata_generic_runtime)
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/math/test_cas.cpp")
+    enable_testing()
+    add_executable(test_cas tests/math/test_cas.cpp)
+    target_link_libraries(test_cas PRIVATE strata_math)
+    add_test(NAME test_cas COMMAND test_cas)
+    set_tests_properties(test_cas PROPERTIES TIMEOUT 120)
+  endif()
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/math/test_math_runtime.cpp")
+    enable_testing()
+    add_executable(test_math_runtime tests/math/test_math_runtime.cpp)
+    target_link_libraries(test_math_runtime PRIVATE strata_math strata_tools)
+    add_test(NAME test_math_runtime COMMAND test_math_runtime)
+    set_tests_properties(test_math_runtime PROPERTIES TIMEOUT 60)
+  endif()
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/math/test_sage_backend.cpp")
+    enable_testing()
+    add_executable(test_sage_backend tests/math/test_sage_backend.cpp)
+    target_link_libraries(test_sage_backend PRIVATE strata_math strata_tools)
+    add_test(NAME test_sage_backend COMMAND test_sage_backend)
+    set_tests_properties(test_sage_backend PROPERTIES TIMEOUT 60)
+  endif()
+
+  # ---- Deterministic Logic Verification Runtime Subsystem ----
+  add_library(strata_logic_verification STATIC
+    src/logic_verification/claim_extractor.cpp
+    src/logic_verification/rule_engine.cpp
+    src/logic_verification/constraint_engine.cpp
+    src/logic_verification/unit_verifier.cpp
+    src/logic_verification/schema_verifier.cpp
+    src/logic_verification/verification_cache.cpp
+    src/logic_verification/verification_planner.cpp
+    src/logic_verification/logic_verification_runtime.cpp)
+  target_include_directories(strata_logic_verification PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(strata_logic_verification PUBLIC strata_math strata_context strata_generic_runtime)
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic_verification/test_logic_verifier.cpp")
+    enable_testing()
+    add_executable(test_logic_verifier tests/logic_verification/test_logic_verifier.cpp)
+    target_link_libraries(test_logic_verifier PRIVATE strata_logic_verification strata_tools)
+    add_test(NAME test_logic_verifier COMMAND test_logic_verifier)
+    set_tests_properties(test_logic_verifier PROPERTIES TIMEOUT 60)
+  endif()
+
   # ---- Tool Runtime & Bounded Observation Engine ----
   add_library(strata_tools STATIC
     src/tools/tool_parser.cpp
@@ -541,7 +609,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     src/tools/tool_runtime.cpp
     src/strata_unified.cpp)
   target_include_directories(strata_tools PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_link_libraries(strata_tools PUBLIC strata_context strata_generic_runtime)
+  target_link_libraries(strata_tools PUBLIC strata_logic_verification strata_math strata_context strata_generic_runtime)
 
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/tools/test_tool_runtime.cpp")
     enable_testing()
@@ -583,6 +651,22 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     set_tests_properties(test_generation_loop PROPERTIES TIMEOUT 60)
   endif()
 
+  # ---- Transparent inference runtime (internal context/verification/recovery; not a tool provider) ----
+  file(GLOB STRATA_RT_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/rt/*.cpp)
+  add_library(strata_rt STATIC ${STRATA_RT_SOURCES})
+  target_include_directories(strata_rt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(strata_rt PUBLIC strata_math strata_tools strata_generation strata_context)
+
+  foreach(rt_test test_transparent_runtime test_virtual_window)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/rt/${rt_test}.cpp")
+      enable_testing()
+      add_executable(${rt_test} tests/rt/${rt_test}.cpp)
+      target_link_libraries(${rt_test} PRIVATE strata_rt)
+      add_test(NAME ${rt_test} COMMAND ${rt_test})
+      set_tests_properties(${rt_test} PROPERTIES TIMEOUT 120)
+    endif()
+  endforeach()
+
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/test_cache_correctness.cpp")
     enable_testing()
     add_executable(test_cache_correctness tests/core/test_cache_correctness.cpp)
@@ -592,44 +676,6 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     set_tests_properties(test_cache_correctness PROPERTIES TIMEOUT 60)
   endif()
 
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_fast_activations.cpp")
-    enable_testing()
-    add_executable(test_fast_activations tests/kernels/test_fast_activations.cpp)
-    target_include_directories(test_fast_activations PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    add_test(NAME test_fast_activations COMMAND test_fast_activations)
-    set_tests_properties(test_fast_activations PROPERTIES TIMEOUT 60)
-  endif()
-
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_fast_matmul.cpp")
-    enable_testing()
-    add_executable(test_fast_matmul tests/kernels/test_fast_matmul.cpp)
-    target_include_directories(test_fast_matmul PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    add_test(NAME test_fast_matmul COMMAND test_fast_matmul)
-    set_tests_properties(test_fast_matmul PROPERTIES TIMEOUT 60)
-  endif()
-
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_fast_softmax.cpp")
-    enable_testing()
-    add_executable(test_fast_softmax tests/kernels/test_fast_softmax.cpp)
-    target_include_directories(test_fast_softmax PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    add_test(NAME test_fast_softmax COMMAND test_fast_softmax)
-    set_tests_properties(test_fast_softmax PROPERTIES TIMEOUT 60)
-  endif()
-
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_fast_norm.cpp")
-    enable_testing()
-    add_executable(test_fast_norm tests/kernels/test_fast_norm.cpp)
-    target_include_directories(test_fast_norm PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    add_test(NAME test_fast_norm COMMAND test_fast_norm)
-    set_tests_properties(test_fast_norm PROPERTIES TIMEOUT 60)
-  endif()
-
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_fast_rope.cpp")
-    enable_testing()
-    add_executable(test_fast_rope tests/kernels/test_fast_rope.cpp)
-    target_include_directories(test_fast_rope PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    add_test(NAME test_fast_rope COMMAND test_fast_rope)
-    set_tests_properties(test_fast_rope PROPERTIES TIMEOUT 60)
   # ---- SIMD + OpenMP for the header-only fast kernels (tests and benchmark only) ----
   # Without these flags the AVX2/FMA paths in include/strata/kernels/fast_*.hpp are compiled out and the
   # `#pragma omp` lines are ignored. The production engine is not built with them (no AVX2 baseline assumed).
@@ -664,72 +710,98 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     endforeach()
   endif()
 
-  # ---- SIMD + OpenMP for the header-only fast kernels (tests and benchmark only) ----
-  # Without these flags the AVX2/FMA paths in include/strata/kernels/fast_*.hpp are compiled out and the
-  # `#pragma omp` lines are ignored. The production engine is not built with them (no AVX2 baseline assumed).
-  add_library(strata_fast_kernel_flags INTERFACE)
-  if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    include(CheckCXXCompilerFlag)
-    check_cxx_compiler_flag("-mavx2 -mfma -mf16c" STRATA_HAS_AVX2_FLAGS)
-    if(STRATA_HAS_AVX2_FLAGS)
-      target_compile_options(strata_fast_kernel_flags INTERFACE -mavx2 -mfma -mf16c)
-    endif()
-  endif()
-  find_package(OpenMP COMPONENTS CXX QUIET)
-  if(OpenMP_CXX_FOUND)
-    target_link_libraries(strata_fast_kernel_flags INTERFACE OpenMP::OpenMP_CXX)
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_fast_activations.cpp")
+    enable_testing()
+    add_executable(test_fast_activations tests/kernels/test_fast_activations.cpp)
+    target_include_directories(test_fast_activations PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(test_fast_activations PRIVATE strata_fast_kernel_flags)
+    add_test(NAME test_fast_activations COMMAND test_fast_activations)
+    set_tests_properties(test_fast_activations PROPERTIES TIMEOUT 60)
   endif()
 
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_fast_matmul.cpp")
+    enable_testing()
+    add_executable(test_fast_matmul tests/kernels/test_fast_matmul.cpp)
+    target_include_directories(test_fast_matmul PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(test_fast_matmul PRIVATE strata_fast_kernel_flags)
+    add_test(NAME test_fast_matmul COMMAND test_fast_matmul)
+    set_tests_properties(test_fast_matmul PROPERTIES TIMEOUT 60)
+  endif()
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_fast_softmax.cpp")
+    enable_testing()
+    add_executable(test_fast_softmax tests/kernels/test_fast_softmax.cpp)
+    target_include_directories(test_fast_softmax PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(test_fast_softmax PRIVATE strata_fast_kernel_flags)
+    add_test(NAME test_fast_softmax COMMAND test_fast_softmax)
+    set_tests_properties(test_fast_softmax PROPERTIES TIMEOUT 60)
+  endif()
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_fast_norm.cpp")
+    enable_testing()
+    add_executable(test_fast_norm tests/kernels/test_fast_norm.cpp)
+    target_include_directories(test_fast_norm PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(test_fast_norm PRIVATE strata_fast_kernel_flags)
+    add_test(NAME test_fast_norm COMMAND test_fast_norm)
+    set_tests_properties(test_fast_norm PROPERTIES TIMEOUT 60)
+  endif()
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_fast_rope.cpp")
+    enable_testing()
+    add_executable(test_fast_rope tests/kernels/test_fast_rope.cpp)
+    target_include_directories(test_fast_rope PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(test_fast_rope PRIVATE strata_fast_kernel_flags)
+    add_test(NAME test_fast_rope COMMAND test_fast_rope)
+    set_tests_properties(test_fast_rope PROPERTIES TIMEOUT 60)
   endif()
 
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_fast_quant.cpp")
     enable_testing()
-    target_link_libraries(test_fast_activations PRIVATE strata_fast_kernel_flags)
     add_executable(test_fast_quant tests/kernels/test_fast_quant.cpp)
     target_include_directories(test_fast_quant PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(test_fast_quant PRIVATE strata_fast_kernel_flags)
     add_test(NAME test_fast_quant COMMAND test_fast_quant)
     set_tests_properties(test_fast_quant PROPERTIES TIMEOUT 60)
   endif()
 
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_fast_attention.cpp")
     enable_testing()
-    target_link_libraries(test_fast_matmul PRIVATE strata_fast_kernel_flags)
     add_executable(test_fast_attention tests/kernels/test_fast_attention.cpp)
     target_include_directories(test_fast_attention PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(test_fast_attention PRIVATE strata_fast_kernel_flags)
     add_test(NAME test_fast_attention COMMAND test_fast_attention)
     set_tests_properties(test_fast_attention PROPERTIES TIMEOUT 60)
   endif()
 
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_fast_moe.cpp")
     enable_testing()
-    target_link_libraries(test_fast_softmax PRIVATE strata_fast_kernel_flags)
     add_executable(test_fast_moe tests/kernels/test_fast_moe.cpp)
     target_include_directories(test_fast_moe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(test_fast_moe PRIVATE strata_fast_kernel_flags)
     add_test(NAME test_fast_moe COMMAND test_fast_moe)
     set_tests_properties(test_fast_moe PROPERTIES TIMEOUT 60)
   endif()
 
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_fast_math_parity.cpp")
     enable_testing()
-    target_link_libraries(test_fast_norm PRIVATE strata_fast_kernel_flags)
     add_executable(test_fast_math_parity tests/kernels/test_fast_math_parity.cpp)
     target_include_directories(test_fast_math_parity PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(test_fast_math_parity PRIVATE strata_fast_kernel_flags)
     add_test(NAME test_fast_math_parity COMMAND test_fast_math_parity)
     set_tests_properties(test_fast_math_parity PROPERTIES TIMEOUT 60)
   endif()
 
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/test_fast_unified_benchmark.cpp")
     enable_testing()
-    target_link_libraries(test_fast_rope PRIVATE strata_fast_kernel_flags)
     add_executable(test_fast_unified_benchmark tests/kernels/test_fast_unified_benchmark.cpp)
     target_include_directories(test_fast_unified_benchmark PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(test_fast_unified_benchmark PRIVATE strata_fast_kernel_flags)
     target_link_libraries(test_fast_unified_benchmark PRIVATE strata_generic_runtime strata_generation)
     add_test(NAME test_fast_unified_benchmark COMMAND test_fast_unified_benchmark)
     set_tests_properties(test_fast_unified_benchmark PROPERTIES TIMEOUT 60)
   endif()
 
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/file_expert_source_test.cpp")
-    target_link_libraries(test_fast_quant PRIVATE strata_fast_kernel_flags)
     enable_testing()
     add_executable(file_expert_source_test tests/core/file_expert_source_test.cpp)
     target_link_libraries(file_expert_source_test PRIVATE strata_engine)
@@ -738,7 +810,6 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_executable(vmm_test tests/core/vmm_test.cpp)
     target_link_libraries(vmm_test PRIVATE strata_engine)
     add_test(NAME vmm_test COMMAND vmm_test)
-    target_link_libraries(test_fast_attention PRIVATE strata_fast_kernel_flags)
     set_tests_properties(vmm_test PROPERTIES TIMEOUT 60)
   endif()
   # #477: the learned expert profile (--expert-profile-save): its order and make_profile.py's file format (CPU only)
@@ -747,7 +818,6 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_executable(expert_profile_save_test tests/core/expert_profile_save_test.cpp)
     target_link_libraries(expert_profile_save_test PRIVATE strata_engine)
     add_test(NAME expert_profile_save_test COMMAND expert_profile_save_test)
-    target_link_libraries(test_fast_moe PRIVATE strata_fast_kernel_flags)
     set_tests_properties(expert_profile_save_test PROPERTIES TIMEOUT 60)
   endif()
   if(STRATA_BUILD_TESTS AND STRATA_NATIVE_EXPERTS)
@@ -756,7 +826,6 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_executable(expert_layout_test tests/core/expert_layout_test.cpp)
     target_link_libraries(expert_layout_test PRIVATE strata_engine)
     add_test(NAME expert_layout_test COMMAND expert_layout_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/native_experts)
-    target_link_libraries(test_fast_math_parity PRIVATE strata_fast_kernel_flags)
     set_tests_properties(expert_layout_test PROPERTIES TIMEOUT 60)
     # #326: a native pack's BF16 (--compat-bf16) PLE key stays in the arena; a quantized key row loads as before
     add_executable(native_dense_ple_key_test tests/core/native_dense_ple_key_test.cpp)
@@ -765,7 +834,6 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     set_tests_properties(native_dense_ple_key_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
     # #369: per-layer admission on a sized (native pack) cache starts each layer in its own range
     add_executable(expert_cache_per_layer_test tests/core/expert_cache_per_layer_test.cpp)
-    target_link_libraries(test_fast_unified_benchmark PRIVATE strata_fast_kernel_flags)
     target_link_libraries(expert_cache_per_layer_test PRIVATE strata_engine)
     add_test(NAME expert_cache_per_layer_test COMMAND expert_cache_per_layer_test)
     set_tests_properties(expert_cache_per_layer_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
