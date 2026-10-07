@@ -123,6 +123,18 @@ std::vector<SymbolicSpec> find_symbolic_claims(const std::string& sentence) {
     };
 
     for (size_t i = 0; i < w.size(); ++i) {
+        // ---- "the determinant of [[1, 2], [3, 4]] is -2" ----
+        if (at(i, "determinant") && at(i + 1, "of")) {
+            size_t j = 0;
+            std::string m = span_after(w, i + 2, &j, false);
+            if (j < w.size() && (at(j, "is") || at(j, "equals") || at(j, "="))) {
+                size_t k = 0;
+                std::string d = span_after(w, j + 1, &k, false);
+                if (m.rfind("[[", 0) == 0 && !d.empty() && parses(m) && parses(d))
+                    add({"det", m, d, "", "the determinant of " + m + " is " + d});
+            }
+            continue;
+        }
         // ---- "the limit of F as x approaches A is L" ----
         if (at(i, "limit") && at(i + 1, "of")) {
             size_t j = 0;
@@ -303,6 +315,17 @@ VerifyOutcome SymbolicVerifier::verify(const Claim& claim, const EvidenceSet&, C
             out.state = VerificationState::kContradicted;
             out.corrected_value = t.empty() ? "no solution" : t;
             out.explanation = "the solutions of " + s.f + " are " + out.corrected_value + " (solved exactly), not " + s.g;
+            return out;
+        }
+
+        if (s.kind == "det") {
+            Expr truth = en.eval(app("Det", {parse(s.f)}));
+            if (truth->has_head("Det")) { out.explanation = "could not evaluate the determinant"; return out; }
+            std::string w2;
+            if (equivalent(en, truth, parse(s.g), w2) == Eq::kEqual) { out.state = VerificationState::kVerified; out.explanation = stmt + " (determinant computed exactly)"; return out; }
+            out.state = VerificationState::kContradicted;
+            out.corrected_value = to_string(truth);
+            out.explanation = stmt + " is false: the determinant is " + out.corrected_value + " (computed exactly)";
             return out;
         }
 

@@ -101,7 +101,7 @@ CORS allowlist + `Host` validation (DNS rebinding); loopback bind by default; CA
 - Not done: image input, parallel engine sessions, resource scheduling beyond a verification-time budget, docs for end users (`docs/`).
   Claim detection covers arithmetic, primality/parity, Fibonacci/nth prime, and (`src/rt/symbolic.cpp`) "the derivative/integral of F is G",
   "F expands/simplifies to / factors as G", "F equals G" (with a variable), "the solution(s) of EQ is/are x = a [and x = b]"; definitions
-  like "the line is y = 2x + 1" are deliberately not claims. "the limit of F as x approaches A is L"; not covered: series, matrices, inequalities, units.
+  like "the line is y = 2x + 1" are deliberately not claims. "the limit of F as x approaches A is L"; "the determinant of [[..]] is D"; not covered: series, other matrix operations, inequalities, units.
 - `src/math/sage_backend.cpp` / `docs/SAGEMATH.md` came from another editor and were not reviewed by this work.
 
 ## Build / test

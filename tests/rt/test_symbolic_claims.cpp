@@ -82,6 +82,11 @@ int main() {
     auto l2 = check("The limit of (x^2 - 1)/(x - 1) as x approaches 1 is 3.");
     CHECK(l2.state == VerificationState::kContradicted && l2.corrected_value == "2", "wrong limit corrected");
 
+    std::printf("[3c] determinants\n");
+    CHECK(check("The determinant of [[1, 2], [3, 4]] is -2.").state == VerificationState::kVerified, "2x2 determinant");
+    auto d2 = check("The determinant of [[1, 2], [3, 4]] is 5.");
+    CHECK(d2.state == VerificationState::kContradicted && d2.corrected_value == "-2", "wrong determinant corrected");
+
     std::printf("[4] things that are not claims\n");
     CHECK(no_claim("The line is y = 2x + 1."), "a definition is not an identity");
     CHECK(no_claim("The solution of the problem is x = 5."), "no equation, no claim");
