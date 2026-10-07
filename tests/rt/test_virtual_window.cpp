@@ -136,6 +136,15 @@ int main() {
         CHECK(vc.search(c, "deployment region", 3).empty(), "PROJECT page invisible outside the project");
         SelectionRequest r; r.query = "vault passphrase"; r.budget_tokens = 800; r.requester = c;
         CHECK(!has(vc.select(r), "kiwi-lamp-77"), "select() never materializes unauthorized pages");
+        {
+            VirtualContextStore st(small_cfg());
+            SecurityScope e1; e1.session_id = "ephemeral-x";
+            auto vc1 = st.open_ephemeral(e1);
+            NewItem n; n.content = "private to this request"; vc1->append(n);
+            CHECK(st.size() == 1 && st.open(e1) == vc1, "an ephemeral context is found by its scope while the request runs");
+            st.erase(e1);
+            CHECK(st.size() == 0 && st.open(e1)->stats().items == 0, "erase drops it: nothing is left to recall");
+        }
         auto s1 = VirtualContextStore(small_cfg()); SecurityScope s_a, s_b; s_b.session_id = "other_session";
         CHECK(s1.open(s_a) != s1.open(s_b) && s1.size() == 2, "different sessions get different contexts");
     }

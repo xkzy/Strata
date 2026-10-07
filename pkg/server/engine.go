@@ -91,6 +91,7 @@ type engineState struct {
 	source      string // config file in use
 	templateMsg string // set when the pack's chat template is not the supported one
 	sampling    engineipc.SamplingParams
+	templateSHA string
 }
 
 func (s *StrataServer) setProblem(msg string) {
@@ -175,6 +176,9 @@ func (s *StrataServer) StartEngine(ctx context.Context) error {
 	s.eng.mu.Unlock()
 	if raw, err := os.ReadFile(filepath.Join(tokDir, "chat_template.jinja")); err == nil {
 		sum := sha256.Sum256(raw)
+		s.eng.mu.Lock()
+		s.eng.templateSHA = hex.EncodeToString(sum[:])[:12]
+		s.eng.mu.Unlock()
 		if hex.EncodeToString(sum[:]) != supportedTemplateSHA256 {
 			s.eng.mu.Lock()
 			s.eng.templateMsg = "the pack's chat template differs from the one this server renders (prompts may not match the model's training format)"
@@ -200,6 +204,7 @@ func (s *StrataServer) StartEngine(ctx context.Context) error {
 		s.setProblem(err.Error())
 		return err
 	}
+	s.setupRuntime(tok.VocabSize())
 	return nil
 }
 
@@ -231,7 +236,7 @@ func (s *StrataServer) engineUnavailable() (int, string) {
 
 // engineStatus is the engine's state for /health and /status.
 func (s *StrataServer) engineStatus() map[string]interface{} {
-	out := map[string]interface{}{"engine": "stopped", "loaded": false}
+	out := map[string]interface{}{"engine": "stopped", "loaded": false, "runtime": s.runtimeStatus()}
 	s.eng.mu.RLock()
 	problem, source, tmsg := s.eng.problem, s.eng.source, s.eng.templateMsg
 	s.eng.mu.RUnlock()

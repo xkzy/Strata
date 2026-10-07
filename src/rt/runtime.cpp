@@ -1,5 +1,6 @@
 // src/rt/runtime.cpp - the transparent inference runtime (see runtime.hpp)
 #include "strata/rt/runtime.hpp"
+#include "strata/rt/symbolic.hpp"
 
 #include "strata/rt/vc_evidence.hpp"
 
@@ -36,11 +37,12 @@ std::string substitute_value(const std::string& text, size_t begin, size_t end, 
 InferenceRuntime::InferenceRuntime(RuntimeDeps deps, RuntimeConfig cfg)
     : deps_(std::move(deps)), cfg_(std::move(cfg)), request_evidence_(std::make_shared<RequestEvidenceProvider>()),
       detector_(DetectorConfig{cfg_.min_claim_risk, 8}) {
-    if (!deps_.prompt_template) deps_.prompt_template = std::make_shared<ChatMLTemplate>();
+    if (!deps_.prompt_template && !deps_.prompt_builder) deps_.prompt_template = std::make_shared<ChatMLTemplate>();
     if (!deps_.verifier) {
         deps_.verifier = std::make_shared<ProgressiveVerifier>(std::make_shared<VerificationCache>());
         deps_.verifier->add_verifier(std::make_shared<ExactEvidenceVerifier>());
         deps_.verifier->add_verifier(std::make_shared<ArithmeticVerifier>());
+        deps_.verifier->add_verifier(std::make_shared<SymbolicVerifier>());
     }
     if (!deps_.memory) deps_.memory = std::make_shared<MemoryStore>();
     if (cfg_.virtual_context.enabled) {
@@ -84,6 +86,37 @@ RuntimeMetrics InferenceRuntime::metrics() const {
     return metrics_;
 }
 
+namespace {
+// Parts of the raw stream that are not the answer: reasoning up to </think> (when the stream starts inside one) and
+// tool-call blocks. Claims are only looked for outside them.
+std::vector<std::pair<size_t, size_t>> exempt_regions(const std::string& t, bool starts_in_reasoning) {
+    std::vector<std::pair<size_t, size_t>> out;
+    size_t pos = 0;
+    if (starts_in_reasoning) {
+        const size_t e = t.find("</think>");
+        if (e == std::string::npos) return {{0, t.size()}};
+        out.push_back({0, e + 8});
+        pos = e + 8;
+    }
+    while (true) {
+        const size_t a = t.find("<tool_call>", pos);
+        if (a == std::string::npos) break;
+        const size_t b = t.find("</tool_call>", a);
+        if (b == std::string::npos) { out.push_back({a, t.size()}); break; }
+        out.push_back({a, b + 12});
+        pos = b + 12;
+    }
+    return out;
+}
+
+// true when the end of the text is inside reasoning or an unclosed tool call (nothing there can be a claim yet)
+bool tail_is_exempt(const std::string& t, bool starts_in_reasoning) {
+    if (starts_in_reasoning && t.find("</think>") == std::string::npos) return true;
+    const size_t a = t.rfind("<tool_call>");
+    return a != std::string::npos && t.find("</tool_call>", a) == std::string::npos;
+}
+} // namespace
+
 InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, const TextSink& sink) {
     const auto t0 = Clock::now();
     InferenceResponse resp;
@@ -117,7 +150,7 @@ InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, co
         }
     };
     if (cfg_.virtual_context.enabled) {
-        vc = deps_.contexts->open(request.scope.security);
+        vc = request.ephemeral ? deps_.contexts->open_ephemeral(request.scope.security) : deps_.contexts->open(request.scope.security);
         std::set<uint64_t> fresh;
         std::vector<uint64_t> ids = vc->ingest(request.messages, &fresh);   // one entry per message; 0 = not stored (capacity)
         size_t not_stored = 0;
@@ -180,7 +213,18 @@ InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, co
         const std::string text = buffer.text();
         const size_t from = buffer.checked();
         if (!cfg_.verification_enabled || limit <= from) { buffer.mark_checked(limit); return false; }
-        std::vector<Claim> claims = detector_.scan(text, from, limit, request.scope);
+        std::vector<Claim> claims;
+        {
+            size_t cursor = from;
+            auto regions = exempt_regions(text, request.reasoning_prefix);
+            for (const auto& r : regions) {
+                if (r.second <= cursor) continue;
+                if (r.first >= limit) break;
+                if (r.first > cursor) { auto part = detector_.scan(text, cursor, std::min(r.first, limit), request.scope); claims.insert(claims.end(), part.begin(), part.end()); }
+                cursor = std::max(cursor, r.second);
+            }
+            if (cursor < limit) { auto part = detector_.scan(text, cursor, limit, request.scope); claims.insert(claims.end(), part.begin(), part.end()); }
+        }
         std::vector<Edit> edits;
         for (Claim& c : claims) {
             if (verify_ms > cfg_.verification_budget_ms) {   // resource signal: skip, never block the stream
@@ -272,10 +316,11 @@ InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, co
             for (const auto& x : notes) n += "\n- " + x;
             msgs.push_back({"system", n, ""});
         }
-        const std::vector<int32_t> ids = deps_.tokenizer->encode(deps_.prompt_template->render(msgs, buffer.text()));
+        const std::vector<int32_t> ids = deps_.prompt_builder ? deps_.prompt_builder->build(msgs, buffer.text())
+                                                              : deps_.tokenizer->encode(deps_.prompt_template->render(msgs, buffer.text()));
         resp.prompt_tokens = static_cast<int>(ids.size());
         if (vc) {   // the physical KV holds this working set only; reuse exactly the matching prefix
-            KvReusePlan kp = vc->plan_kv(KvIdentity{deps_.tokenizer->id(), deps_.prompt_template->version()}, ids);
+            KvReusePlan kp = vc->plan_kv(deps_.prompt_builder ? KvIdentity{deps_.prompt_builder->identity(), ""} : KvIdentity{deps_.tokenizer->id(), deps_.prompt_template->version()}, ids);
             bump(&RuntimeMetrics::kv_reused_tokens, kp.reusable_prefix);
             bump(&RuntimeMetrics::kv_rebuilt_tokens, kp.to_prefill);
             trace("kv", "reuse " + std::to_string(kp.reusable_prefix) + ", prefill " + std::to_string(kp.to_prefill));
@@ -338,12 +383,19 @@ InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, co
                 if (p != std::string::npos && buffer.truncate_to(p)) { stopped = true; break; }
             }
             if (stopped) { session->cancel(); ended = true; break; }
+            if (cfg_.verification_enabled && tail_is_exempt(buffer.text(), request.reasoning_prefix)) {   // reasoning / tool call: stream it as it comes
+                buffer.mark_checked(buffer.text().size());
+                emit(buffer.push(""));
+                continue;
+            }
             const size_t limit = ClaimDetector::complete_sentence_end(buffer.text(), buffer.checked());
             if (limit > buffer.checked()) {
                 if (check_text(limit)) { restart = true; session->cancel(); break; }
                 emit(buffer.push(""));
             }
         }
+        session->cancel();   // idempotent: a session that has not ended (max_tokens reached) must not keep the engine busy
+        session.reset();
         if (restart) continue;
         if (!ended && produced >= request.sampling.max_tokens) resp.finish = FinishReason::kLength;
         // end of the answer: the unfinished tail is a sentence too
@@ -368,7 +420,8 @@ InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, co
         a.kind = ItemKind::kAssistant; a.role = "assistant"; a.content = resp.text;
         if (!vc->append(a)) bump(&RuntimeMetrics::vc_rejected);
     }
-    if (vc && !deps_.contexts->persist(vc)) trace("context", "could not persist the context manifest");
+    if (vc && request.ephemeral) deps_.contexts->erase(request.scope.security);
+    else if (vc && !deps_.contexts->persist(vc)) trace("context", "could not persist the context manifest");
     request_evidence_->drop(request.scope.key());
     trace("done", std::string(to_string(resp.finish)));
     return resp;

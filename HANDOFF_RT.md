@@ -1,7 +1,10 @@
 # Handoff: transparent runtime, virtual context, native CAS (2026-10-07)
 
-Companion to `HANDOFF.md` (which describes the Go migration; see "Corrections" below). Everything here is **uncommitted**.
-`CMakeLists.txt` also contains unrelated uncommitted work: stage only the hunks you own.
+Companion to `HANDOFF.md` (the Go migration). Git: commits `37822cb` (C++ CAS/logic/rt), `d4fd0be` (Go server: tokenizer, template,
+engine protocol, security), `2f957dc` (parser/regex/control-token hardening). **Uncommitted since then:** the C++ sidecar and its client
+(`src/rt/json.cpp`, `src/rt/rt_server.cpp`, `include/strata/rt/json.hpp`, `tests/rt/test_json.cpp`, `pkg/rtclient/`, `pkg/server/rt.go`,
+`pkg/server/rt_test.go`) plus edits to `CMakeLists.txt`, `src/rt/{runtime,virtual_context}.cpp`, `include/strata/rt/*`, `pkg/server/*`,
+`pkg/engineipc`, `pkg/chattemplate`, `cmd/*`. Other uncommitted files in the tree (installers, `serve/`, kernels, `HANDOFF.md`, `bin/`) are not ours: stage by path.
 
 ## What exists
 
@@ -12,7 +15,7 @@ matrices, combinatorics, **number theory** (PrimeQ, FactorInteger, Divisors, Eul
 **Range/Table/Sum/Product** (closed forms only where exact, otherwise unevaluated). Resource budgets and typed errors.
 `src/math/mathics_backend.cpp` is the backend (name "StrataCAS"). GPL-3.0-or-later headers (derived from Mathics behaviour).
 `FastNumericBackend` (int64) is overflow-checked; on any non-success `MathRuntime` re-runs on the CAS.
-Test: `build/test_cas` (168 checks), `build/test_math_runtime`.
+Test: `build/test_cas` (178 checks), `build/test_math_runtime`.
 
 ### 2. Transparent runtime (`src/rt`, `include/strata/rt`, library `strata_rt`)
 `InferenceRuntime::generate(InferenceRequest, TextSink)`: messages in, text out. Internally: virtual-context paging, RAG,
@@ -53,23 +56,65 @@ Root causes, all fixed and verified against the real engine + model (`strata-cod
    The old behaviour of **answering math/logic prompts with a computed "Result: ..." instead of calling the model** was removed (and its tests):
    verification belongs to the C++ transparent runtime, which checks the model's answer rather than replacing it.
 6. HTTP `WriteTimeout` of 60 s cut long streams: now 0.
-Not done: restart your running `bin/strata serve` (pid started before these fixes) after `go build -o bin/strata ./cmd/strata`;
-the C++ `strata_rt` runtime (verification / virtual context) is still not connected to this server; no image input; one
-engine session (requests are serialized); `STRATA_DEBUG_PROMPT=1` prints each rendered prompt for debugging.
+Not done: no image input; one engine session (requests are serialized); `STRATA_DEBUG_PROMPT=1` prints each rendered prompt.
+
+## C++ runtime connected to the server (sidecar)
+`build/strata_rt_server` (cmake target `strata_rt_server`, `src/rt/rt_server.cpp`) hosts `InferenceRuntime` and talks JSON lines
+over stdin/stdout to the Go server (`pkg/rtclient`, `pkg/server/rt.go`). Go keeps the tokenizer, chat template and engine pipe and
+serves the runtime's two calls: "build the prompt ids for these messages (+ delivered prefix)" and "run the model on these ids".
+Chat requests (`/v1/chat/completions`, `/v1/messages`) go through it; raw `/v1/completions` goes straight to the engine.
+- Flags: `--rt auto|on|off` (auto: use it when `strata_rt_server` is found in `./engine`, `./build`, next to the binary or PATH,
+  else direct with a warning in `/health`), `--rt-binary`, `--window N` (physical window the runtime fills, default 32768).
+- Visible only to an operator: `/health` -> `runtime`, `GET /v1/strata/runtime/metrics`, header `X-Strata-Debug: 1` adds `strata_trace`
+  (non-streaming OpenAI responses). No MCP, no tool, no special prompt.
+- Sessions: `X-Session-ID` / `session_id` / `user` name a persistent session. A caller that sends none gets a random, private,
+  in-memory context for that one request (never stored, erased afterwards): an id derived from content would let callers that open
+  with the same words read each other's context. Session ids are not bound to an authenticated principal: everyone holding the API key is one trust domain.
+  Contexts persist under `$STRATA_CONTEXT_DIR` (default `~/.strata/contexts`) and survive restarts.
+- Reasoning (`<think>` ... `</think>`) and `<tool_call>` blocks are streamed untouched and never verified; claims in the answer are,
+  and a contradicted one is regenerated internally (hidden "Verified facts" system note), then hedged with the exact value.
+- Limits: dynamic temperature applies to the next attempt (the engine takes temperature per request, not mid-stream); assistant
+  `reasoning_content` of earlier turns is not carried through the virtual context; `prompt_tokens` for Anthropic `message_start` is 0
+  on this path (the real count is in `message_delta`/usage at the end).
+- Verified end to end with the real model: correct answers VERIFIED; a prompt forcing `37 * 19 = 713` is regenerated twice and delivered
+  as 703; an earlier decision is recalled when the agent sends only its last message; another session cannot see it; recall survives a restart.
+- Tests: `go test ./pkg/server -run TestRuntime` (needs `build/strata_rt_server`, skips otherwise), `build/test_json`.
+
+## Running it
+```
+go build -o bin/strata ./cmd/strata            # Go server (rebuild after pulling; the running process keeps the old binary)
+cmake --build build --target strata_rt_server  # the C++ runtime sidecar (auto-detected in ./build)
+bin/strata serve                               # port 8080, loopback only; engine config: the single strata-*.json in the cwd
+curl localhost:8080/health                     # engine + runtime status
+```
+Remote bind needs `--host` + `--api-key`. Stop the old server by its pid (`ss -ltnp | grep :8080`), not `pkill -f` (it matches its own shell).
+
+## Security changes made (all with regression tests)
+Verification-cache key includes scope; storage dirs 0700 / files 0600; setup mutations need the API key; downloads only from the catalog;
+CORS allowlist + `Host` validation (DNS rebinding); loopback bind by default; CAS parser depth/size caps (crashed on long `-`/`!`/`*` chains);
+`std::regex` inputs bounded; control tokens in user text / tool names / raw completions stay text; anonymous callers get ephemeral contexts.
 
 ## Known items / Next steps
-- Go `pkg/mathruntime` is a Go-native solver and does not link directly to the C++ CAS static library.
-- KV cache token reuse metrics reflect bookkeeping counters.
+- Commit the uncommitted sidecar work (ask first; see git note above).
+- Go `pkg/mathruntime` is a Go-native solver and does not link to the C++ CAS.
+- KV reuse numbers in the runtime are bookkeeping; the engine does its own checkpoint reuse.
+- Not done: image input, parallel engine sessions, resource scheduling beyond a verification-time budget, docs for end users (`docs/`).
+  Claim detection covers arithmetic, primality/parity, Fibonacci/nth prime, and (`src/rt/symbolic.cpp`) "the derivative/integral of F is G",
+  "F expands/simplifies to / factors as G", "F equals G" (with a variable), "the solution(s) of EQ is/are x = a [and x = b]"; definitions
+  like "the line is y = 2x + 1" are deliberately not claims. "the limit of F as x approaches A is L"; not covered: series, matrices, inequalities, units.
+- `src/math/sage_backend.cpp` / `docs/SAGEMATH.md` came from another editor and were not reviewed by this work.
 
 ## Build / test
 ```
-cd build && cmake .. && ninja test_cas test_math_runtime test_transparent_runtime test_virtual_window
-./test_cas; ./test_math_runtime; ./test_transparent_runtime; ./test_virtual_window
+cd build && cmake .. && ninja test_cas test_math_runtime test_transparent_runtime test_virtual_window test_json test_symbolic_claims strata_rt_server
+./test_cas; ./test_math_runtime; ./test_transparent_runtime; ./test_virtual_window; ./test_json; ./test_symbolic_claims
+cd .. && go test ./...      # TestRuntime* use build/strata_rt_server; tokenizer tests use the pack tokenizer dir (skip if absent)
 ```
 Generator is Ninja. Sanitizer runtimes are not installed here; `-D_GLIBCXX_ASSERTIONS` was used for bounds checks.
 
 ## Gotchas
 - `assert` is a no-op under `-DNDEBUG`; never put side effects inside it.
 - Expr constructor `app(...)` (not `apply`): `apply` collides with `std::apply` via ADL.
-- Security reviews fixed: verification cache key includes scope; state versions content-addressed; storage perms.
+- The engine protocol: comma-separated ids, positional `DONE`, drain to `DONE` after STOP; one request at a time.
+- The runtime's hold-back is per sentence; reasoning and tool calls are exempt and stream immediately.
 - Don't commit others' WIP (`fast_attention.hpp`, installers, `serve/` deletions). Ask before committing.

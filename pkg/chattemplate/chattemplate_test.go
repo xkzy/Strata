@@ -163,3 +163,20 @@ func TestToolNamesAreCallerText(t *testing.T) {
 		t.Fatalf("a control token inside a tool name or parameter name must be marked as caller text: %q %v", text, spans)
 	}
 }
+
+func TestFlattenedToolCallsRenderTheSamePrompt(t *testing.T) {
+	calls := []ToolCall{{Name: "a", Arguments: json.RawMessage(`{"x":"v","n":2,"l":[1,2]}`)}, {Name: "b"}}
+	for _, content := range []string{"", "thinking out loud"} {
+		direct, err := Render([]Message{{Role: "user", Content: "q"}, {Role: "assistant", Content: content, ToolCalls: calls}, {Role: "tool", Content: "r"}}, Options{AddGenerationPrompt: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		flat, err := Render([]Message{{Role: "user", Content: "q"}, {Role: "assistant", Content: FlattenToolCalls(content, calls)}, {Role: "tool", Content: "r"}}, Options{AddGenerationPrompt: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if direct != flat {
+			t.Fatalf("content %q:\n direct %q\n flat   %q", content, direct, flat)
+		}
+	}
+}

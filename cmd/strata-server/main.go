@@ -18,6 +18,9 @@ import (
 func main() {
 	port := flag.Int("port", 8080, "Port to listen on")
 	host := flag.String("host", "127.0.0.1", "Address to listen on (anything but loopback requires --api-key)")
+	rtMode := flag.String("rt", "auto", "C++ transparent runtime (verification, virtual context): auto, on or off")
+	rtBinary := flag.String("rt-binary", "", "Path to strata_rt_server (default: looked for next to the engine)")
+	window := flag.Int("window", 32768, "Physical context window the runtime fills per request (tokens)")
 	modelName := flag.String("model", "Qwen3.8-Flash-Next", "Model name or identifier")
 	maxContext := flag.Int("max-context", 32768, "Physical context limit in tokens")
 	virtualLimit := flag.Int("virtual-limit", 2000000, "Virtual context limit in tokens")
@@ -28,15 +31,18 @@ func main() {
 	flag.Parse()
 
 	cfg := server.ServerConfig{
-		Port:         *port,
-		ModelName:    *modelName,
-		MaxContext:   *maxContext,
-		VirtualLimit: *virtualLimit,
-		APIKey:       *apiKey,
-		ModelPath:    *modelPath,
-		BinaryPath:   *binaryPath,
-		ConfigFile:   *configFile,
-		BindHost:     *host,
+		Port:          *port,
+		ModelName:     *modelName,
+		MaxContext:    *maxContext,
+		VirtualLimit:  *virtualLimit,
+		APIKey:        *apiKey,
+		ModelPath:     *modelPath,
+		BinaryPath:    *binaryPath,
+		ConfigFile:    *configFile,
+		BindHost:      *host,
+		RuntimeMode:   *rtMode,
+		RuntimeBinary: *rtBinary,
+		WindowTokens:  *window,
 	}
 
 	if err := server.CheckBind(*host, *apiKey); err != nil {

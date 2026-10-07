@@ -727,7 +727,7 @@ WorkingSet VirtualContext::select(const SelectionRequest& req) {
             else if (ws.references_earlier && !m.postings.count(e)) ws.unavailable.push_back("no stored context mentions '" + e + "'");
         }
         ws.coverage = qents.empty() ? 1.0 : static_cast<double>(found) / static_cast<double>(qents.size());
-        if (ws.references_earlier && best_old < m.cfg.min_relevance && m.items.size() > req.current_items.size())
+        if (ws.references_earlier && best_old < m.cfg.unavailable_floor && m.items.size() > req.current_items.size())
             ws.unavailable.push_back("the earlier context the request refers to could not be found");
         if (ws.references_earlier && m.items.size() <= req.current_items.size())
             ws.unavailable.push_back("there is no earlier context");
@@ -945,6 +945,17 @@ std::shared_ptr<VirtualContext> VirtualContextStore::open(const context::Securit
     if (!vc) vc = std::make_shared<VirtualContext>(id, scope, cfg_, backend_);
     contexts_[id] = vc;
     return vc;
+}
+std::shared_ptr<VirtualContext> VirtualContextStore::open_ephemeral(const context::SecurityScope& scope) {
+    const std::string id = context_id(scope);
+    std::lock_guard<std::mutex> lock(mu_);
+    auto vc = std::make_shared<VirtualContext>(id, scope, cfg_, nullptr);
+    contexts_[id] = vc;
+    return vc;
+}
+void VirtualContextStore::erase(const context::SecurityScope& scope) {
+    std::lock_guard<std::mutex> lock(mu_);
+    contexts_.erase(context_id(scope));
 }
 bool VirtualContextStore::persist(const std::shared_ptr<VirtualContext>& vc) {
     if (dir_.empty() || !vc) return true;

@@ -12,6 +12,7 @@ import (
 	"strata/pkg/chattemplate"
 	"strata/pkg/engineipc"
 	"strata/pkg/multitenant"
+	"strata/pkg/rtclient"
 )
 
 // genSpec is one generation request after the API layer has normalised it.
@@ -25,6 +26,7 @@ type genSpec struct {
 	MaxTokens int // 0 = not given
 	Stops     []string
 	Scope     multitenant.SecurityScope // tenant / user / session of the caller (headers + body)
+	Debug     bool                      // return the runtime's decision trace (X-Strata-Debug: 1)
 }
 
 // requestScope derives the caller's scope: X-Tenant-ID / X-User-ID / X-Session-ID headers win over the body's
@@ -52,6 +54,7 @@ type genEvent struct {
 	PromptTokens int
 	TokPerSec    float64
 	Err          error
+	Trace        []rtclient.TraceEvent
 }
 
 // apiError carries an HTTP status for the API layer.

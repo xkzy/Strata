@@ -98,7 +98,11 @@ func decodeFake(ids []string) string {
 
 func fakeEngine() {
 	out := bufio.NewWriter(os.Stdout)
-	fmt.Fprintln(out, "READY 2048 stop")
+	ctxSize := os.Getenv("STRATA_FAKE_CTX")
+	if ctxSize == "" {
+		ctxSize = "2048"
+	}
+	fmt.Fprintln(out, "READY "+ctxSize+" stop")
 	out.Flush()
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 0, 1<<20), 1<<24)
@@ -117,6 +121,22 @@ func fakeEngine() {
 			_ = os.WriteFile(path, []byte(prompt+"\n=====KEYS "+strings.Join(f[2:len(f)-1], " ")), 0o644)
 		}
 		reply := os.Getenv("STRATA_FAKE_REPLY")
+		// a second script for requests that carry the runtime's correction note; it is the model's whole output, of which
+		// only the part after what the prompt already holds (the delivered prefix) is generated, like a real model continuing
+		if r2 := os.Getenv("STRATA_FAKE_REPLY2"); r2 != "" && strings.Contains(prompt, "Verified facts for this answer") {
+			reply = r2
+		}
+		if i := strings.LastIndex(prompt, "<|im_start|>assistant\n<think>\n"); i >= 0 && os.Getenv("STRATA_FAKE_CONTINUE") != "" {
+			prefix := prompt[i+len("<|im_start|>assistant\n<think>\n"):]
+			if strings.HasPrefix(reply, prefix) {
+				reply = reply[len(prefix):]
+			}
+		}
+		if marker := os.Getenv("STRATA_FAKE_IF_PROMPT_HAS"); marker != "" { // answers differently when the prompt contains a marker
+			if strings.Contains(prompt, marker) {
+				reply = os.Getenv("STRATA_FAKE_IF_REPLY")
+			}
+		}
 		reason := "stop"
 		for _, id := range encodeFake(reply) {
 			fmt.Fprintf(out, "T %d\n", id)

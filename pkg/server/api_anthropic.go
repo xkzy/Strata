@@ -242,7 +242,7 @@ func (s *StrataServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Re
 	msgID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
 	ctx, done := s.registerRequest(r.Context(), msgID)
 	defer done()
-	events, promptTokens, err := s.startGeneration(ctx, spec)
+	events, promptTokens, err := s.startChat(ctx, spec)
 	if err != nil {
 		anError(w, err)
 		return

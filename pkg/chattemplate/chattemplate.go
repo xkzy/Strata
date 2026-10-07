@@ -383,3 +383,39 @@ func pyString(sb *strings.Builder, s string) {
 	}
 	sb.WriteByte('"')
 }
+
+// FlattenToolCalls returns content followed by the tool calls exactly as the template writes them into an assistant turn.
+// A host that carries history as plain text (a context store that only keeps message text) can pass the result as the
+// turn's content with no ToolCalls and get the same prompt.
+func FlattenToolCalls(content string, calls []ToolCall) string {
+	var sb strings.Builder
+	content = pyTrim(content)
+	sb.WriteString(content)
+	for j, tc := range calls {
+		switch {
+		case j == 0 && content != "":
+			sb.WriteString("\n\n<tool_call>\n<function=")
+		case j == 0:
+			sb.WriteString("<tool_call>\n<function=")
+		default:
+			sb.WriteString("\n<tool_call>\n<function=")
+		}
+		sb.WriteString(tc.Name + ">\n")
+		keys, vals, err := orderedObject(tc.Arguments)
+		if err != nil {
+			keys, vals = nil, nil
+		}
+		for k, name := range keys {
+			sb.WriteString("<parameter=" + name + ">\n")
+			var str string
+			if len(vals[k]) > 0 && vals[k][0] == '"' && json.Unmarshal(vals[k], &str) == nil {
+				sb.WriteString(str)
+			} else {
+				sb.WriteString(PyJSON(vals[k]))
+			}
+			sb.WriteString("\n</parameter>\n")
+		}
+		sb.WriteString("</function>\n</tool_call>")
+	}
+	return sb.String()
+}

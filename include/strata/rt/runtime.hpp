@@ -31,6 +31,12 @@ struct InferenceRequest {
     Sampling sampling;
     bool stream = false;
     bool debug = false;       // returns a trace in the response (diagnostics only; also available via metrics/admin)
+    // The reply stream starts inside a <think> block: text up to </think> is reasoning, not an answer, and is neither
+    // checked nor held back. Tool-call blocks (<tool_call>...</tool_call>) are never checked either.
+    bool reasoning_prefix = false;
+    // The caller gave no session identity: the request gets a private, in-memory context that is dropped afterwards (never
+    // stored, never recalled by another request).
+    bool ephemeral = false;
 };
 
 struct TraceEvent {
@@ -71,6 +77,7 @@ struct RuntimeConfig {
 
 struct RuntimeDeps {
     std::shared_ptr<IGenerator> generator;
+    std::shared_ptr<IPromptBuilder> prompt_builder;   // replaces tokenizer + prompt_template when the host owns them
     std::shared_ptr<ITokenizer> tokenizer;
     std::shared_ptr<IPromptTemplate> prompt_template;
     std::shared_ptr<ExactStateStore> exact_state;

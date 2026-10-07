@@ -596,9 +596,10 @@ func (eo *EngineOrchestrator) GenerateIDs(ctx context.Context, ids []int, sampli
 		}
 		stopped = true
 	}
+	curID := -1
 	emit := func(s string) {
 		if s != "" {
-			out <- TokenEvent{Text: s}
+			out <- TokenEvent{Text: s, TokenID: curID}
 		}
 	}
 	done := ctx.Done()
@@ -635,6 +636,7 @@ func (eo *EngineOrchestrator) GenerateIDs(ctx context.Context, ids []int, sampli
 				continue
 			}
 			genCount++
+			curID = id
 			safe := matcher.Push(detok.Push(id))
 			emit(safe)
 			if matcher.Hit() != "" {

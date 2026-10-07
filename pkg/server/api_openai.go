@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"strata/pkg/chattemplate"
 	"strata/pkg/engineipc"
 	"strata/pkg/multitenant"
+	"strata/pkg/rtclient"
 )
 
 // ---- shared request pieces ----
@@ -342,11 +344,12 @@ func (s *StrataServer) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	spec.Scope = req.scope(r)
+	spec.Debug = r.Header.Get("X-Strata-Debug") == "1"
 	reqID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
 	ctx, done := s.registerRequest(r.Context(), reqID)
 	defer done()
-	events, _, err := s.startGeneration(ctx, spec)
+	events, _, err := s.startChat(ctx, spec)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -410,13 +413,19 @@ func (s *StrataServer) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 	var content, reasoning strings.Builder
 	var tools []interface{}
 	finish, prompt, gen := "stop", 0, 0
+	var trace []rtclient.TraceEvent
 	for ev := range events {
 		switch {
 		case ev.Err != nil:
-			writeAPIError(w, &apiError{Status: 502, Type: "engine_error", Msg: ev.Err.Error()})
+			var ae *apiError
+			if errors.As(ev.Err, &ae) {
+				writeAPIError(w, ae)
+			} else {
+				writeAPIError(w, &apiError{Status: 502, Type: "engine_error", Msg: ev.Err.Error()})
+			}
 			return
 		case ev.End:
-			finish, prompt, gen = ev.Finish, ev.PromptTokens, ev.GenTokens
+			finish, prompt, gen, trace = ev.Finish, ev.PromptTokens, ev.GenTokens, ev.Trace
 		case ev.Kind == "reasoning":
 			reasoning.WriteString(ev.Text)
 		case ev.Kind == "content":
@@ -438,11 +447,15 @@ func (s *StrataServer) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 			msg["content"] = nil
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"id": reqID, "object": "chat.completion", "created": created, "model": model,
 		"choices": []map[string]interface{}{{"index": 0, "message": msg, "finish_reason": finish}},
 		"usage":   usage(prompt, gen),
-	})
+	}
+	if spec.Debug && len(trace) > 0 {
+		resp["strata_trace"] = trace // what the runtime did internally; only on request
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // ---- /v1/completions (raw prompt, no chat template) ----
@@ -475,7 +488,7 @@ func (s *StrataServer) handleCompletions(w http.ResponseWriter, r *http.Request)
 	created := time.Now().Unix()
 	ctx, done := s.registerRequest(r.Context(), reqID)
 	defer done()
-	events, _, err := s.startGeneration(ctx, spec)
+	events, _, err := s.startChat(ctx, spec)
 	if err != nil {
 		writeAPIError(w, err)
 		return

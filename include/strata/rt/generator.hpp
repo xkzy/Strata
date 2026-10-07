@@ -34,6 +34,16 @@ public:
                                                const std::string& request_key) = 0;
 };
 
+// Builds the prompt token ids for one attempt: the conversation rendered with the model's chat template, the text already
+// delivered to the caller appended after the assistant turn start, tokenized. A host that owns the tokenizer and the
+// template (the Go server) provides this instead of ITokenizer + IPromptTemplate.
+class IPromptBuilder {
+public:
+    virtual ~IPromptBuilder() = default;
+    virtual std::vector<int32_t> build(const std::vector<Message>& messages, const std::string& assistant_prefix) = 0;
+    virtual std::string identity() const = 0;   // model + tokenizer + template identity: part of every KV-compatibility key
+};
+
 class ITokenizer {
 public:
     virtual ~ITokenizer() = default;

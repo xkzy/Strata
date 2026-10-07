@@ -1,5 +1,6 @@
 // src/rt/claim.cpp - claim detection in generated text (precision first: a false "contradiction" costs a regeneration)
 #include "strata/rt/claim.hpp"
+#include "strata/rt/symbolic.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -381,8 +382,10 @@ bool ClaimDetector::may_contain_claims(const std::string& text) {
     for (unsigned char c : text) {
         if (std::isdigit(c) || c == '/' || c == '\\' || c == '`' || c == '[' || c == '=' || c == '~') return true;
     }
-    // citations without digits ("et al.")
-    return text.find("et al") != std::string::npos || text.find("http") != std::string::npos;
+    // citations without digits ("et al."), and statements about expressions in words
+    for (const char* k : {"et al", "http", "derivative", "integral", "expands to", "simplifies to", "factors as", "factors into", "equals", "equal to", "solution"})
+        if (text.find(k) != std::string::npos) return true;
+    return false;
 }
 
 size_t ClaimDetector::complete_sentence_end(const std::string& text, size_t from) {
@@ -527,6 +530,30 @@ std::vector<Claim> ClaimDetector::scan(const std::string& text, size_t from, siz
                 for (auto it = std::sregex_iterator(sentence.begin(), sentence.end(), r_nth_prime); it != std::sregex_iterator(); ++it)
                     emit("prime #" + std::string((*it)[1]), "prime(" + std::string((*it)[1]) + ")", (*it)[2]);
                 (void)m;
+            }
+        }
+
+        // ---- formal: equations and calculus stated in words ("the derivative of x^2 is 2x") ----
+        if (sentence.size() <= 1500) {
+            for (const auto& sp : find_symbolic_claims(sentence)) {
+                Claim c;
+                c.kind = ClaimKind::kSymbolic;
+                c.risk = ClaimRisk::kHigh;
+                c.text = sentence; c.begin = base; c.end = base + sentence.size();
+                c.subject = sp.shown; c.value = sp.g;
+                c.normalized = "sym:" + sp.kind + ":" + sp.f + "=>" + sp.g + ":" + sp.var;
+                c.has_formal = true;
+                c.formal.type = logic::ClaimType::kSymbolic;
+                c.formal.expression = encode_symbolic(sp);
+                c.formal.claimed_value = sp.g;
+                c.formal.raw_statement = sentence;
+                c.formal.tenant_id = scope.security.tenant_id;
+                c.formal.session_id = scope.security.session_id;
+                c.formal.user_id = scope.security.user_id;
+                c.id = "c_" + hash128(scope.key() + "|" + std::to_string(c.begin) + "|" + c.normalized).substr(0, 12);
+                bool dup = false;
+                for (const auto& f : found) if (f.normalized == c.normalized) dup = true;
+                if (!dup) found.push_back(std::move(c));
             }
         }
 

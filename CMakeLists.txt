@@ -657,7 +657,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(strata_rt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_rt PUBLIC strata_math strata_tools strata_generation strata_context)
 
-  foreach(rt_test test_transparent_runtime test_virtual_window)
+  # the runtime as a sidecar process for the Go server (JSON lines over stdin/stdout)
+  add_executable(strata_rt_server src/rt/rt_server.cpp)
+  target_link_libraries(strata_rt_server PRIVATE strata_rt)
+
+  foreach(rt_test test_transparent_runtime test_virtual_window test_json test_symbolic_claims)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/rt/${rt_test}.cpp")
       enable_testing()
       add_executable(${rt_test} tests/rt/${rt_test}.cpp)

@@ -35,15 +35,18 @@ import (
 )
 
 type ServerConfig struct {
-	Port         int
-	ModelName    string
-	MaxContext   int
-	VirtualLimit int
-	APIKey       string
-	ModelPath    string
-	BinaryPath   string
-	ConfigFile   string
-	BindHost     string // address the HTTP server listens on; empty is treated as loopback
+	Port          int
+	ModelName     string
+	MaxContext    int
+	VirtualLimit  int
+	APIKey        string
+	ModelPath     string
+	BinaryPath    string
+	ConfigFile    string
+	RuntimeMode   string // on | off | auto: the C++ transparent runtime (verification, virtual context)
+	RuntimeBinary string
+	WindowTokens  int    // physical context window the runtime fills (default 32768, at most the engine's context)
+	BindHost      string // address the HTTP server listens on; empty is treated as loopback
 }
 
 type StrataServer struct {
@@ -66,6 +69,7 @@ type StrataServer struct {
 	SetupManager    *installer.SetupManager
 	Hallucination   *hallucination.HallucinationRuntime
 	eng             engineState
+	rt              rtState
 	server          *http.Server
 	activeCancels   map[string]context.CancelFunc
 	cancelMu        sync.Mutex
@@ -195,6 +199,7 @@ func (s *StrataServer) Router() http.Handler {
 	mux.HandleFunc("/v1/strata/tools/retrieve", s.handleToolsRetrieve)
 
 	// Anti-Loop Guard
+	mux.HandleFunc("/v1/strata/runtime/metrics", s.handleRuntimeMetrics)
 	mux.HandleFunc("/v1/strata/guard", s.handleGuardStats)
 	mux.HandleFunc("/v1/strata/guard/check", s.handleGuardCheck)
 	mux.HandleFunc("/v1/strata/guard/outcome", s.handleGuardOutcome)
@@ -1066,4 +1071,21 @@ func (s *StrataServer) handleHallucinationClaims(w http.ResponseWriter, r *http.
 func (s *StrataServer) handleHallucinationMetrics(w http.ResponseWriter, r *http.Request) {
 	metrics := s.Hallucination.GetMetrics()
 	writeJSON(w, http.StatusOK, metrics)
+}
+
+// handleRuntimeMetrics: counters of the transparent runtime (admin/diagnostics; nothing the model or a client has to call).
+func (s *StrataServer) handleRuntimeMetrics(w http.ResponseWriter, r *http.Request) {
+	s.rt.mu.RLock()
+	c := s.rt.client
+	s.rt.mu.RUnlock()
+	if c == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"runtime": s.runtimeStatus()})
+		return
+	}
+	m, err := c.Metrics(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error(), "runtime": s.runtimeStatus()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"runtime": s.runtimeStatus(), "metrics": m})
 }

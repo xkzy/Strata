@@ -95,7 +95,8 @@ struct VirtualContextConfig {
     double pinned_fraction = 0.20;
     size_t retrieval_candidates = 48;
     int dependency_depth = 2;
-    double min_relevance = 0.12;             // normalized; below this a page is not "found"
+    double min_relevance = 0.12;             // normalized; below this a page is not retrieved as relevant
+    double unavailable_floor = 0.04;         // an earlier-context reference is only "unavailable" when nothing reaches even this
     size_t warm_pages = 256;
     double hot_bonus = 0.15;                 // keeps the working set (and its KV prefix) stable between requests
     // importance weights
@@ -228,6 +229,9 @@ public:
     // context_id is derived from every scope field: two sessions never share a context by accident.
     static std::string context_id(const context::SecurityScope& s);
     std::shared_ptr<VirtualContext> open(const context::SecurityScope& scope);
+    // A context that lives only for one request: no storage backend, nothing read from or written to disk, and erase() drops it.
+    std::shared_ptr<VirtualContext> open_ephemeral(const context::SecurityScope& scope);
+    void erase(const context::SecurityScope& scope);
     size_t size() const;
     const VirtualContextConfig& config() const { return cfg_; }
 
