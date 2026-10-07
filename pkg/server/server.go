@@ -69,6 +69,8 @@ type StrataServer struct {
 	SetupManager    *installer.SetupManager
 	Hallucination   *hallucination.HallucinationRuntime
 	eng             engineState
+	shared          sharedState
+	cfgMu           sync.Mutex // one run-config write at a time
 	rt              rtState
 	server          *http.Server
 	activeCancels   map[string]context.CancelFunc
@@ -168,7 +170,9 @@ func (s *StrataServer) Router() http.Handler {
 	mux.HandleFunc("/api/setup/cancel", s.handleSetupCancel)
 
 	// Config Settings (#564)
-	mux.HandleFunc("/config", s.handleConfig)
+	mux.HandleFunc("/config", s.handleRunConfig)
+	mux.HandleFunc("/settings", s.handleSettings)
+	mux.HandleFunc("/mcp", s.handleMcpStatus)
 
 	// Math Runtime Endpoints (#20)
 	mux.HandleFunc("/v1/strata/math/evaluate", s.handleMathEvaluate)
@@ -785,33 +789,6 @@ func (s *StrataServer) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 		"current": current,
 		"history": history,
 	})
-}
-
-// ---------------------------------------------------------------------------
-// Run Config Settings Handler (/config)
-// ---------------------------------------------------------------------------
-
-func (s *StrataServer) handleConfig(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		writeJSON(w, http.StatusOK, s.ConfigManager.Get())
-		return
-	}
-
-	if r.Method == http.MethodPost {
-		var cfg runconfig.StrataConfig
-		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-			http.Error(w, `{"error":{"message":"invalid config json"}}`, http.StatusBadRequest)
-			return
-		}
-		s.ConfigManager.Update(cfg)
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"status": "updated",
-			"config": s.ConfigManager.Get(),
-		})
-		return
-	}
-
-	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 
 func (s *StrataServer) handleRoot(w http.ResponseWriter, r *http.Request) {

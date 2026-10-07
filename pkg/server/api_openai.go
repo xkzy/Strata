@@ -338,6 +338,7 @@ func (s *StrataServer) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 	if !readJSONBody(w, r, &req) {
 		return
 	}
+	s.applySharedOA(&req)
 	spec, err := req.toSpec(s)
 	if err != nil {
 		writeAPIError(w, err)
