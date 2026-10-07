@@ -13,6 +13,7 @@
 #pragma once
 
 #include "strata/rt/generator.hpp"
+#include "strata/rt/retrieval.hpp"
 #include "strata/rt/types.hpp"
 
 #include <map>
@@ -100,6 +101,7 @@ struct VirtualContextConfig {
     size_t warm_pages = 256;
     double hot_bonus = 0.15;                 // keeps the working set (and its KV prefix) stable between requests
     // importance weights
+    RetrievalConfig retrieval;               // hybrid retrieval and its caches (retrieval.hpp)
     double w_relevance = 1.0, w_recency = 0.35, w_frequency = 0.12, w_dependents = 0.15, w_pinned = 2.0, w_tool = 0.10, w_verified = 0.20;
 };
 
@@ -168,7 +170,8 @@ struct NewItem {
 
 class VirtualContext {
 public:
-    VirtualContext(std::string context_id, context::SecurityScope owner, VirtualContextConfig cfg, std::shared_ptr<IPageBackend> backend = nullptr);
+    VirtualContext(std::string context_id, context::SecurityScope owner, VirtualContextConfig cfg, std::shared_ptr<IPageBackend> backend = nullptr,
+                   std::shared_ptr<EmbeddingCache> embeddings = nullptr);
     ~VirtualContext();
 
     const std::string& id() const { return id_; }
@@ -200,10 +203,15 @@ public:
     bool save(const std::string& manifest_path);
     // Saves only when something changed since the last save.
     bool save_if_dirty(const std::string& manifest_path);
-    static std::shared_ptr<VirtualContext> load(const std::string& manifest_path, VirtualContextConfig cfg, std::shared_ptr<IPageBackend> backend);
+    static std::shared_ptr<VirtualContext> load(const std::string& manifest_path, VirtualContextConfig cfg, std::shared_ptr<IPageBackend> backend,
+                                                std::shared_ptr<EmbeddingCache> embeddings = nullptr);
 
     ContextWindowInfo window_info() const;
     VirtualContextStats stats() const;
+    RetrievalMetrics retrieval_metrics() const;
+    // Retrieval-loop guard: the same (query, working set) again without new evidence. Returns the repeat count.
+    int observe_retrieval(const std::string& query_hash, const std::string& candidate_hash, bool new_evidence);
+    bool retrieval_throttled(const std::string& query_hash, const std::string& candidate_hash) const;
     // Original content of a page (reads the backend if it was spilled). False when it cannot be recovered.
     bool page_content(uint64_t page_id, std::string& out) const;
     bool page_info(uint64_t page_id, ContextPage& out) const;
@@ -233,11 +241,14 @@ public:
     std::shared_ptr<VirtualContext> open_ephemeral(const context::SecurityScope& scope);
     void erase(const context::SecurityScope& scope);
     size_t size() const;
+    RetrievalMetrics retrieval_metrics() const;   // summed over the open contexts
+    uint64_t embedding_cache_hits() const { return embeddings_->hits(); }
     const VirtualContextConfig& config() const { return cfg_; }
 
 private:
     VirtualContextConfig cfg_;
     std::shared_ptr<IPageBackend> backend_;
+    std::shared_ptr<EmbeddingCache> embeddings_ = std::make_shared<EmbeddingCache>();   // L4: shared by every context; vectors only, keyed by content + embedder + version
     std::string dir_;
     mutable std::mutex mu_;
     std::map<std::string, std::shared_ptr<VirtualContext>> contexts_;

@@ -245,7 +245,12 @@ int main() {
         d.prompt_builder = prompt;
         d.generator = generator;
         runtime = std::make_unique<InferenceRuntime>(d, cfg);
-        host.set_metrics([&]() { return metrics_json(runtime->metrics()); });
+        host.set_metrics([&]() {
+            Json j = metrics_json(runtime->metrics());
+            Json r;
+            if (Json::parse(runtime->contexts().retrieval_metrics().to_json(), r)) j.set("retrieval", r);   // hybrid retrieval and cache counters
+            return j;
+        });
         Json r = Json::object();
         r.set("op", Json::string("ready"));
         host.send(r);

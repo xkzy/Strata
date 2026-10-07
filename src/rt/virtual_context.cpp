@@ -1,6 +1,8 @@
 // src/rt/virtual_context.cpp - virtual context window (see virtual_context.hpp)
 #include "strata/rt/virtual_context.hpp"
 
+#include "strata/rt/retrieval.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -19,103 +21,15 @@ namespace strata::rt {
 
 namespace {
 
+using namespace text;
+
 size_t est_tokens(const std::string& s) { return (s.size() + 3) / 4; }
 
-std::string lower(std::string s) {
-    for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return s;
-}
 std::string trim(const std::string& s) {
     size_t b = 0, e = s.size();
     while (b < e && std::isspace(static_cast<unsigned char>(s[b]))) ++b;
     while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) --e;
     return s.substr(b, e - b);
-}
-
-const std::set<std::string>& stopwords() {
-    static const std::set<std::string> w = {"the", "and", "for", "are", "but", "not", "you", "all", "any", "can", "had", "her", "was", "one", "our",
-        "out", "has", "have", "this", "that", "with", "from", "they", "will", "what", "when", "which", "their", "there", "would", "about", "into",
-        "than", "then", "them", "these", "those", "been", "were", "your", "also", "its", "how", "who", "why", "did", "does", "use", "using", "used",
-        "should", "could", "please", "make", "need", "want", "like", "just", "some", "more", "very", "let", "get", "set", "new", "now", "yes"};
-    return w;
-}
-
-bool is_word_char(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '.' || c == '/' || c == '-'; }
-
-// Raw tokens: letters/digits plus the characters that make up identifiers and paths.
-std::vector<std::string> raw_tokens(const std::string& text) {
-    std::vector<std::string> out;
-    size_t i = 0;
-    while (i < text.size()) {
-        while (i < text.size() && !is_word_char(text[i])) ++i;
-        size_t j = i;
-        while (j < text.size() && is_word_char(text[j])) ++j;
-        if (j > i) {
-            size_t b = i, e = j;
-            while (e > b && (text[e - 1] == '.' || text[e - 1] == '-' || text[e - 1] == '/')) --e;   // trailing punctuation
-            while (b < e && (text[b] == '.' || text[b] == '-')) ++b;
-            if (e > b) out.push_back(text.substr(b, e - b));
-        }
-        i = j;
-    }
-    return out;
-}
-
-bool looks_like_entity(const std::string& t) {
-    if (t.size() < 3) return false;
-    bool under = false, dot = false, slash = false, digit = false, alpha = false;
-    int caps = 0;
-    for (size_t i = 0; i < t.size(); ++i) {
-        unsigned char c = static_cast<unsigned char>(t[i]);
-        if (c == '_') under = true;
-        else if (c == '.' && i + 1 < t.size() && std::isalpha(static_cast<unsigned char>(t[i + 1])) && i > 0) dot = true;
-        else if (c == '/') slash = true;
-        else if (std::isdigit(c)) digit = true;
-        else if (std::isalpha(c)) { alpha = true; if (std::isupper(c) && i > 0) ++caps; }
-    }
-    if (under || slash) return alpha;
-    if (dot) return alpha;
-    if (caps >= 1 && alpha) return true;               // camelCase / CamelCase
-    if (digit && alpha) return true;                   // v2, sha256, port8080
-    return false;
-}
-
-std::vector<std::string> split_identifier(const std::string& t) {
-    std::vector<std::string> parts;
-    std::string cur;
-    auto flush = [&]() { if (cur.size() >= 2) parts.push_back(lower(cur)); cur.clear(); };
-    for (size_t i = 0; i < t.size(); ++i) {
-        char c = t[i];
-        if (c == '_' || c == '.' || c == '/' || c == '-') { flush(); continue; }
-        if (!cur.empty() && std::isupper(static_cast<unsigned char>(c)) && std::islower(static_cast<unsigned char>(cur.back()))) flush();
-        cur += c;
-    }
-    flush();
-    return parts;
-}
-
-// index terms: whole lowercase tokens plus the pieces of identifiers/paths
-std::vector<std::string> index_terms(const std::string& text) {
-    std::vector<std::string> out;
-    for (const auto& t : raw_tokens(text)) {
-        const std::string l = lower(t);
-        const bool entity = looks_like_entity(t);
-        if (l.size() >= 2 && !stopwords().count(l)) out.push_back(l);
-        if (entity || l.find_first_of("_./-") != std::string::npos)
-            for (auto& p : split_identifier(t)) if (p != l && !stopwords().count(p)) out.push_back(p);
-    }
-    return out;
-}
-
-std::vector<std::string> entities_of(const std::string& text, size_t cap = 64) {
-    std::vector<std::string> out;
-    std::set<std::string> seen;
-    for (const auto& t : raw_tokens(text)) {
-        if (!looks_like_entity(t)) continue;
-        std::string l = lower(t);
-        if (seen.insert(l).second) { out.push_back(l); if (out.size() >= cap) break; }
-    }
-    return out;
 }
 
 bool references_earlier_context(const std::string& query) {
@@ -273,9 +187,7 @@ struct VirtualContext::Impl {
     mutable std::unordered_map<std::string, std::string> resident;     // hash -> content
     mutable uint64_t resident_bytes = 0;
     std::set<std::string> spilled;       // hashes known to live only in the backend
-    std::unordered_map<std::string, std::vector<std::pair<uint32_t, uint16_t>>> postings;   // term -> (page idx, tf)
-    std::vector<uint32_t> doclen;
-    double total_len = 0;
+    std::unique_ptr<HybridIndex> index;                        // exact / lexical / vector / structural retrieval + caches (retrieval.hpp)
     std::unordered_map<std::string, uint64_t> entity_first;   // entity -> first page id
     std::vector<uint32_t> dependents;                          // per page idx
     std::unordered_map<std::string, std::vector<uint64_t>> msg_index;   // role|hash -> item ids
@@ -334,18 +246,11 @@ struct VirtualContext::Impl {
         return out;
     }
 
-    void index_page(uint32_t idx, const std::string& text) {
-        std::unordered_map<std::string, uint16_t> tf;
-        uint32_t len = 0;
-        for (auto& t : index_terms(text)) {
-            auto& c = tf[t];
-            if (c < 65535) ++c;
-            ++len;
-        }
-        for (auto& kv : tf) postings[kv.first].push_back({idx, kv.second});
-        if (doclen.size() <= idx) doclen.resize(idx + 1, 0);
-        doclen[idx] = len;
-        total_len += len;
+    void index_page(const ContextPage& p, const std::string& text) {
+        DocInfo info;
+        info.source = p.source;
+        info.authority = p.pinned || p.kind == ItemKind::kSystem ? 1.0 : std::min(1.0, std::max(0.0, p.priority / 10.0));
+        index->add(static_cast<uint32_t>(p.page_id - 1), text, p.content_hash, info);
     }
 
     void add_dependencies(ContextPage& p, const std::string& text) {
@@ -413,7 +318,7 @@ struct VirtualContext::Impl {
             it.pages.push_back(p.page_id);
             // content (deduplicated by hash)
             if (!resident.count(p.content_hash) && !spilled.count(p.content_hash)) { resident[p.content_hash] = ch; resident_bytes += ch.size(); content_bytes += ch.size(); }
-            index_page(static_cast<uint32_t>(p.page_id - 1), ch);
+            index_page(pg(p.page_id), ch);
             add_dependencies(pg(p.page_id), ch);
         }
         msg_index[it.key].push_back(it.id);
@@ -423,40 +328,21 @@ struct VirtualContext::Impl {
         return items.back().id;
     }
 
-    // ---- scoring ----
-    double idf(size_t df) const {
-        const double n = static_cast<double>(pages.size());
-        return std::log(1.0 + (n - static_cast<double>(df) + 0.5) / (static_cast<double>(df) + 0.5));
+    // ---- retrieval: the hybrid index decides which retrievers run; authorization is applied before anything is scored ----
+    static std::string scope_key(const context::SecurityScope& r) {
+        std::vector<std::string> perms(r.permissions.begin(), r.permissions.end());
+        std::sort(perms.begin(), perms.end());
+        std::string k = r.tenant_id + "\x1f" + r.user_id + "\x1f" + r.workspace_id + "\x1f" + r.agent_id + "\x1f" + r.session_id + "\x1f" + std::to_string(static_cast<int>(r.sharing_scope));
+        for (const auto& p : perms) k += "\x1f" + p;
+        return k;
     }
-
-    // BM25 over authorized pages; normalized to 0..1 by the best a page could score on these terms
-    std::unordered_map<uint32_t, double> bm25(const std::string& query, const context::SecurityScope& requester) const {
-        std::unordered_map<uint32_t, double> scores;
-        if (pages.empty()) return scores;
-        std::set<std::string> qterms;
-        for (auto& t : index_terms(query)) qterms.insert(t);
-        std::set<std::string> ents;
-        for (auto& e : entities_of(query)) ents.insert(e);
-        const double avg = std::max(1.0, total_len / static_cast<double>(pages.size()));
-        const double k1 = 1.2, b = 0.75;
-        double max_possible = 0;
-        for (const auto& t : qterms) {
-            auto it = postings.find(t);
-            if (it == postings.end()) continue;
-            const auto& pl = it->second;
-            if (pages.size() > 200 && pl.size() > pages.size() / 2) continue;   // carries no information
-            const double w = idf(pl.size()) * (ents.count(t) ? 1.6 : 1.0);
-            max_possible += w * (k1 + 1);
-            for (const auto& pr : pl) {
-                const ContextPage& p = pages[pr.first];
-                if (!requester.can_access(p.owner, p.sharing)) continue;   // authorization before scoring
-                const double tf = pr.second;
-                const double dl = doclen[pr.first];
-                scores[pr.first] += w * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / avg));
-            }
-        }
-        if (max_possible > 0) for (auto& kv : scores) kv.second = std::min(1.0, kv.second / max_possible);
-        return scores;
+    std::vector<Candidate> retrieve(const std::string& query, const context::SecurityScope& requester, const std::vector<std::string>& extra = {}, RequestCache* rc = nullptr) const {
+        HybridQuery q;
+        q.text = query;
+        q.extra = extra;
+        q.scope_key = scope_key(requester);
+        q.allowed = [this, &requester](uint32_t idx) { return idx < pages.size() && requester.can_access(pages[idx].owner, pages[idx].sharing); };
+        return index->search(q, rc);
     }
 
     double importance(const ContextPage& p, double rel, uint64_t newest, bool was_hot) const {
@@ -497,9 +383,10 @@ struct VirtualContext::Impl {
     }
 };
 
-VirtualContext::VirtualContext(std::string context_id, context::SecurityScope owner, VirtualContextConfig cfg, std::shared_ptr<IPageBackend> backend)
+VirtualContext::VirtualContext(std::string context_id, context::SecurityScope owner, VirtualContextConfig cfg, std::shared_ptr<IPageBackend> backend, std::shared_ptr<EmbeddingCache> embeddings)
     : impl_(new Impl), id_(std::move(context_id)), owner_(std::move(owner)) {
     impl_->cfg = std::move(cfg);
+    impl_->index = std::make_unique<HybridIndex>(impl_->cfg.retrieval, nullptr, std::move(embeddings));
     impl_->backend = std::move(backend);
     impl_->owner = owner_;
 }
@@ -578,12 +465,12 @@ std::vector<uint64_t> VirtualContext::item_pages(uint64_t item_id) const {
 std::vector<SearchHit> VirtualContext::search(const context::SecurityScope& requester, const std::string& query, size_t top_k, int prov) const {
     std::lock_guard<std::mutex> lock(impl_->mu);
     ++impl_->st.search_queries;
-    auto scores = impl_->bm25(query, requester);
+    auto cands = impl_->retrieve(query, requester);
     std::vector<std::pair<double, uint32_t>> ranked;
-    for (auto& kv : scores) {
-        const ContextPage& p = impl_->pages[kv.first];
+    for (auto& c : cands) {
+        const ContextPage& p = impl_->pages[c.doc];
         if (prov >= 0 && static_cast<int>(p.provenance) != prov) continue;
-        ranked.push_back({kv.second, kv.first});
+        ranked.push_back({c.score, c.doc});
     }
     std::sort(ranked.begin(), ranked.end(), [](auto& a, auto& b) { return a.first != b.first ? a.first > b.first : a.second < b.second; });
     std::vector<SearchHit> out;
@@ -627,9 +514,9 @@ WorkingSet VirtualContext::select(const SelectionRequest& req) {
     auto fits = [&](const ContextPage& p, bool summary, int64_t limit) { return used + cost(p, summary) <= limit; };
 
     // relevance of every authorized page to the query (and to recovery's extra queries)
-    std::unordered_map<uint32_t, double> rel = m.bm25(req.query, req.requester);
-    for (const auto& q : req.extra_queries)
-        for (auto& kv : m.bm25(q, req.requester)) { auto& r = rel[kv.first]; r = std::max(r, kv.second); }
+    std::unordered_map<uint32_t, double> rel;
+    std::unordered_map<uint32_t, Candidate> rel_cands;
+    for (auto& c : m.retrieve(req.query, req.requester, req.extra_queries)) { rel[c.doc] = c.score; rel_cands[c.doc] = c; }
     auto rel_of = [&](uint64_t pid) { auto it = rel.find(static_cast<uint32_t>(pid - 1)); return it == rel.end() ? 0.0 : it->second; };
 
     // A: the present request. Small items are mandatory; huge ones (a 500K-line tool result) contribute their head and
@@ -707,6 +594,11 @@ WorkingSet VirtualContext::select(const SelectionRequest& req) {
                 for (size_t k = 1; k < unit.size(); ++k) if (fits(m.pg(unit[k]), true, budget)) take(unit[k], true);   // dependencies as summaries
             } else if (fits(p, true, budget)) { take(p.page_id, true); ++ws.retrieved; }
         }
+        {   // usefulness feedback: the retrievers that produced pages that made it into the working set
+            std::vector<Candidate> used_c;
+            for (auto& kv : chosen) { auto it = rel_cands.find(static_cast<uint32_t>(kv.first - 1)); if (it != rel_cands.end()) used_c.push_back(it->second); }
+            if (!used_c.empty()) m.index->note_used(used_c);
+        }
     }
 
     // retrieval confidence / coverage / unavailable context
@@ -724,7 +616,7 @@ WorkingSet VirtualContext::select(const SelectionRequest& req) {
         for (auto& c : chosen) { std::string t; if (m.content_locked(m.pg(c.first), t)) for (auto& x : entities_of(t)) chosen_terms.insert(x); }
         for (auto& e : qents) {
             if (chosen_terms.count(e)) ++found;
-            else if (ws.references_earlier && !m.postings.count(e)) ws.unavailable.push_back("no stored context mentions '" + e + "'");
+            else if (ws.references_earlier && !m.index->has_term(e)) ws.unavailable.push_back("no stored context mentions '" + e + "'");
         }
         ws.coverage = qents.empty() ? 1.0 : static_cast<double>(found) / static_cast<double>(qents.size());
         if (ws.references_earlier && best_old < m.cfg.unavailable_floor && m.items.size() > req.current_items.size())
@@ -798,6 +690,18 @@ ContextWindowInfo VirtualContext::window_info() const {
     return w;
 }
 
+int VirtualContext::observe_retrieval(const std::string& query_hash, const std::string& candidate_hash, bool new_evidence) {
+    return impl_->index->observe_state(query_hash, candidate_hash, new_evidence);
+}
+bool VirtualContext::retrieval_throttled(const std::string& query_hash, const std::string& candidate_hash) const {
+    return impl_->index->loop_throttled(query_hash, candidate_hash);
+}
+
+RetrievalMetrics VirtualContext::retrieval_metrics() const {
+    std::lock_guard<std::mutex> lock(impl_->mu);
+    return impl_->index->metrics();
+}
+
 VirtualContextStats VirtualContext::stats() const {
     std::lock_guard<std::mutex> lock(impl_->mu);
     VirtualContextStats s = impl_->st;
@@ -858,7 +762,7 @@ bool VirtualContext::save_if_dirty(const std::string& manifest_path) {
     return save(manifest_path);
 }
 
-std::shared_ptr<VirtualContext> VirtualContext::load(const std::string& manifest_path, VirtualContextConfig cfg, std::shared_ptr<IPageBackend> backend) {
+std::shared_ptr<VirtualContext> VirtualContext::load(const std::string& manifest_path, VirtualContextConfig cfg, std::shared_ptr<IPageBackend> backend, std::shared_ptr<EmbeddingCache> embeddings) {
     std::ifstream f(manifest_path, std::ios::binary);
     if (!f) return nullptr;
     std::string line;
@@ -869,7 +773,7 @@ std::shared_ptr<VirtualContext> VirtualContext::load(const std::string& manifest
         if (fl[0] == "H" && fl.size() >= 7) {
             context::SecurityScope o;
             o.tenant_id = fl[2]; o.user_id = fl[3]; o.workspace_id = fl[4]; o.agent_id = fl[5]; o.session_id = fl[6];
-            vc.reset(new VirtualContext(fl[1], o, cfg, backend));
+            vc.reset(new VirtualContext(fl[1], o, cfg, backend, embeddings));
         } else if (!vc) {
             return nullptr;
         } else if (fl[0] == "I" && fl.size() >= 10) {
@@ -905,11 +809,11 @@ std::shared_ptr<VirtualContext> VirtualContext::load(const std::string& manifest
             m.spilled.insert(p.content_hash);
             m.persisted.insert(p.content_hash);
             m.content_bytes += c.size();
-            m.index_page(static_cast<uint32_t>(p.page_id - 1), c);
+            m.index_page(p, c);
             for (const auto& e : entities_of(c, 12)) m.entity_first.emplace(e, p.page_id);
         } else {
             ++m.st.backend_failures;   // stays in the manifest, cannot be searched or materialized, and is reported as unavailable
-            if (m.doclen.size() <= p.page_id - 1) m.doclen.resize(p.page_id, 0);
+            m.index->reserve_gap(static_cast<uint32_t>(p.page_id - 1));
         }
         for (uint64_t d : p.dependency) if (d >= 1 && d <= m.dependents.size()) ++m.dependents[d - 1];
     }
@@ -939,17 +843,17 @@ std::shared_ptr<VirtualContext> VirtualContextStore::open(const context::Securit
     auto it = contexts_.find(id);
     if (it != contexts_.end()) return it->second;
     std::shared_ptr<VirtualContext> vc;
-    if (!dir_.empty()) vc = VirtualContext::load(dir_ + "/" + id + ".manifest", cfg_, backend_);
+    if (!dir_.empty()) vc = VirtualContext::load(dir_ + "/" + id + ".manifest", cfg_, backend_, embeddings_);
     // a manifest is only trusted for the scope it was written for
     if (vc && (vc->id() != id || VirtualContextStore::context_id(vc->owner()) != id)) vc.reset();
-    if (!vc) vc = std::make_shared<VirtualContext>(id, scope, cfg_, backend_);
+    if (!vc) vc = std::make_shared<VirtualContext>(id, scope, cfg_, backend_, embeddings_);
     contexts_[id] = vc;
     return vc;
 }
 std::shared_ptr<VirtualContext> VirtualContextStore::open_ephemeral(const context::SecurityScope& scope) {
     const std::string id = context_id(scope);
     std::lock_guard<std::mutex> lock(mu_);
-    auto vc = std::make_shared<VirtualContext>(id, scope, cfg_, nullptr);
+    auto vc = std::make_shared<VirtualContext>(id, scope, cfg_, nullptr, embeddings_);
     contexts_[id] = vc;
     return vc;
 }
@@ -960,6 +864,23 @@ void VirtualContextStore::erase(const context::SecurityScope& scope) {
 bool VirtualContextStore::persist(const std::shared_ptr<VirtualContext>& vc) {
     if (dir_.empty() || !vc) return true;
     return vc->save_if_dirty(dir_ + "/" + vc->id() + ".manifest");
+}
+RetrievalMetrics VirtualContextStore::retrieval_metrics() const {
+    std::vector<std::shared_ptr<VirtualContext>> open;
+    { std::lock_guard<std::mutex> lock(mu_); for (auto& kv : contexts_) open.push_back(kv.second); }
+    RetrievalMetrics t;
+    for (auto& vc : open) {
+        const RetrievalMetrics m = vc->retrieval_metrics();
+        t.queries += m.queries; t.l0_hits += m.l0_hits; t.l1_hits += m.l1_hits; t.l2_hits += m.l2_hits; t.l3_hits += m.l3_hits; t.l5_hits += m.l5_hits;
+        t.l6_hits += m.l6_hits; t.negative_hits += m.negative_hits;
+        t.exact_runs += m.exact_runs; t.lexical_runs += m.lexical_runs; t.vector_runs += m.vector_runs; t.structural_runs += m.structural_runs;
+        t.exact_hits += m.exact_hits; t.lexical_hits += m.lexical_hits; t.vector_hits += m.vector_hits; t.structural_hits += m.structural_hits;
+        t.exact_short_circuits += m.exact_short_circuits; t.widened += m.widened; t.duplicate_candidates += m.duplicate_candidates; t.loop_throttled += m.loop_throttled;
+        t.embedding_hits += m.embedding_hits; t.embedding_misses += m.embedding_misses;
+        t.retrieval_ms += m.retrieval_ms; t.rerank_ms += m.rerank_ms; t.embedding_ms += m.embedding_ms;
+        for (int i = 0; i < 10; ++i) t.class_counts[i] += m.class_counts[i];
+    }
+    return t;
 }
 size_t VirtualContextStore::size() const { std::lock_guard<std::mutex> lock(mu_); return contexts_.size(); }
 

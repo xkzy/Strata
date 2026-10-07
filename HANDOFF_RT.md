@@ -80,6 +80,38 @@ Chat requests (`/v1/chat/completions`, `/v1/messages`) go through it; raw `/v1/c
   as 703; an earlier decision is recalled when the agent sends only its last message; another session cannot see it; recall survives a restart.
 - Tests: `go test ./pkg/server -run TestRuntime` (needs `build/strata_rt_server`, skips otherwise), `build/test_json`.
 
+## Hybrid retrieval and multi-level cache (`include/strata/rt/retrieval.hpp`, `src/rt/retrieval.cpp`)
+Replaces the BM25 that lived inside `VirtualContext::Impl`; `select()` and `search()` (and so verification's `VirtualContextEvidenceProvider`) all go through
+one `HybridIndex` per context. Not a tool, no new endpoint.
+- **Router** (`plan_query`, deterministic, hand-written scanners, input capped at 4 KB): EXACT / LEXICAL / SEMANTIC / CODE / STRUCTURAL / CONVERSATIONAL /
+  NUMERICAL / TEMPORAL / MULTI_HOP / UNKNOWN. An identifier, path, hash or error code runs exact lookup only; a cheap plan that finds nothing widens
+  (lexical, then vector). snake_case and camelCase are the same name.
+- **Retrievers:** exact (L1: normalized-identifier map incl. file paths), lexical (the old BM25, moved), vector, structural (definitions / callers / imports
+  extracted from code-like pages, bounded). Scores are normalized to 0..1 per retriever and fused with configurable weights (`RetrievalConfig`), then
+  small locality/authority bonuses that never create relevance. Fused scores keep the calibration `min_relevance` / `unavailable_floor` were tuned on
+  (all existing suites pass unchanged).
+- **Caches:** L0 request-local, L1 exact map, L2 ranked results, L3 raw candidates (re-fused cheaply when weights change), negative cache, L4 embeddings
+  (store-wide, by content hash + embedder id + version; vectors only), L6 formatted text blocks (text only: tokenization is in the Go server, token ids
+  cannot be cached here). Every key has the requester scope and the index version; an append invalidates L2/L3 (BM25 statistics change); a negative entry survives appends that add none of its terms.
+  Hits are re-authorized on return. Admission: L2/L3 only for indexes of at least `l2_admit_min_docs`. Eviction is not LRU alone (hits x cost / size).
+- **Embedder:** `IEmbedder` (id + version are in every key). The shipped default is `HashedNgramEmbedder`: deterministic character n-grams. It finds
+  near-spellings and shared vocabulary; it does NOT match paraphrases ("lose connections under load" vs "pool exhaustion"). No real embedding model exists
+  in the engine; plug one in through `IEmbedder`. Embeddings are computed lazily, only when a vector retriever first runs.
+- **Retrieval loop guard:** same (query, working set) again without new evidence; the runtime stops regenerating (safe stop) instead of looping.
+- **Adaptive weights:** bounded (+-25%) by how often each retriever's pages end up in the working set. Deterministic.
+- **Metrics:** `GET /v1/strata/runtime/metrics` -> `retrieval` (cache hit rates, per-retriever runs/hit rates, short-circuits, widenings, embedding hits,
+  duplicate and loop counters, classes).
+- **Persistence:** indexes are rebuilt on `load()` (tested); embeddings are recomputed lazily (shared cache makes identical content free).
+- **Content hash** is the existing 128-bit non-cryptographic `hash128`, not SHA-256: fine for addressing, not for adversarial dedup.
+- Tests: `build/test_hybrid_retrieval`. Benchmark: `build/bench_hybrid_retrieval [pages]` (synthetic corpus, one thread, AMD Ryzen 9 9950X3D):
+  20,000 pages, identifier queries cold 0.003 ms vs 0.124 ms for BM25-only (same recall@5, 200/200; the synthetic identifiers are whole tokens, so BM25
+  finds them too); at 100,000 pages 0.003 ms vs 0.44 ms. Warm repeats ~1-6 microseconds either way. Keyword queries: same recall. The hybrid's one-time lazy
+  embedding of 20,000 pages cost ~100 ms (600 ms at 100,000), paid by the first query that reaches the vector retriever. Tokens materialized, end-to-end
+  latency, concurrency and real-corpus precision are NOT measured.
+- **Not done (of the 12 phases):** hierarchical / coarse-to-fine retrieval over summaries (only the candidate caps exist), prefetch, a persisted
+  vector index (rebuilt per process), real embedding model, resource-aware parallel retrieval (retrievers run sequentially), per-tenant quotas, graph
+  retrieval beyond definitions/callers/imports, concurrency stress tests, term-level invalidation of ranked results (only negative entries have it).
+
 ## Running it
 ```
 go build -o bin/strata ./cmd/strata            # Go server (rebuild after pulling; the running process keeps the old binary)
@@ -106,8 +138,8 @@ CORS allowlist + `Host` validation (DNS rebinding); loopback bind by default; CA
 
 ## Build / test
 ```
-cd build && cmake .. && ninja test_cas test_math_runtime test_transparent_runtime test_virtual_window test_json test_symbolic_claims strata_rt_server
-./test_cas; ./test_math_runtime; ./test_transparent_runtime; ./test_virtual_window; ./test_json; ./test_symbolic_claims
+cd build && cmake .. && ninja test_cas test_math_runtime test_transparent_runtime test_virtual_window test_json test_symbolic_claims test_hybrid_retrieval strata_rt_server
+./test_cas; ./test_math_runtime; ./test_transparent_runtime; ./test_virtual_window; ./test_json; ./test_symbolic_claims; ./test_hybrid_retrieval
 cd .. && go test ./...      # TestRuntime* use build/strata_rt_server; tokenizer tests use the pack tokenizer dir (skip if absent)
 ```
 Generator is Ninja. Sanitizer runtimes are not installed here; `-D_GLIBCXX_ASSERTIONS` was used for bounds checks.

@@ -131,9 +131,15 @@ InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, co
     std::set<uint64_t> current_items;
     std::string vc_query;
     SelectionRequest sel;
-    auto reselect = [&](const std::string& extra) {
+    std::string last_working_set;
+    // Returns true when this retrieval repeated an earlier one without bringing in anything new (a retrieval loop).
+    auto reselect = [&](const std::string& extra) -> bool {
         if (!extra.empty()) sel.extra_queries.push_back(extra);
         WorkingSet ws = vc->select(sel);
+        const std::string qh = hash128(sel.query + "\x1f" + extra), ch = hash_parts(ws.page_hashes);
+        vc->observe_retrieval(qh, ch, ch != last_working_set);
+        const bool repeated = vc->retrieval_throttled(qh, ch);
+        last_working_set = ch;
         bump(&RuntimeMetrics::vc_selections);
         bump(&RuntimeMetrics::vc_page_ins, ws.paged_in);
         bump(&RuntimeMetrics::vc_page_outs, ws.paged_out);
@@ -148,6 +154,7 @@ InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, co
             convo.push_back({"system", n, ""});
             trace("context", "required_context_unavailable");
         }
+        return repeated;
     };
     if (cfg_.virtual_context.enabled) {
         vc = request.ephemeral ? deps_.contexts->open_ephemeral(request.scope.security) : deps_.contexts->open(request.scope.security);
@@ -360,7 +367,14 @@ InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, co
                         trace("recovery", "loop: " + lv.reason);
                         if (vc) {   // a loop may mean the model lost the thread: look for earlier context it should have had
                             const std::string& bt = buffer.text();
-                            reselect(bt.size() > 240 ? bt.substr(bt.size() - 240) : bt);
+                            if (reselect(bt.size() > 240 ? bt.substr(bt.size() - 240) : bt)) {   // same query, same pages, no progress: stop retrieving
+                                bump(&RuntimeMetrics::safe_stops);
+                                trace("recovery", "retrieval loop: the same context was retrieved again without new evidence");
+                                resp.finish = FinishReason::kStop;
+                                ended = true;
+                                session->cancel();
+                                break;
+                            }
                             ctx = context_->prepare(request.scope, convo);
                         }
                         restart = true;
