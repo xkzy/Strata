@@ -70,6 +70,7 @@ type StrataServer struct {
 	Hallucination   *hallucination.HallucinationRuntime
 	eng             engineState
 	shared          sharedState
+	mon             requestMonitor
 	cfgMu           sync.Mutex // one run-config write at a time
 	rt              rtState
 	server          *http.Server
@@ -130,6 +131,8 @@ func NewStrataServer(cfg ServerConfig) *StrataServer {
 		Hallucination:   hr,
 		activeCancels:   make(map[string]context.CancelFunc),
 	}
+	s.mon.init()
+	tc.SetTokSource(s.mon.currentTokS)
 	return s
 }
 
@@ -439,12 +442,9 @@ func (s *StrataServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		"images":                  false,
 	}
 
-	liveMap := map[string]interface{}{
-		"state":   "idle",
-		"queued":  0,
-		"tok_s":   0.0,
-		"running": 0,
-	}
+	loaded, _ := s.engineStatus()["loaded"].(bool)
+	liveMap := s.mon.live(loaded)
+	requests, kept, totals := s.mon.view(r.URL.Query().Get("requests") == "all")
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"engine":          engineMap,
@@ -452,18 +452,14 @@ func (s *StrataServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		"hardware":        nowMap,
 		"hardware_static": staticMap,
 		"history":         histMap,
-		"requests":        []interface{}{},
-		"totals": map[string]interface{}{
-			"requests":      0,
-			"prompt_tokens": 0,
-			"output_tokens": 0,
-			"reused":        0,
-		},
-		"resource":  s.ResourceManager.Metrics(),
-		"anti_loop": s.AntiLoop.Stats(),
-		"context":   s.VirtualContext.Stats(),
-		"math":      s.MathRuntime.GetStats(),
-		"time":      time.Now().Unix(),
+		"requests":        requests,
+		"requests_kept":   kept,
+		"totals":          totals,
+		"resource":        s.ResourceManager.Metrics(),
+		"anti_loop":       s.AntiLoop.Stats(),
+		"context":         s.VirtualContext.Stats(),
+		"math":            s.MathRuntime.GetStats(),
+		"time":            time.Now().Unix(),
 	})
 }
 
