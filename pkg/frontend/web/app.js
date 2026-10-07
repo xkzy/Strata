@@ -94,10 +94,14 @@ for (const b of document.querySelectorAll(".st-tab")) b.onclick = () => showTab(
 window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
 
 // ------------------------------------------------------------------ server access
+// 128 random bits from the browser's CSPRNG (getRandomValues works on a plain-http LAN address too; the UUID helper needs https or localhost)
+function randomId() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+}
 function getSessionId() {
   let sid = store.get("session_id", "");
   if (!sid) {
-    sid = "sess-" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    sid = "sess-" + randomId();
     store.set("session_id", sid);
   }
   return sid;
@@ -998,7 +1002,7 @@ $("new-btn").onclick = () => {
   const backup = messages;
   const backupSid = store.get("session_id", "");
   messages = [];
-  const newSid = "sess-" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  const newSid = "sess-" + randomId();
   store.set("session_id", newSid);
   saveChat();
   renderChat();
