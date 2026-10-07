@@ -8,6 +8,7 @@
 #include "strata/math/cas/engine.hpp"
 #include "strata/math/math_backend.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -559,6 +560,10 @@ static void test_extended_math() {
     }
     CHECK(run("lu({{4,3},{6,3}})") == "{{{1, 0}, {0, 1}}, {{1, 0}, {3/2, 1}}, {{4, 3}, {0, -3/2}}}", "LU: P, L, U");
     CHECK(run("lu({{0,1},{1,0}})").find("{{0, 1}, {1, 0}}") != std::string::npos, "LU pivots a zero");
+    CHECK(run("LinearSolve({{1, 1}, {1, -1}}, {4, 2})") == "{3, 1}", "LinearSolve vector");
+    CHECK(run("LinearSolve({{1, 1}, {1, -1}}, {{4, 2}, {2, 0}})") == "{{3, 1}, {1, 1}}", "LinearSolve matrix");
+    CHECK(run("QR({{1, 0}, {0, 1}})") == "{{{1, 0}, {0, 1}}, {{1, 0}, {0, 1}}}", "QR decomposition identity");
+    CHECK(run("Cholesky({{4, 2}, {2, 10}})") == "{{2, 0}, {1, 3}}", "Cholesky decomposition");
     CHECK(run("D[x^3*y^2, x, y]") == "6*x^2*y", "mixed partial derivative D[f, x, y] differentiates by both variables (it used to ignore y)");
     CHECK(run("D[x^4, {x, 2}]") == "12*x^2", "D[f, {x, n}]");
     CHECK(run("diff(x^4, x, 2)") == "12*x^2", "Sage's diff(f, x, n)");

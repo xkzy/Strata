@@ -24,40 +24,15 @@ MathRuntime::MathRuntime(std::shared_ptr<context::VirtualContextManager> vctx,
       validator_(std::make_unique<ExpressionValidator>(limits)),
       cache_(std::make_unique<MathResultCache>(10000)),
       fast_backend_(std::make_unique<FastNumericBackend>()),
-      mathics_backend_(std::make_unique<MathicsBackend>()),
-      sage_backend_(std::make_unique<SageBackend>()) {}
+      cas_backend_(std::make_unique<UnifiedCasBackend>()) {}
 
 MathRuntime::~MathRuntime() = default;
 
 IMathBackend* MathRuntime::route_backend(const MathRequest& request, uint32_t complexity) const {
+    (void)complexity;
     // Calculator Router:
-    // 1. If SageMath syntax detected (var, dot-methods, matrix brackets, roots, etc.) -> SageBackend
-    // 2. If pure arithmetic or simple numeric evaluation with low complexity -> FastNumericBackend
-    // 3. If symbolic calculus, equation solving, series, or high complexity -> MathicsBackend / SageBackend
-    const std::string& expr = request.expression;
-    bool has_sage_syntax = (expr.find("var(") != std::string::npos ||
-                            expr.find(".diff(") != std::string::npos ||
-                            expr.find(".derivative(") != std::string::npos ||
-                            expr.find(".integrate(") != std::string::npos ||
-                            expr.find(".integral(") != std::string::npos ||
-                            expr.find(".factor(") != std::string::npos ||
-                            expr.find(".expand(") != std::string::npos ||
-                            expr.find(".simplify(") != std::string::npos ||
-                            expr.find(".roots(") != std::string::npos ||
-                            expr.find(".det(") != std::string::npos ||
-                            expr.find(".inverse(") != std::string::npos ||
-                            expr.find(".transpose(") != std::string::npos ||
-                            expr.find("matrix([") != std::string::npos ||
-                            expr.find("is_prime(") != std::string::npos ||
-                            expr.find("euler_phi(") != std::string::npos ||
-                            expr.find("fibonacci(") != std::string::npos ||
-                            expr.find("power_mod(") != std::string::npos ||
-                            expr.find("xgcd(") != std::string::npos);
-
-    if (has_sage_syntax && sage_backend_->is_available() && sage_backend_->supports_operation(request.operation, request.mode)) {
-        return sage_backend_.get();
-    }
-
+    // 1. If pure arithmetic or simple numeric evaluation with low complexity -> FastNumericBackend
+    // 2. All other symbolic, algebraic, matrix, number theory, or Sage/Wolfram requests -> UnifiedCasBackend
     bool is_arith = validator_->is_pure_arithmetic(request.expression);
 
     if (request.operation == MathOperation::kEvaluate ||
@@ -71,12 +46,8 @@ IMathBackend* MathRuntime::route_backend(const MathRequest& request, uint32_t co
         }
     }
 
-    if (mathics_backend_->is_available() && mathics_backend_->supports_operation(request.operation, request.mode)) {
-        return mathics_backend_.get();
-    }
-
-    if (sage_backend_->is_available() && sage_backend_->supports_operation(request.operation, request.mode)) {
-        return sage_backend_.get();
+    if (cas_backend_->is_available() && cas_backend_->supports_operation(request.operation, request.mode)) {
+        return cas_backend_.get();
     }
 
     return fast_backend_.get();
@@ -145,10 +116,10 @@ MathResult MathRuntime::process_request(const MathRequest& request) {
     // Step 4: Execution
     MathResult res = backend->execute(request);
     if (backend->backend_type() == MathBackendType::kFastNumeric && res.status != MathStatus::kSuccess &&
-        mathics_backend_->is_available() && mathics_backend_->supports_operation(request.operation, request.mode)) {
+        cas_backend_->is_available() && cas_backend_->supports_operation(request.operation, request.mode)) {
         // the int64 fast path could not produce an exact result (overflow, unsupported syntax): the CAS takes over
         { std::lock_guard<std::mutex> g(stats_mu_); stats_.fast_path_count--; stats_.mathics_count++; }
-        res = mathics_backend_->execute(request);
+        res = cas_backend_->execute(request);
     }
     res.complexity_score = complexity;
     { std::lock_guard<std::mutex> g(stats_mu_); stats_.total_execution_time_ms += res.execution_time_ms; }
@@ -218,6 +189,16 @@ MathCost MathRuntime::estimate_cost(const MathRequest& request) const {
 std::vector<MathResult> MathRuntime::process_batch(const std::vector<MathRequest>& requests, size_t max_threads) {
     std::vector<MathResult> out(requests.size());
     if (requests.empty()) return out;
+    constexpr size_t kMaxBatch = 10000;   // a caller cannot make one call allocate and schedule unbounded work
+    if (requests.size() > kMaxBatch) {
+        for (size_t i = 0; i < out.size(); ++i) {
+            out[i].request_id = requests[i].request_id;
+            out[i].status = MathStatus::kResourceLimitExceeded;
+            out[i].error_message = "batch too large (at most " + std::to_string(kMaxBatch) + " requests per call)";
+            out[i].compact_observation = "[MathError: " + out[i].error_message + "]";
+        }
+        return out;
+    }
     // identical requests are computed once (request-local cache)
     std::vector<size_t> unique;               // index of the first request with each key
     std::vector<size_t> first_of(requests.size());
@@ -233,7 +214,9 @@ std::vector<MathResult> MathRuntime::process_batch(const std::vector<MathRequest
     double total = 0;
     std::vector<double> cost(requests.size(), 0.0);
     for (size_t i : unique) { cost[i] = estimate_cost(requests[i]).cpu_units; total += cost[i]; }
-    size_t threads = max_threads ? max_threads : std::min<size_t>(limits_.max_concurrent_evaluations, std::max(1u, std::thread::hardware_concurrency()));
+    // never more threads than the configured concurrency limit, whatever the caller asks for
+    const size_t cap = std::max<size_t>(1, std::min<size_t>(limits_.max_concurrent_evaluations, std::max(1u, std::thread::hardware_concurrency())));
+    size_t threads = max_threads ? std::min(max_threads, cap) : cap;
     threads = std::min(threads, unique.size());
     // threads cost about 0.1 ms each to start: run in parallel only when the work is clearly larger than that
     if (threads <= 1 || total < 0.4) {
@@ -474,8 +457,7 @@ std::string MathRuntime::print_diagnostics() const {
     ss << "Avg Execution Time: " << std::fixed << std::setprecision(2) << stats_.avg_execution_time_ms() << " ms\n";
     ss << "Cached Entries: " << cache_->size() << " / " << cache_->max_entries() << "\n";
     ss << "FastNumeric Backend: Available (v" << fast_backend_->version() << ")\n";
-    ss << "Mathics3 Backend: " << (mathics_backend_->is_available() ? "Available" : "Disabled") << " (v" << mathics_backend_->version() << ")\n";
-    ss << "SageMath Backend: " << (sage_backend_->is_available() ? "Available" : "Disabled") << " (v" << sage_backend_->version() << ")\n";
+    ss << "Unified CAS Backend (Mathics3 + SageMath): " << (cas_backend_->is_available() ? "Available" : "Disabled") << " (v" << cas_backend_->version() << ")\n";
     return ss.str();
 }
 

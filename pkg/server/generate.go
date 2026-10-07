@@ -11,6 +11,7 @@ import (
 
 	"strata/pkg/chattemplate"
 	"strata/pkg/engineipc"
+	"strata/pkg/mathruntime"
 	"strata/pkg/multitenant"
 	"strata/pkg/rtclient"
 )
@@ -25,8 +26,9 @@ type genSpec struct {
 	Sampling  engineipc.SamplingParams
 	MaxTokens int // 0 = not given
 	Stops     []string
-	Scope     multitenant.SecurityScope // tenant / user / session of the caller (headers + body)
-	Debug     bool                      // return the runtime's decision trace (X-Strata-Debug: 1)
+	Scope       multitenant.SecurityScope // tenant / user / session of the caller (headers + body)
+	Debug       bool                      // return the runtime's decision trace (X-Strata-Debug: 1)
+	DisableMath bool                      // disable math interception (X-Strata-Math-Engine: off)
 }
 
 // requestScope derives the caller's scope: X-Tenant-ID / X-User-ID / X-Session-ID headers win over the body's
@@ -80,6 +82,7 @@ func (s *StrataServer) startGeneration(ctx context.Context, spec genSpec) (<-cha
 		// a raw completion is plain text: control tokens (<|im_end|> ...) typed in it stay text, like any caller-supplied string
 		ids = tok.Encode(spec.RawPrompt, false)
 	} else {
+		s.interceptMathIntent(&spec)
 		text, plain, err := chattemplate.RenderSpans(spec.Messages, spec.Opt)
 		if err != nil {
 			var re *chattemplate.RequestError
@@ -195,3 +198,72 @@ func endFinish(reason string) string {
 	}
 	return reason
 }
+
+func (s *StrataServer) interceptMathIntent(spec *genSpec) {
+	if s.MathRuntime == nil || spec.DisableMath || os.Getenv("STRATA_MATH_INTERCEPTION") == "off" {
+		return
+	}
+	for i := len(spec.Messages) - 1; i >= 0; i-- {
+		if spec.Messages[i].Role == "user" {
+			var mathFacts []string
+			seenFacts := make(map[string]bool)
+			cas := mathruntime.GetUnifiedCASEngine()
+
+			extractFact := func(text string) {
+				text = strings.TrimSpace(text)
+				if text == "" {
+					return
+				}
+				if casRes := cas.InterceptScientificIntent(text); casRes != nil && casRes.Status == mathruntime.StatusSuccess && (casRes.ExactResult != "" || casRes.NumericResult != "") {
+					val := casRes.ExactResult
+					if val == "" {
+						val = casRes.NumericResult
+					}
+					fact := fmt.Sprintf("Verified fact for this answer: %s = %s", casRes.CanonicalExpression, val)
+					if !seenFacts[fact] {
+						seenFacts[fact] = true
+						mathFacts = append(mathFacts, fact)
+					}
+				} else if res := s.MathRuntime.InterceptAndVerifyIntent(text); res != nil && res.Status == mathruntime.StatusSuccess && (res.ExactResult != "" || res.NumericResult != "") {
+					val := res.ExactResult
+					if val == "" {
+						val = res.NumericResult
+					}
+					fact := fmt.Sprintf("Verified fact for this answer: %s = %s", res.CanonicalExpression, val)
+					if !seenFacts[fact] {
+						seenFacts[fact] = true
+						mathFacts = append(mathFacts, fact)
+					}
+				}
+			}
+
+			content := spec.Messages[i].Content
+			extractFact(content)
+
+			// Also inspect each line if multi-line
+			if strings.Contains(content, "\n") {
+				lines := strings.Split(content, "\n")
+				for _, line := range lines {
+					extractFact(line)
+				}
+			}
+
+			if len(mathFacts) > 0 {
+				combinedFact := strings.Join(mathFacts, "\n")
+				injected := false
+				for j := range spec.Messages {
+					if spec.Messages[j].Role == "system" {
+						spec.Messages[j].Content = strings.TrimSpace(spec.Messages[j].Content + "\n\n" + combinedFact)
+						injected = true
+						break
+					}
+				}
+				if !injected {
+					spec.Messages = append([]chattemplate.Message{{Role: "system", Content: combinedFact}}, spec.Messages...)
+				}
+				break
+			}
+		}
+	}
+}
+

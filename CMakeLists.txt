@@ -549,12 +549,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     src/math/cas/algebra.cpp
     src/math/cas/series.cpp
     src/math/cas/extended.cpp
+    src/math/cas/discrete.cpp
     src/math/verify.cpp
     src/math/units.cpp
     src/math/cas/limit.cpp
     src/math/cas/integrate.cpp
     src/math/cas/matrix.cpp
     src/math/cas/numtheory.cpp
+    src/math/theorems.cpp
     src/math/math_cache.cpp
     src/math/math_runtime.cpp)
   target_include_directories(strata_math PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -566,6 +568,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(test_cas PRIVATE strata_math)
     add_test(NAME test_cas COMMAND test_cas)
     set_tests_properties(test_cas PROPERTIES TIMEOUT 120)
+  endif()
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/math/test_theorems.cpp")
+    enable_testing()
+    add_executable(test_theorems tests/math/test_theorems.cpp)
+    target_link_libraries(test_theorems PRIVATE strata_math strata_tools)
+    add_test(NAME test_theorems COMMAND test_theorems)
+    set_tests_properties(test_theorems PROPERTIES TIMEOUT 60)
   endif()
 
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/math/test_math_runtime.cpp")

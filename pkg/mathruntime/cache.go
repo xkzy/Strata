@@ -6,11 +6,12 @@ import (
 )
 
 type MathResultCache struct {
-	maxEntries int
-	mu         sync.Mutex
-	cache      map[string]MathResult
-	tenantMap  map[string]map[string]struct{}
-	lru        []string
+	maxEntries  int
+	mu          sync.Mutex
+	cache       map[string]MathResult
+	tenantMap   map[string]map[string]struct{}
+	sessionVars map[string]map[string]string
+	lru         []string
 }
 
 func NewMathResultCache(maxEntries int) *MathResultCache {
@@ -18,11 +19,44 @@ func NewMathResultCache(maxEntries int) *MathResultCache {
 		maxEntries = 10000
 	}
 	return &MathResultCache{
-		maxEntries: maxEntries,
-		cache:      make(map[string]MathResult),
-		tenantMap:  make(map[string]map[string]struct{}),
-		lru:        make([]string, 0, maxEntries),
+		maxEntries:  maxEntries,
+		cache:       make(map[string]MathResult),
+		tenantMap:   make(map[string]map[string]struct{}),
+		sessionVars: make(map[string]map[string]string),
+		lru:         make([]string, 0, maxEntries),
 	}
+}
+
+func (c *MathResultCache) SetSessionVar(sessionID, name, value string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sessionVars[sessionID] == nil {
+		c.sessionVars[sessionID] = make(map[string]string)
+	}
+	c.sessionVars[sessionID][name] = value
+}
+
+func (c *MathResultCache) GetSessionVar(sessionID, name string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sessionVars[sessionID] == nil {
+		return "", false
+	}
+	val, ok := c.sessionVars[sessionID][name]
+	return val, ok
+}
+
+func (c *MathResultCache) GetSessionVars(sessionID string) map[string]string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sessionVars[sessionID] == nil {
+		return nil
+	}
+	res := make(map[string]string)
+	for k, v := range c.sessionVars[sessionID] {
+		res[k] = v
+	}
+	return res
 }
 
 func (c *MathResultCache) MakeCacheKey(req MathRequest) string {

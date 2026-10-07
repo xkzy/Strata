@@ -119,7 +119,8 @@ void test_sage_algebra_and_equations() {
     req3.variable = "x";
     MathResult res3 = backend.execute(req3);
     assert(res3.status == MathStatus::kSuccess);
-    assert(res3.exact_result.find("x == 2") != std::string::npos && res3.exact_result.find("x == 3") != std::string::npos);
+    assert((res3.exact_result.find("x == 2") != std::string::npos || res3.exact_result.find("x -> 2") != std::string::npos) &&
+           (res3.exact_result.find("x == 3") != std::string::npos || res3.exact_result.find("x -> 3") != std::string::npos));
 
     std::cout << "  Passed. Factorization, expansion, and quadratic equation solution sets verified." << std::endl;
 }
@@ -152,7 +153,39 @@ void test_sage_linear_algebra() {
     assert(res3.status == MathStatus::kSuccess);
     assert(res3.exact_result.find("[[1, 3], [2, 4]]") != std::string::npos || res3.exact_result.find("1") != std::string::npos);
 
-    std::cout << "  Passed. 2x2 matrix determinant, inverse, and transpose verified." << std::endl;
+    // Matrix Rank: matrix([[1, 2], [2, 4]]).rank() -> 1
+    MathRequest req4;
+    req4.expression = "matrix([[1, 2], [2, 4]]).rank()";
+    req4.operation = MathOperation::kEvaluate;
+    MathResult res4 = backend.execute(req4);
+    assert(res4.status == MathStatus::kSuccess);
+    assert(res4.exact_result == "1");
+
+    // Matrix Trace: matrix([[1, 2], [3, 4]]).trace() -> 5
+    MathRequest req5;
+    req5.expression = "matrix([[1, 2], [3, 4]]).trace()";
+    req5.operation = MathOperation::kEvaluate;
+    MathResult res5 = backend.execute(req5);
+    assert(res5.status == MathStatus::kSuccess);
+    assert(res5.exact_result == "5");
+
+    // Linear Solve: matrix([[1, 1], [1, -1]]).solve_right(vector([4, 2])) -> [3, 1]
+    MathRequest req6;
+    req6.expression = "matrix([[1, 1], [1, -1]]).solve_right(vector([4, 2]))";
+    req6.operation = MathOperation::kEvaluate;
+    MathResult res6 = backend.execute(req6);
+    assert(res6.status == MathStatus::kSuccess);
+    assert(res6.exact_result.find("3") != std::string::npos && res6.exact_result.find("1") != std::string::npos);
+
+    // Cholesky: matrix([[4, 2], [2, 10]]).cholesky() -> [[2, 0], [1, 3]]
+    MathRequest req7;
+    req7.expression = "matrix([[4, 2], [2, 10]]).cholesky()";
+    req7.operation = MathOperation::kEvaluate;
+    MathResult res7 = backend.execute(req7);
+    assert(res7.status == MathStatus::kSuccess);
+    assert(res7.exact_result.find("2") != std::string::npos && res7.exact_result.find("3") != std::string::npos);
+
+    std::cout << "  Passed. Determinant, inverse, transpose, rank, trace, solve_right, and Cholesky verified." << std::endl;
 }
 
 void test_sage_number_theory() {
@@ -207,7 +240,23 @@ void test_sage_number_theory() {
     assert(res6.status == MathStatus::kSuccess);
     assert(res6.exact_result == "2");
 
-    std::cout << "  Passed. Primality, Euler totient, Fibonacci, modular exponentiation, and GCD verified." << std::endl;
+    // crt([2, 3], [3, 5]) -> 8
+    MathRequest req7;
+    req7.expression = "crt([2, 3], [3, 5])";
+    req7.operation = MathOperation::kEvaluate;
+    MathResult res7 = backend.execute(req7);
+    assert(res7.status == MathStatus::kSuccess);
+    assert(res7.exact_result == "8");
+
+    // number_of_partitions(10) -> 42
+    MathRequest req8;
+    req8.expression = "number_of_partitions(10)";
+    req8.operation = MathOperation::kEvaluate;
+    MathResult res8 = backend.execute(req8);
+    assert(res8.status == MathStatus::kSuccess);
+    assert(res8.exact_result == "42");
+
+    std::cout << "  Passed. Primality, Euler totient, Fibonacci, modular exponentiation, GCD, CRT, and partitions verified." << std::endl;
 }
 
 void test_sage_dot_methods_execution() {
@@ -238,7 +287,7 @@ void test_sage_runtime_integration() {
     MathRuntime runtime;
 
     assert(runtime.sage_backend().is_available());
-    assert(runtime.sage_backend().name() == "SageMath");
+    assert(runtime.sage_backend().name() == "StrataCAS");
 
     // Process Sage expression through MathRuntime
     MathRequest req;
@@ -246,7 +295,7 @@ void test_sage_runtime_integration() {
     req.operation = MathOperation::kEvaluate;
     MathResult res = runtime.process_request(req);
     assert(res.status == MathStatus::kSuccess);
-    assert(res.backend_type == MathBackendType::kSageMath);
+    assert(res.backend_type == MathBackendType::kUnifiedCAS);
     assert(res.exact_result.find("x - 3") != std::string::npos || res.exact_result.find("-3 + x") != std::string::npos);
 
     std::cout << "  Passed. MathRuntime routing to SageMath backend verified." << std::endl;
@@ -268,7 +317,7 @@ void test_sage_hardening() {
     assert(run_sage("integral(x^2, x, 0, 1)").exact_result == "1/3");
     assert(run_sage("limit(sin(x)/x, x=0)").exact_result == "1");
     assert(run_sage("taylor(sin(x), x, 0, 5)").exact_result.find("x^5/120") != std::string::npos);
-    assert(run_sage("(x^2-1).roots(x)").exact_result == "[x == -1, x == 1]");
+    assert(run_sage("(x^2-1).roots(x)").exact_result == "{x -> -1, x -> 1}" || run_sage("(x^2-1).roots(x)").exact_result == "[x == -1, x == 1]");
     // a one-sided limit is never answered as a two-sided one
     assert(run_sage("limit(1/x, x=0, dir='plus')").status != MathStatus::kSuccess);
 

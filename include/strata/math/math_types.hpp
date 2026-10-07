@@ -35,8 +35,9 @@ enum class MathMode {
 
 enum class MathBackendType {
     kFastNumeric = 0,      // Lightweight fast path for arithmetic / rational math
-    kMathics,              // Mathics3 CAS (Wolfram Language compatible kernel)
-    kSageMath,             // SageMath CAS (Python / Sage open-source mathematics system)
+    kUnifiedCAS,           // Unified Strata CAS (merged Mathics3 + SageMath backend)
+    kMathics = kUnifiedCAS,// Wolfram Language compatible alias
+    kSageMath = kUnifiedCAS,// SageMath compatible alias
     kSymPy,                // Python SymPy CAS backend
     kCustom                // Custom or future CAS backend
 };
@@ -185,7 +186,7 @@ inline const char* math_mode_to_string(MathMode mode) {
 inline const char* math_backend_to_string(MathBackendType backend) {
     switch (backend) {
         case MathBackendType::kFastNumeric: return "FastNumeric";
-        case MathBackendType::kMathics: return "Mathics3";
+        case MathBackendType::kUnifiedCAS: return "StrataCAS";
         case MathBackendType::kSymPy: return "SymPy";
         case MathBackendType::kCustom: return "Custom";
         default: return "Unknown";

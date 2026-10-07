@@ -41,28 +41,6 @@ func NewNativeToolsProvider(
 func (p *NativeToolsProvider) GetTools() []ToolInfo {
 	return []ToolInfo{
 		{
-			Name:        "math_evaluate",
-			Description: "Authoritative deterministic calculation engine (exact rational fractions, matrix algebra, CAS via Mathics).",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"expression": map[string]interface{}{
-						"type":        "string",
-						"description": "Mathematical expression (e.g. '1/3 + 1/6', '2384 * 7291', '[[1,2],[3,4]]')",
-					},
-					"operation": map[string]interface{}{
-						"type":        "string",
-						"description": "Operation type: 'evaluate', 'simplify', 'expand', 'factor', 'determinant', 'solve'",
-					},
-					"mode": map[string]interface{}{
-						"type":        "string",
-						"description": "'exact' or 'numeric'",
-					},
-				},
-				"required": []string{"expression"},
-			},
-		},
-		{
 			Name:        "logic_verify",
 			Description: "Deterministic logic and constraint verifier (Modus Ponens truth-tables, interval constraints, SI dimensional analysis, JSON schemas).",
 			InputSchema: map[string]interface{}{
@@ -128,24 +106,6 @@ func (p *NativeToolsProvider) GetTools() []ToolInfo {
 
 func (p *NativeToolsProvider) ExecuteTool(name string, args map[string]interface{}) (CallToolResult, error) {
 	switch name {
-	case "math_evaluate":
-		expr, _ := args["expression"].(string)
-		op, _ := args["operation"].(string)
-		mode, _ := args["mode"].(string)
-
-		req := mathruntime.MathRequest{
-			Expression: expr,
-			Operation:  mathruntime.MathOperation(op),
-			Mode:       mathruntime.MathMode(mode),
-		}
-		res := p.mathRuntime.ProcessRequest(req)
-		outJSON, _ := json.MarshalIndent(res, "", "  ")
-		return CallToolResult{
-			Content: []ContentBlock{
-				{Type: "text", Text: string(outJSON)},
-			},
-		}, nil
-
 	case "logic_verify":
 		var claim logicverifier.VerificationClaim
 		argsBytes, _ := json.Marshal(args)

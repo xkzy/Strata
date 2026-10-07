@@ -19,20 +19,15 @@ func TestNativeToolsProvider(t *testing.T) {
 
 	provider := NewNativeToolsProvider(mr, lv, vc)
 	tools := provider.GetTools()
-	if len(tools) < 4 {
-		t.Fatalf("expected at least 4 native tools, got %d", len(tools))
+	if len(tools) != 3 {
+		t.Fatalf("expected exactly 3 native tools (logic_verify, context_query, system_status), got %d", len(tools))
 	}
 
-	// Test math_evaluate tool
-	resMath, err := provider.ExecuteTool("math_evaluate", map[string]interface{}{
-		"expression": "1/3 + 1/6",
-		"mode":       "exact",
-	})
-	if err != nil {
-		t.Fatalf("math_evaluate error: %v", err)
-	}
-	if len(resMath.Content) == 0 || resMath.IsError {
-		t.Fatalf("expected successful content for math_evaluate")
+	// Verify math tools are NOT exposed as MCP tools
+	for _, tool := range tools {
+		if tool.Name == "math_evaluate" || tool.Name == "sage" || tool.Name == "mathics" {
+			t.Fatalf("Math engine tool %q should not be exposed via MCP", tool.Name)
+		}
 	}
 
 	// Test logic_verify tool
@@ -46,6 +41,15 @@ func TestNativeToolsProvider(t *testing.T) {
 	}
 	if resLogic.IsError {
 		t.Fatalf("expected PASS for Modus Ponens")
+	}
+
+	// Test system_status tool
+	resStatus, err := provider.ExecuteTool("system_status", map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("system_status error: %v", err)
+	}
+	if len(resStatus.Content) == 0 {
+		t.Fatalf("expected non-empty system_status content")
 	}
 }
 
@@ -76,8 +80,8 @@ func TestMcpHub_JSONRPCServer(t *testing.T) {
 	json.Unmarshal(listRespBytes, &listResp)
 	var listResult ListToolsResult
 	json.Unmarshal(listResp.Result, &listResult)
-	if len(listResult.Tools) < 4 {
-		t.Fatalf("expected at least 4 tools in tools/list, got %d", len(listResult.Tools))
+	if len(listResult.Tools) != 3 {
+		t.Fatalf("expected 3 tools in tools/list, got %d", len(listResult.Tools))
 	}
 
 	// 3. tools/call
@@ -86,10 +90,11 @@ func TestMcpHub_JSONRPCServer(t *testing.T) {
 		"id": 3,
 		"method": "tools/call",
 		"params": {
-			"name": "math_evaluate",
+			"name": "logic_verify",
 			"arguments": {
-				"expression": "2384 * 7291",
-				"mode": "exact"
+				"type": "proposition",
+				"premises": ["P -> Q", "P"],
+				"claimed_value": "Q"
 			}
 		}
 	}`

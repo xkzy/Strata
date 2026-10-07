@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// src/math/mathics_backend.cpp - MathicsBackend on top of the native CAS (src/math/cas)
+// src/math/mathics_backend.cpp - Unified CAS Backend (Mathics3 + SageMath on native CAS)
+#include "strata/math/math_backend.hpp"
 #include "strata/math/cas/engine.hpp"
 #include "strata/math/expression_parser.hpp"
-#include "strata/math/math_backend.hpp"
 
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <regex>
+#include <sstream>
 
 namespace strata::math {
 
@@ -26,13 +28,24 @@ std::string pick_variable(const MathRequest& request, const cas::Expr& e) {
     if (syms.empty()) return "x";
     for (const auto& s : syms) if (s == "x") return "x";
     if (syms.size() == 1) return syms[0];
-    throw cas::CasUnsupported("ambiguous variable: specify which of " + std::to_string(syms.size()) + " symbols to use");
+    return "x";
 }
 
-// Solve results are a list of solution sets. One variable prints compactly as {x -> -3, x -> -2}; several variables
-// print as {{x -> 1, y -> 2}}.
+bool is_solution_set(const cas::Expr& e) {
+    if (!e->has_head("List") || e->args.empty()) return false;
+    for (const auto& set : e->args) {
+        if (!set->has_head("List") || set->args.empty()) return false;
+        for (const auto& r : set->args) if (!r->has_head("Rule", 2)) return false;
+    }
+    return true;
+}
+
 std::string format_result(const cas::Expr& out, MathOperation op) {
-    if (op == MathOperation::kSolve && out->has_head("List")) {
+    if (out->has_head("Symbol")) {
+        if (out->name == "True") return "True";
+        if (out->name == "False") return "False";
+    }
+    if ((op == MathOperation::kSolve || is_solution_set(out)) && out->has_head("List")) {
         bool single = true;
         for (const auto& set : out->args) if (!set->has_head("List") || set->args.size() != 1) single = false;
         if (single && !out->args.empty()) {
@@ -40,15 +53,137 @@ std::string format_result(const cas::Expr& out, MathOperation op) {
             for (size_t i = 0; i < out->args.size(); ++i) s += (i ? ", " : "") + cas::to_string(out->args[i]->args[0]);
             return s + "}";
         }
+        std::string s = "[";
+        for (size_t i = 0; i < out->args.size(); ++i) {
+            const auto& set = out->args[i];
+            if (set->has_head("List") && !set->args.empty()) {
+                for (size_t j = 0; j < set->args.size(); ++j) {
+                    const auto& rule = set->args[j];
+                    if (rule->has_head("Rule") && rule->args.size() == 2) {
+                        if (i > 0 || j > 0) s += ", ";
+                        s += cas::to_string(rule->args[0]) + " == " + cas::to_string(rule->args[1]);
+                    } else {
+                        if (i > 0 || j > 0) s += ", ";
+                        s += cas::to_string(rule);
+                    }
+                }
+            } else if (set->has_head("Rule") && set->args.size() == 2) {
+                if (i > 0) s += ", ";
+                s += cas::to_string(set->args[0]) + " == " + cas::to_string(set->args[1]);
+            } else {
+                if (i > 0) s += ", ";
+                s += cas::to_string(set);
+            }
+        }
+        return s + "]";
     }
     return cas::to_string(out);
 }
 
+constexpr size_t kMaxTranslateInput = 4096;
+constexpr int kMaxRewrites = 64;
+
+bool ident_char(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
+
+bool split_args(const std::string& s, std::vector<std::string>& out) {
+    int depth = 0;
+    std::string cur;
+    for (char c : s) {
+        if (c == '(' || c == '[' || c == '{') ++depth;
+        else if (c == ')' || c == ']' || c == '}') { if (--depth < 0) return false; }
+        if (c == ',' && depth == 0) { out.push_back(cur); cur.clear(); }
+        else cur.push_back(c);
+    }
+    if (depth != 0) return false;
+    if (!cur.empty() || !out.empty()) out.push_back(cur);
+    for (auto& a : out) {
+        a.erase(0, a.find_first_not_of(" \t\n\r"));
+        a.erase(a.find_last_not_of(" \t\n\r") + 1);
+    }
+    return true;
+}
+
+std::string rewrite_one(const std::string& name, const std::vector<std::string>& a, bool& changed) {
+    auto call = [&](const std::string& n, const std::string& args) { changed = true; return n + "(" + args + ")"; };
+    if ((name == "integral" || name == "integrate") && a.size() == 4)
+        return call("Integrate", a[0] + ", {" + a[1] + ", " + a[2] + ", " + a[3] + "}");
+    if (name == "limit" && a.size() == 2) {
+        const size_t eq = a[1].find('=');
+        if (eq != std::string::npos && eq + 1 < a[1].size() && a[1][eq + 1] != '=')
+            return call("Limit", a[0] + ", " + a[1].substr(0, eq) + " -> " + a[1].substr(eq + 1));
+    }
+    if (name == "taylor" && a.size() == 4) return call("Series", a[0] + ", {" + a[1] + ", " + a[2] + ", " + a[3] + "}");
+    if (name == "sigma" && (a.size() == 1 || a.size() == 2))
+        return call("DivisorSigma", (a.size() == 2 ? a[1] : std::string("1")) + ", " + a[0]);
+    if (name == "euler_phi" && a.size() == 1) return call("EulerPhi", a[0]);
+    if (name == "is_prime" && a.size() == 1) return call("PrimeQ", a[0]);
+    if (name == "next_prime" && (a.size() == 1 || a.size() == 2)) return call("NextPrime", a.size() == 2 ? a[0] + ", " + a[1] : a[0]);
+    if (name == "fibonacci" && a.size() == 1) return call("Fibonacci", a[0]);
+    if (name == "xgcd" && a.size() == 2) return call("ExtendedGCD", a[0] + ", " + a[1]);
+    if (name == "power_mod" && a.size() == 3) return call("PowerMod", a[0] + ", " + a[1] + ", " + a[2]);
+    if (name == "inverse_mod" && a.size() == 2) return call("ModularInverse", a[0] + ", " + a[1]);
+    if (name == "crt" && a.size() == 2) return call("ChineseRemainder", a[0] + ", " + a[1]);
+    if (name == "moebius" && a.size() == 1) return call("MoebiusMu", a[0]);
+    if (name == "divisors" && a.size() == 1) return call("Divisors", a[0]);
+    if (name == "binomial" && a.size() == 2) return call("Binomial", a[0] + ", " + a[1]);
+    if ((name == "partitions" || name == "number_of_partitions") && a.size() == 1) return call("PartitionsP", a[0]);
+    if (name == "solve_right" && a.size() == 2) return call("LinearSolve", a[0] + ", " + a[1]);
+    if ((name == "charpoly" || name == "characteristic_polynomial") && (a.size() == 1 || a.size() == 2))
+        return call("CharacteristicPolynomial", a.size() == 2 ? a[0] + ", " + a[1] : a[0] + ", x");
+    if ((name == "qr" || name == "QR") && a.size() == 1) return call("QRDecomposition", a[0]);
+    if (name == "cholesky" && a.size() == 1) return call("CholeskyDecomposition", a[0]);
+    if ((name == "lu" || name == "LU") && a.size() == 1) return call("LU", a[0]);
+    if (name == "eigenvalues" && a.size() == 1) return call("Eigenvalues", a[0]);
+    if ((name == "eigenvectors" || name == "eigenvectors_right") && a.size() == 1) return call("Eigenvectors", a[0]);
+    if ((name == "kernel" || name == "nullspace") && a.size() == 1) return call("NullSpace", a[0]);
+    if (name == "rank" && a.size() == 1) return call("Rank", a[0]);
+    if ((name == "trace" || name == "tr") && a.size() == 1) return call("Trace", a[0]);
+    return "";
+}
+
+std::string rewrite_calls(const std::string& text, int& budget, int depth = 0) {
+    if (depth > 16) return text;
+    std::string out;
+    size_t i = 0;
+    while (i < text.size()) {
+        if (!ident_char(text[i]) || (i > 0 && (ident_char(text[i - 1]) || text[i - 1] == '.'))) { out.push_back(text[i++]); continue; }
+        size_t j = i;
+        while (j < text.size() && ident_char(text[j])) ++j;
+        const std::string name = text.substr(i, j - i);
+        if (j < text.size() && text[j] == '(' && budget > 0) {
+            int d = 0;
+            size_t k = j;
+            for (; k < text.size(); ++k) {
+                if (text[k] == '(') ++d;
+                else if (text[k] == ')' && --d == 0) break;
+            }
+            if (k < text.size()) {
+                std::vector<std::string> args;
+                if (split_args(text.substr(j + 1, k - j - 1), args)) {
+                    for (auto& a : args) a = rewrite_calls(a, budget, depth + 1);
+                    bool changed = false;
+                    std::string r = rewrite_one(name, args, changed);
+                    --budget;
+                    if (changed) { out += r; i = k + 1; continue; }
+                    std::string joined;
+                    for (size_t n = 0; n < args.size(); ++n) joined += (n ? ", " : "") + args[n];
+                    out += name + "(" + joined + ")";
+                    i = k + 1;
+                    continue;
+                }
+            }
+        }
+        out += name;
+        i = j;
+    }
+    return out;
+}
+
 } // namespace
 
-MathicsBackend::MathicsBackend(bool mock_mode) : mock_mode_(mock_mode) {}
+UnifiedCasBackend::UnifiedCasBackend(bool mock_mode) : mock_mode_(mock_mode) {}
 
-bool MathicsBackend::supports_operation(MathOperation op, MathMode mode) const {
+bool UnifiedCasBackend::supports_operation(MathOperation op, MathMode mode) const {
     (void)mode;
     switch (op) {
         case MathOperation::kEvaluate:
@@ -70,16 +205,85 @@ bool MathicsBackend::supports_operation(MathOperation op, MathMode mode) const {
     }
 }
 
-MathResult MathicsBackend::execute(const MathRequest& request) {
+std::string UnifiedCasBackend::translate_syntax(const std::string& expr) {
+    if (expr.empty()) return "";
+    if (expr.size() > kMaxTranslateInput) throw cas::CasParseError("expression too long for syntax translation");
+
+    std::string text = expr;
+
+    // 1. Strip variable declarations: var('x'), x = var('x'), x, y = var('x y')
+    static const std::regex var_decl_regex(
+        R"((?:(?:[a-zA-Z_][a-zA-Z0-9_,\s]*=)?\s*var\s*\(\s*['"][^'"]*['"]\s*\)\s*(?:;|\n)?))",
+        std::regex::optimize);
+    text = std::regex_replace(text, var_decl_regex, "");
+
+    // 2. Strip ring declarations: R.<x> = PolynomialRing(QQ), R.<x, y> = QQ[]
+    static const std::regex ring_decl_regex(
+        R"((?:[a-zA-Z_][a-zA-Z0-9_]*\.<[^>]+>\s*=\s*(?:PolynomialRing\([^)]+\)|[a-zA-Z0-9_]+\[[^\]]+\])\s*(?:;|\n)?))",
+        std::regex::optimize);
+    text = std::regex_replace(text, ring_decl_regex, "");
+
+    // Trim whitespace
+    text.erase(0, text.find_first_not_of(" \t\n\r"));
+    text.erase(text.find_last_not_of(" \t\n\r") + 1);
+
+    // 3. Translate matrix syntax: matrix(QQ, [[...]]) -> [[...]]
+    static const std::regex matrix_regex(
+        R"(\b(?:matrix|Matrix)\s*\(\s*(?:(?:QQ|ZZ|RR|CC)\s*,\s*)?(\[\[[\s\S]*?\]\])\s*\))",
+        std::regex::optimize);
+    text = std::regex_replace(text, matrix_regex, "$1");
+
+    // 4. Translate vector syntax: vector(QQ, [...]) -> [...]
+    static const std::regex vector_regex(
+        R"(\b(?:vector|Vector)\s*\(\s*(?:(?:QQ|ZZ|RR|CC)\s*,\s*)?(\[[\s\S]*?\])\s*\))",
+        std::regex::optimize);
+    text = std::regex_replace(text, vector_regex, "$1");
+
+    // 5. Translate dot-method syntax
+    static const std::regex dot_method_regex(
+        R"(\(?([a-zA-Z0-9_\+\-\*\/\^\s\(\)\[\]\{\},]+?)\)?\.(diff|derivative|integrate|integral|factor|expand|simplify|roots|det|determinant|inverse|transpose|rank|trace|tr|eigenvalues|eigenvectors|eigenvectors_right|nullspace|kernel|charpoly|characteristic_polynomial|LU|lu|QR|qr|cholesky|solve_right)\s*\(([^)]*)\))",
+        std::regex::optimize);
+
+    std::smatch match;
+    for (int rounds = 0; std::regex_search(text, match, dot_method_regex); ++rounds) {
+        if (rounds >= kMaxRewrites) throw cas::CasParseError("too many chained method calls");
+        std::string target = match[1].str();
+        std::string method = match[2].str();
+        std::string args = match[3].str();
+
+        std::string replacement;
+        if (method == "roots") {
+            std::string var = args.empty() ? "x" : args;
+            replacement = "solve(" + target + " == 0, " + var + ")";
+        } else if (args.empty()) {
+            replacement = method + "(" + target + ")";
+        } else {
+            replacement = method + "(" + target + ", " + args + ")";
+        }
+        text.replace(match.position(0), match.length(0), replacement);
+    }
+
+    text = std::regex_replace(text, matrix_regex, "$1");
+    text = std::regex_replace(text, vector_regex, "$1");
+
+    int budget = kMaxRewrites;
+    return rewrite_calls(text, budget);
+}
+
+MathResult UnifiedCasBackend::execute(const MathRequest& request) {
     auto start_time = std::chrono::steady_clock::now();
     MathResult res;
     res.request_id = request.request_id;
-    res.backend_type = MathBackendType::kMathics;
+    res.backend_type = MathBackendType::kUnifiedCAS;
     res.backend_name = name();
     res.backend_version = version();
-    res.canonical_expression = ExpressionParser::canonicalize(request.expression);
 
+    std::string translated;
     try {
+        translated = translate_syntax(request.expression);
+        if (translated.empty()) translated = request.expression;
+        res.canonical_expression = ExpressionParser::canonicalize(translated);
+
         cas::Budget budget;
         if (request.timeout_ms > 0) budget.timeout_ms = request.timeout_ms;
         cas::Engine engine(budget);
@@ -108,7 +312,6 @@ MathResult MathicsBackend::execute(const MathRequest& request) {
                 break;
             case MathOperation::kIntegrate: {
                 std::string var = pick_variable(request, e);
-                // definite integral when `point` holds "a,b"
                 size_t comma = request.point.find(',');
                 if (comma != std::string::npos) {
                     out = engine.integrate_definite(e, var, cas::parse(request.point.substr(0, comma)), cas::parse(request.point.substr(comma + 1)));
@@ -136,7 +339,6 @@ MathResult MathicsBackend::execute(const MathRequest& request) {
                 out = engine.eval(e);
                 break;
             case MathOperation::kDeterminant:
-                // a bare matrix {{..},{..}} means its determinant
                 out = e->has_head("List") ? engine.eval(cas::app("Det", {e})) : engine.eval(e);
                 break;
             case MathOperation::kProbability:

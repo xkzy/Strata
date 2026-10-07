@@ -59,6 +59,7 @@ type oaRequest struct {
 	ToolChoice          json.RawMessage        `json:"tool_choice"`
 	ReasoningEffort     string                 `json:"reasoning_effort"`
 	EnableThinking      *bool                  `json:"enable_thinking"`
+	MathEngine          *bool                  `json:"math_engine"`
 	ChatTemplateKwargs  map[string]interface{} `json:"chat_template_kwargs"`
 	User                string                 `json:"user"`
 	SessionID           string                 `json:"session_id"`
@@ -237,6 +238,12 @@ func (r *oaRequest) applyCommon(s *StrataServer, spec *genSpec) {
 	} else if r.MaxTokens != nil && *r.MaxTokens > 0 {
 		spec.MaxTokens = *r.MaxTokens
 	}
+	if r.MathEngine != nil && !*r.MathEngine {
+		spec.DisableMath = true
+	}
+	if v, ok := r.ChatTemplateKwargs["math_engine"].(bool); ok && !v {
+		spec.DisableMath = true
+	}
 	if len(r.Stop) > 0 {
 		var one string
 		var many []string
@@ -346,6 +353,9 @@ func (s *StrataServer) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 	}
 	spec.Scope = req.scope(r)
 	spec.Debug = r.Header.Get("X-Strata-Debug") == "1"
+	if h := r.Header.Get("X-Strata-Math-Engine"); h == "off" || h == "false" || h == "0" {
+		spec.DisableMath = true
+	}
 	reqID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
 	ctx, done := s.registerRequest(r.Context(), reqID)

@@ -465,6 +465,7 @@ Expr Engine::eval_function(const std::string& head, std::vector<Expr> args) {
     if (Expr mf = matrix_function(head, args)) return mf;
     if (Expr nf = number_theory(head, args)) return nf;
     if (Expr xf = extended_math(head, args)) return xf;
+    if (Expr df = discrete_math(head, args)) return df;
     if (args.size() != 1) return keep();
     const Expr& a = args[0];
 
