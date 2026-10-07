@@ -61,18 +61,16 @@ private:
     bool evaluate_combinatorics(const std::string& expr, int64_t& out_val, std::string& err);
 };
 
-// Symbolic backend: the native C++ port of the Mathics3 evaluation model (src/math/cas, GPL-3.0-or-later).
-// The class keeps its historical name because the router and tests refer to it. Every operation either returns a
-// computed result or an error status (kUnsupportedOperation, kResourceLimitExceeded, ...): it never echoes the
-// input back as a "result".
-class MathicsBackend : public IMathBackend {
+// Unified CAS backend: merges Mathics3 (Wolfram Language compatible) and SageMath (Python-style)
+// execution and syntax translation into a single unified CAS subsystem on top of the native Strata CAS kernel.
+class UnifiedCasBackend : public IMathBackend {
 public:
-    explicit MathicsBackend(bool mock_mode = false);
-    ~MathicsBackend() override = default;
+    explicit UnifiedCasBackend(bool mock_mode = false);
+    ~UnifiedCasBackend() override = default;
 
-    MathBackendType backend_type() const override { return MathBackendType::kMathics; }
+    MathBackendType backend_type() const override { return MathBackendType::kUnifiedCAS; }
     std::string name() const override { return "StrataCAS"; }
-    std::string version() const override { return "0.1.0"; }
+    std::string version() const override { return "1.0.0"; }
     bool is_available() const override { return available_; }
 
     void set_available(bool avail) { available_ = avail; }
@@ -80,35 +78,22 @@ public:
     bool supports_operation(MathOperation op, MathMode mode) const override;
     MathResult execute(const MathRequest& request) override;
 
-private:
-    bool available_ = true;
-    bool mock_mode_ = false;
-};
+    // Translates / normalizes either SageMath Python expressions (dot methods, var/ring declarations,
+    // matrix/vector syntax) or Wolfram/Mathics expressions into canonical CAS statements.
+    static std::string translate_syntax(const std::string& expr);
 
-// SageMath backend: provides native execution and translation of SageMath syntax,
-// functions, and conventions (diff, integrate/integral, taylor, factor, expand,
-// simplify, solve, roots, matrix, det, is_prime, euler_phi, fibonacci, etc.).
-class SageBackend : public IMathBackend {
-public:
-    explicit SageBackend(bool mock_mode = false);
-    ~SageBackend() override = default;
-
-    MathBackendType backend_type() const override { return MathBackendType::kSageMath; }
-    std::string name() const override { return "SageMath"; }
-    std::string version() const override { return "10.4"; }
-    bool is_available() const override { return available_; }
-
-    void set_available(bool avail) { available_ = avail; }
-
-    bool supports_operation(MathOperation op, MathMode mode) const override;
-    MathResult execute(const MathRequest& request) override;
-
-    // Translates SageMath Python expressions, dot methods, and declarations into standard CAS statements
-    static std::string translate_sage_syntax(const std::string& sage_expr);
+    // Compatibility alias for Sage syntax translation
+    static std::string translate_sage_syntax(const std::string& sage_expr) {
+        return translate_syntax(sage_expr);
+    }
 
 private:
     bool available_ = true;
     bool mock_mode_ = false;
 };
+
+// Seamless aliases for backwards compatibility
+using MathicsBackend = UnifiedCasBackend;
+using SageBackend = UnifiedCasBackend;
 
 } // namespace strata::math

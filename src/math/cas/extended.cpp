@@ -130,6 +130,8 @@ Rational rational_from_double(double v) {
 
 Expr Engine::extended_math(const std::string& head, const std::vector<Expr>& args) {
     Matrix m;
+    // size guard for everything below that eliminates or factors: exact O(n^3) work on a matrix or polynomial this large is refused up front
+    if (!args.empty() && args[0]->has_head("List") && args[0]->args.size() > 200) throw CasLimitError(head + ": input larger than 200 rows / elements");
 
     // ---------------------------------------------------------------- comparisons of numbers
     if ((head == "Less" || head == "Greater" || head == "LessEqual" || head == "GreaterEqual") && args.size() == 2 && args[0]->is_number() && args[1]->is_number()) {
@@ -240,6 +242,109 @@ Expr Engine::extended_math(const std::string& head, const std::vector<Expr>& arg
         RMatrix pm(n, std::vector<Rational>(n, Rational(0)));
         for (size_t i = 0; i < n; ++i) pm[i][perm[i]] = Rational(1);
         return app("List", {from_rational(pm), from_rational(l), from_rational(u)});
+    }
+    if ((head == "LinearSolve" || head == "MatrixSolve") && args.size() == 2 && as_matrix(args[0], m)) {
+        if (!all_numbers(m)) throw CasUnsupported("LinearSolve for symbolic matrices is not implemented");
+        const size_t rows = m.size(), cols = m[0].size();
+        Matrix bm;
+        bool is_mat_b = as_matrix(args[1], bm);
+        bool is_vec_b = args[1]->has_head("List") && !is_mat_b;
+        if (!is_mat_b && !is_vec_b) throw CasMathError("LinearSolve: second argument must be a vector or matrix");
+        if (is_vec_b && args[1]->args.size() != rows) throw CasMathError("LinearSolve: vector dimension must match matrix rows");
+        if (is_mat_b && (bm.size() != rows || !all_numbers(bm))) throw CasMathError("LinearSolve: matrix dimension must match and contain numbers");
+        const size_t bcols = is_mat_b ? bm[0].size() : 1;
+        RMatrix aug(rows, std::vector<Rational>(cols + bcols, Rational(0)));
+        for (size_t i = 0; i < rows; ++i) {
+            for (size_t j = 0; j < cols; ++j) aug[i][j] = m[i][j]->q;
+            if (is_vec_b) {
+                if (!args[1]->args[i]->is_number()) throw CasUnsupported("LinearSolve: numerical vector entries required");
+                aug[i][cols] = args[1]->args[i]->q;
+            } else {
+                for (size_t k = 0; k < bcols; ++k) aug[i][cols + k] = bm[i][k]->q;
+            }
+        }
+        rref(aug, *this);
+        // Check for inconsistency
+        for (size_t i = 0; i < rows; ++i) {
+            bool all_zero = true;
+            for (size_t j = 0; j < cols; ++j) if (!aug[i][j].is_zero()) { all_zero = false; break; }
+            if (all_zero) {
+                for (size_t k = 0; k < bcols; ++k) {
+                    if (!aug[i][cols + k].is_zero()) throw CasMathError("LinearSolve: system has no solution");
+                }
+            }
+        }
+        if (rows < cols) throw CasUnsupported("LinearSolve: underdetermined system");
+        if (is_vec_b) {
+            std::vector<Expr> sol(cols, zero());
+            for (size_t i = 0; i < cols; ++i) {
+                if (i >= rows || aug[i][i].is_zero()) throw CasMathError("LinearSolve: matrix is singular");
+                sol[i] = num(aug[i][cols]);
+            }
+            return app("List", sol);
+        } else {
+            Matrix sol(cols, std::vector<Expr>(bcols, zero()));
+            for (size_t i = 0; i < cols; ++i) {
+                if (i >= rows || aug[i][i].is_zero()) throw CasMathError("LinearSolve: matrix is singular");
+                for (size_t k = 0; k < bcols; ++k) sol[i][k] = num(aug[i][cols + k]);
+            }
+            return from_matrix(sol);
+        }
+    }
+    if ((head == "QR" || head == "QRDecomposition") && args.size() == 1 && as_matrix(args[0], m)) {
+        if (!all_numbers(m)) throw CasUnsupported("QR decomposition needs numerical matrix entries");
+        const size_t rows = m.size(), cols = m[0].size();
+        if (rows < cols) throw CasMathError("QR decomposition requires rows >= cols");
+        // Gram-Schmidt orthogonalization
+        Matrix q(rows, std::vector<Expr>(cols, zero()));
+        Matrix r(cols, std::vector<Expr>(cols, zero()));
+        for (size_t j = 0; j < cols; ++j) {
+            std::vector<Expr> v(rows);
+            for (size_t i = 0; i < rows; ++i) v[i] = m[i][j];
+            for (size_t k = 0; k < j; ++k) {
+                std::vector<Expr> dot_terms;
+                for (size_t i = 0; i < rows; ++i) dot_terms.push_back(times({m[i][j], q[i][k]}));
+                Expr r_kj = eval(plus(dot_terms));
+                r[k][j] = r_kj;
+                for (size_t i = 0; i < rows; ++i) v[i] = eval(sub(v[i], times({r_kj, q[i][k]})));
+            }
+            std::vector<Expr> norm_terms;
+            for (size_t i = 0; i < rows; ++i) norm_terms.push_back(power(v[i], integer(2)));
+            Expr norm_sq = eval(plus(norm_terms));
+            if (norm_sq->is_number() && norm_sq->q.is_zero()) throw CasMathError("QR decomposition: linearly dependent columns");
+            Expr norm = eval(power(norm_sq, num(Rational(1) / Rational(2))));
+            r[j][j] = norm;
+            for (size_t i = 0; i < rows; ++i) q[i][j] = eval(div(v[i], norm));
+            tick(rows);
+        }
+        return app("List", {from_matrix(q), from_matrix(r)});
+    }
+    if ((head == "Cholesky" || head == "CholeskyDecomposition") && args.size() == 1 && as_matrix(args[0], m)) {
+        if (!all_numbers(m) || m.size() != m[0].size()) throw CasMathError("Cholesky decomposition requires a square numerical matrix");
+        const size_t n = m.size();
+        // Check symmetry
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t j = i + 1; j < n; ++j) {
+                if (m[i][j]->q != m[j][i]->q) throw CasMathError("Cholesky decomposition: matrix must be symmetric");
+            }
+        }
+        Matrix l(n, std::vector<Expr>(n, zero()));
+        for (size_t j = 0; j < n; ++j) {
+            std::vector<Expr> sum_diag;
+            for (size_t k = 0; k < j; ++k) sum_diag.push_back(power(l[j][k], integer(2)));
+            Expr diag_diff = eval(sub(m[j][j], plus(sum_diag)));
+            double d_val = 0;
+            if (!numeric_value(diag_diff, d_val) || d_val <= 0.0) throw CasMathError("Cholesky decomposition: matrix is not positive-definite");
+            l[j][j] = eval(power(diag_diff, num(Rational(1) / Rational(2))));
+            for (size_t i = j + 1; i < n; ++i) {
+                std::vector<Expr> sum_ij;
+                for (size_t k = 0; k < j; ++k) sum_ij.push_back(times({l[i][k], l[j][k]}));
+                Expr off_diff = eval(sub(m[i][j], plus(sum_ij)));
+                l[i][j] = eval(div(off_diff, l[j][j]));
+            }
+            tick(n);
+        }
+        return from_matrix(l);
     }
 
     // ---------------------------------------------------------------- vector calculus

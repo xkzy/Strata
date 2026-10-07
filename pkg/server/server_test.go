@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"strata/pkg/mathruntime"
 )
 
 func setupTestServer() *StrataServer {
@@ -122,6 +124,35 @@ func TestMathInterceptEndpoint(t *testing.T) {
 	}
 }
 
+func TestMathTheoremsEndpoints(t *testing.T) {
+	srv := setupTestServer()
+	ts := httptest.NewServer(srv.Router())
+	defer ts.Close()
+
+	// 1. GET /v1/strata/math/theorems
+	resp1, err1 := http.Get(ts.URL + "/v1/strata/math/theorems")
+	if err1 != nil || resp1.StatusCode != http.StatusOK {
+		t.Fatalf("failed GET /v1/strata/math/theorems: %v", err1)
+	}
+	var listRes map[string]interface{}
+	json.NewDecoder(resp1.Body).Decode(&listRes)
+	if listRes["count"].(float64) < 5 {
+		t.Errorf("expected at least 5 theorems listed")
+	}
+
+	// 2. POST /v1/strata/math/theorems/verify
+	payload := `{"name":"fermat_little_theorem","args":["7","101"]}`
+	resp2, err2 := http.Post(ts.URL+"/v1/strata/math/theorems/verify", "application/json", strings.NewReader(payload))
+	if err2 != nil || resp2.StatusCode != http.StatusOK {
+		t.Fatalf("failed POST /v1/strata/math/theorems/verify: %v", err2)
+	}
+	var verRes map[string]interface{}
+	json.NewDecoder(resp2.Body).Decode(&verRes)
+	if verRes["matches"] != true {
+		t.Errorf("expected matches true for FLT (7, 101)")
+	}
+}
+
 func TestLogicVerifyEndpoints(t *testing.T) {
 	srv := setupTestServer()
 	ts := httptest.NewServer(srv.Router())
@@ -186,8 +217,15 @@ func TestMcpEndpoints(t *testing.T) {
 	var toolsResp map[string]interface{}
 	json.NewDecoder(resp.Body).Decode(&toolsResp)
 	tools := toolsResp["tools"].([]interface{})
-	if len(tools) < 4 {
-		t.Fatalf("expected >= 4 tools, got %d", len(tools))
+	if len(tools) != 3 {
+		t.Fatalf("expected 3 tools, got %d", len(tools))
+	}
+	for _, toolItem := range tools {
+		tmap := toolItem.(map[string]interface{})
+		tname := tmap["name"].(string)
+		if tname == "math_evaluate" || tname == "sage" || tname == "mathics" {
+			t.Fatalf("Math engine tool %q should not be exposed via MCP", tname)
+		}
 	}
 
 	// 2. POST /v1/mcp (initialize)
@@ -356,3 +394,52 @@ func TestAPIKeyAuthorization(t *testing.T) {
 		t.Errorf("expected 503 (authorized, but no model) with a valid bearer token, got %v %v", resp2, err)
 	}
 }
+
+func TestCASEndpoints(t *testing.T) {
+	srv := setupTestServer()
+	ts := httptest.NewServer(srv.Router())
+	defer ts.Close()
+
+	// 1. GET /v1/strata/cas/constants
+	resp1, err1 := http.Get(ts.URL + "/v1/strata/cas/constants")
+	if err1 != nil || resp1.StatusCode != http.StatusOK {
+		t.Fatalf("failed GET /v1/strata/cas/constants: %v", err1)
+	}
+	var constData map[string]interface{}
+	json.NewDecoder(resp1.Body).Decode(&constData)
+	if count, ok := constData["count"].(float64); !ok || count < 10 {
+		t.Errorf("expected >= 10 constants, got %v", constData["count"])
+	}
+
+	// 2. GET /v1/strata/cas/formulas?domain=MECHANICS
+	resp2, err2 := http.Get(ts.URL + "/v1/strata/cas/formulas?domain=MECHANICS")
+	if err2 != nil || resp2.StatusCode != http.StatusOK {
+		t.Fatalf("failed GET /v1/strata/cas/formulas: %v", err2)
+	}
+	var formMap map[string]interface{}
+	json.NewDecoder(resp2.Body).Decode(&formMap)
+	if count, ok := formMap["count"].(float64); !ok || count < 3 {
+		t.Errorf("expected >= 3 mechanics formulas, got %v", formMap["count"])
+	}
+
+	// 3. POST /v1/strata/cas/solve (F = m*a)
+	solvePayload := `{
+		"domain": "MECHANICS",
+		"formula_id": "newton_second_law",
+		"variables": {
+			"m": "10 kg",
+			"a": "3 m/s^2"
+		},
+		"target_var": "F"
+	}`
+	resp3, err3 := http.Post(ts.URL+"/v1/strata/cas/solve", "application/json", strings.NewReader(solvePayload))
+	if err3 != nil || resp3.StatusCode != http.StatusOK {
+		t.Fatalf("failed POST /v1/strata/cas/solve: %v", err3)
+	}
+	var solveRes mathruntime.CASResult
+	json.NewDecoder(resp3.Body).Decode(&solveRes)
+	if solveRes.Status != mathruntime.StatusSuccess || !strings.Contains(solveRes.ExactResult, "30 N") {
+		t.Errorf("expected 30 N from CAS solve, got %+v", solveRes)
+	}
+}
+

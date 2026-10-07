@@ -190,6 +190,13 @@ func (s *StrataServer) Router() http.Handler {
 	mux.HandleFunc("/v1/strata/math/intercept", s.handleMathIntercept)
 	mux.HandleFunc("/v1/strata/math/metrics", s.handleMathMetrics)
 	mux.HandleFunc("/v1/strata/math/backends", s.handleMathBackends)
+	mux.HandleFunc("/v1/strata/math/theorems", s.handleMathTheorems)
+	mux.HandleFunc("/v1/strata/math/theorems/verify", s.handleMathVerifyTheorem)
+
+	// Unified CAS Endpoints
+	mux.HandleFunc("/v1/strata/cas/solve", s.handleCASSolve)
+	mux.HandleFunc("/v1/strata/cas/constants", s.handleCASConstants)
+	mux.HandleFunc("/v1/strata/cas/formulas", s.handleCASFormulas)
 
 	// Logic Verification Runtime Endpoints
 	mux.HandleFunc("/v1/strata/verify", s.handleLogicVerify)
@@ -542,6 +549,8 @@ func (s *StrataServer) handleMathMetrics(w http.ResponseWriter, r *http.Request)
 
 func (s *StrataServer) handleMathBackends(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"cas_available":          s.MathRuntime.CasBackend.Available,
+		"cas_version":            s.MathRuntime.CasBackend.Version,
 		"mathics_available":      s.MathRuntime.MathicsBackend.Available,
 		"mathics_version":        s.MathRuntime.MathicsBackend.Version,
 		"sage_available":         s.MathRuntime.SageBackend.Available,
@@ -549,6 +558,33 @@ func (s *StrataServer) handleMathBackends(w http.ResponseWriter, r *http.Request
 		"fast_numeric_available": true,
 		"fast_numeric_version":   s.MathRuntime.FastBackend.Version,
 	})
+}
+
+func (s *StrataServer) handleMathTheorems(w http.ResponseWriter, r *http.Request) {
+	reg := mathruntime.GetTheoremRegistry()
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"count":    len(reg.ListAll()),
+		"theorems": reg.ListAll(),
+	})
+}
+
+func (s *StrataServer) handleMathVerifyTheorem(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Name        string   `json:"name"`
+		Args        []string `json:"args"`
+		Assumptions string   `json:"assumptions"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	reg := mathruntime.GetTheoremRegistry()
+	res := reg.VerifyTheorem(req.Name, req.Args, req.Assumptions)
+	writeJSON(w, http.StatusOK, res)
 }
 
 // ---------------------------------------------------------------------------

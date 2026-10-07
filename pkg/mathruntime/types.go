@@ -21,6 +21,14 @@ const (
 	OpNumericEvaluate MathOperation = "numeric_evaluate"
 	OpMatrixOp        MathOperation = "matrix_op"
 	OpDeterminant     MathOperation = "determinant"
+	OpMatrixInverse   MathOperation = "matrix_inverse"
+	OpMatrixMultiply  MathOperation = "matrix_multiply"
+	OpMatrixTrace     MathOperation = "matrix_trace"
+	OpEigenvalues     MathOperation = "eigenvalues"
+	OpLinearSystem    MathOperation = "linear_system"
+	OpStatistics      MathOperation = "statistics"
+	OpModInverse      MathOperation = "mod_inverse"
+	OpModPow          MathOperation = "mod_pow"
 	OpProbability     MathOperation = "probability"
 )
 
@@ -35,13 +43,13 @@ const (
 type MathStatus string
 
 const (
-	StatusSuccess              MathStatus = "success"
-	StatusTimeout              MathStatus = "timeout"
-	StatusInvalidExpression    MathStatus = "invalid_expression"
-	StatusExecutionError       MathStatus = "execution_error"
-	StatusCancelled            MathStatus = "cancelled"
+	StatusSuccess             MathStatus = "success"
+	StatusTimeout             MathStatus = "timeout"
+	StatusInvalidExpression   MathStatus = "invalid_expression"
+	StatusExecutionError      MathStatus = "execution_error"
+	StatusCancelled           MathStatus = "cancelled"
 	StatusResourceLimitExceed MathStatus = "resource_limit_exceeded"
-	StatusUnsupportedOp        MathStatus = "unsupported_operation"
+	StatusUnsupportedOp       MathStatus = "unsupported_operation"
 )
 
 type MathSecurityLimits struct {

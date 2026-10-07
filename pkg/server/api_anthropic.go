@@ -239,6 +239,9 @@ func (s *StrataServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Re
 		return
 	}
 	spec.Scope = requestScope(r, req.Metadata.UserID, "")
+	if h := r.Header.Get("X-Strata-Math-Engine"); h == "off" || h == "false" || h == "0" {
+		spec.DisableMath = true
+	}
 	msgID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
 	ctx, done := s.registerRequest(r.Context(), msgID)
 	defer done()

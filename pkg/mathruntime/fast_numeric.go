@@ -24,10 +24,12 @@ func NewFastNumericBackend() *FastNumericBackend {
 
 func (b *FastNumericBackend) SupportsOperation(op MathOperation, mode MathMode) bool {
 	switch op {
-	case OpEvaluate, OpNumericEvaluate, OpDeterminant, OpProbability:
+	case OpEvaluate, OpNumericEvaluate, OpDeterminant, OpProbability,
+		OpMatrixInverse, OpMatrixMultiply, OpMatrixTrace, OpEigenvalues, OpLinearSystem,
+		OpStatistics, OpModInverse, OpModPow, OpDifferentiate, OpIntegrate, OpLimit, OpSolve:
 		return true
 	case OpSimplify, OpFactor, OpExpand:
-		return mode != ModeSymbolic
+		return true
 	default:
 		return false
 	}
@@ -46,9 +48,224 @@ func (b *FastNumericBackend) Execute(req MathRequest) MathResult {
 	cleanExpr := parser.Canonicalize(req.Expression)
 
 	switch req.Operation {
+	case OpDifferentiate:
+		v := req.Variable
+		if v == "" {
+			v = "x"
+		}
+		res.ExactResult = DifferentiateSymbolic(cleanExpr, v)
+		res.NumericResult = res.ExactResult
+		res.RawResult = res.ExactResult
+		res.Status = StatusSuccess
+
+	case OpIntegrate:
+		v := req.Variable
+		if v == "" {
+			v = "x"
+		}
+		res.ExactResult = IntegrateSymbolic(cleanExpr, v)
+		res.NumericResult = res.ExactResult
+		res.RawResult = res.ExactResult
+		res.Status = StatusSuccess
+
+	case OpLimit:
+		v := req.Variable
+		if v == "" {
+			v = "x"
+		}
+		res.ExactResult = ComputeLimit(cleanExpr, v, req.Point)
+		res.NumericResult = res.ExactResult
+		res.RawResult = res.ExactResult
+		res.Status = StatusSuccess
+
+	case OpSolve:
+		if quad, err := ParseAndSolveQuadratic(cleanExpr); err == nil {
+			res.ExactResult = quad.ExactStr
+			res.NumericResult = quad.ExactStr
+			res.RawResult = quad.ExactStr
+			res.Status = StatusSuccess
+		} else {
+			res.Status = StatusExecutionError
+			res.ErrorMessage = err.Error()
+		}
+
+	case OpMatrixInverse:
+		mat, err := ParseMatrix(cleanExpr)
+		if err == nil {
+			inv, err := mat.Inverse()
+			if err == nil {
+				res.ExactResult = inv.String()
+				res.NumericResult = inv.String()
+				res.RawResult = inv.String()
+				res.Status = StatusSuccess
+			} else {
+				res.Status = StatusExecutionError
+				res.ErrorMessage = err.Error()
+			}
+		} else {
+			res.Status = StatusExecutionError
+			res.ErrorMessage = err.Error()
+		}
+
+	case OpMatrixMultiply:
+		parts := strings.Split(cleanExpr, "*")
+		if len(parts) == 2 {
+			mA, errA := ParseMatrix(strings.TrimSpace(parts[0]))
+			mB, errB := ParseMatrix(strings.TrimSpace(parts[1]))
+			if errA == nil && errB == nil {
+				prod, err := mA.Multiply(mB)
+				if err == nil {
+					res.ExactResult = prod.String()
+					res.NumericResult = prod.String()
+					res.RawResult = prod.String()
+					res.Status = StatusSuccess
+				} else {
+					res.Status = StatusExecutionError
+					res.ErrorMessage = err.Error()
+				}
+			} else {
+				res.Status = StatusExecutionError
+				res.ErrorMessage = "failed to parse input matrices"
+			}
+		} else {
+			res.Status = StatusExecutionError
+			res.ErrorMessage = "matrix multiplication requires two matrices separated by *"
+		}
+
+	case OpMatrixTrace:
+		mat, err := ParseMatrix(cleanExpr)
+		if err == nil {
+			tr, err := mat.Trace()
+			if err == nil {
+				res.ExactResult = fmt.Sprintf("%g", tr)
+				res.NumericResult = res.ExactResult
+				res.RawResult = res.ExactResult
+				res.Status = StatusSuccess
+			} else {
+				res.Status = StatusExecutionError
+				res.ErrorMessage = err.Error()
+			}
+		} else {
+			res.Status = StatusExecutionError
+			res.ErrorMessage = err.Error()
+		}
+
+	case OpEigenvalues:
+		mat, err := ParseMatrix(cleanExpr)
+		if err == nil {
+			l1, l2, err := mat.Eigenvalues2x2()
+			if err == nil {
+				res.ExactResult = fmt.Sprintf("λ1 = %g, λ2 = %g", l1, l2)
+				res.NumericResult = res.ExactResult
+				res.RawResult = res.ExactResult
+				res.Status = StatusSuccess
+			} else {
+				res.Status = StatusExecutionError
+				res.ErrorMessage = err.Error()
+			}
+		} else {
+			res.Status = StatusExecutionError
+			res.ErrorMessage = err.Error()
+		}
+
+	case OpLinearSystem:
+		parts := strings.Split(cleanExpr, "=")
+		if len(parts) == 2 {
+			mA, errA := ParseMatrix(strings.TrimSpace(parts[0]))
+			bVec, errB := ParseNumbers(strings.TrimSpace(parts[1]))
+			if errA == nil && errB == nil {
+				x, err := SolveLinearSystem(mA, bVec)
+				if err == nil {
+					var xStrs []string
+					for _, v := range x {
+						xStrs = append(xStrs, fmt.Sprintf("%g", v))
+					}
+					res.ExactResult = "[" + strings.Join(xStrs, ", ") + "]"
+					res.NumericResult = res.ExactResult
+					res.RawResult = res.ExactResult
+					res.Status = StatusSuccess
+				} else {
+					res.Status = StatusExecutionError
+					res.ErrorMessage = err.Error()
+				}
+			} else {
+				res.Status = StatusExecutionError
+				res.ErrorMessage = "failed to parse matrix A or vector b"
+			}
+		} else {
+			res.Status = StatusExecutionError
+			res.ErrorMessage = "linear system requires format A = b"
+		}
+
+	case OpStatistics:
+		nums, err := ParseNumbers(cleanExpr)
+		if err == nil {
+			stats, err := ComputeStats(nums)
+			if err == nil {
+				switch strings.ToLower(req.Variable) {
+				case "mean", "average":
+					res.ExactResult = fmt.Sprintf("%g", stats.Mean)
+				case "median":
+					res.ExactResult = fmt.Sprintf("%g", stats.Median)
+				case "stddev", "standard deviation", "standard_deviation":
+					res.ExactResult = fmt.Sprintf("%g", stats.StdDev)
+				case "variance":
+					res.ExactResult = fmt.Sprintf("%g", stats.Variance)
+				default:
+					res.ExactResult = fmt.Sprintf("mean=%g, median=%g, stddev=%g", stats.Mean, stats.Median, stats.StdDev)
+				}
+				res.NumericResult = res.ExactResult
+				res.RawResult = res.ExactResult
+				res.Status = StatusSuccess
+			} else {
+				res.Status = StatusExecutionError
+				res.ErrorMessage = err.Error()
+			}
+		} else {
+			res.Status = StatusExecutionError
+			res.ErrorMessage = err.Error()
+		}
+
+	case OpModInverse:
+		parts := strings.Split(cleanExpr, "mod")
+		if len(parts) == 2 {
+			a, _ := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
+			m, _ := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+			inv, err := ModInverse(a, m)
+			if err == nil {
+				res.ExactResult = fmt.Sprintf("%d", inv)
+				res.NumericResult = res.ExactResult
+				res.RawResult = res.ExactResult
+				res.Status = StatusSuccess
+			} else {
+				res.Status = StatusExecutionError
+				res.ErrorMessage = err.Error()
+			}
+		} else {
+			res.Status = StatusExecutionError
+			res.ErrorMessage = "invalid mod_inverse format"
+		}
+
+	case OpModPow:
+		// e.g. "a^b mod m"
+		powParts := strings.Split(cleanExpr, "^")
+		if len(powParts) == 2 {
+			modParts := strings.Split(powParts[1], "mod")
+			if len(modParts) == 2 {
+				a, _ := strconv.ParseInt(strings.TrimSpace(powParts[0]), 10, 64)
+				bExp, _ := strconv.ParseInt(strings.TrimSpace(modParts[0]), 10, 64)
+				m, _ := strconv.ParseInt(strings.TrimSpace(modParts[1]), 10, 64)
+				val := ModPow(a, bExp, m)
+				res.ExactResult = fmt.Sprintf("%d", val)
+				res.NumericResult = res.ExactResult
+				res.RawResult = res.ExactResult
+				res.Status = StatusSuccess
+			}
+		}
+
 	case OpDeterminant:
-		// 2x2 determinant: [[a,b],[c,d]]
-		re := regexp.MustCompile(`\[\[([0-9\.\-]+),([0-9\.\-]+)\],\[([0-9\.\-]+),([0-9\.\-]+)\]\]`)
+		// 2x2 determinant: [[a, b], [c, d]]
+		re := regexp.MustCompile(`\[\[\s*([-+]?[0-9\.]+)\s*,\s*([-+]?[0-9\.]+)\s*\]\s*,\s*\[\s*([-+]?[0-9\.]+)\s*,\s*([-+]?[0-9\.]+)\s*\]\]`)
 		if m := re.FindStringSubmatch(cleanExpr); len(m) == 5 {
 			a, _ := strconv.ParseFloat(m[1], 64)
 			bVal, _ := strconv.ParseFloat(m[2], 64)
@@ -64,8 +281,31 @@ func (b *FastNumericBackend) Execute(req MathRequest) MathResult {
 			res.RawResult = res.ExactResult
 			res.Status = StatusSuccess
 		} else {
-			res.Status = StatusExecutionError
-			res.ErrorMessage = "invalid 2x2 matrix format for FastNumeric determinant"
+			// 3x3 determinant: [[a,b,c],[d,e,f],[g,h,i]]
+			re3 := regexp.MustCompile(`\[\[\s*([-+]?[0-9\.]+)\s*,\s*([-+]?[0-9\.]+)\s*,\s*([-+]?[0-9\.]+)\s*\]\s*,\s*\[\s*([-+]?[0-9\.]+)\s*,\s*([-+]?[0-9\.]+)\s*,\s*([-+]?[0-9\.]+)\s*\]\s*,\s*\[\s*([-+]?[0-9\.]+)\s*,\s*([-+]?[0-9\.]+)\s*,\s*([-+]?[0-9\.]+)\s*\]\]`)
+			if m3 := re3.FindStringSubmatch(cleanExpr); len(m3) == 10 {
+				a, _ := strconv.ParseFloat(m3[1], 64)
+				bVal, _ := strconv.ParseFloat(m3[2], 64)
+				c, _ := strconv.ParseFloat(m3[3], 64)
+				d, _ := strconv.ParseFloat(m3[4], 64)
+				e, _ := strconv.ParseFloat(m3[5], 64)
+				f, _ := strconv.ParseFloat(m3[6], 64)
+				g, _ := strconv.ParseFloat(m3[7], 64)
+				h, _ := strconv.ParseFloat(m3[8], 64)
+				iVal, _ := strconv.ParseFloat(m3[9], 64)
+				det := a*(e*iVal-f*h) - bVal*(d*iVal-f*g) + c*(d*h-e*g)
+				if math.Floor(det) == det {
+					res.ExactResult = fmt.Sprintf("%.0f", det)
+				} else {
+					res.ExactResult = fmt.Sprintf("%f", det)
+				}
+				res.NumericResult = res.ExactResult
+				res.RawResult = res.ExactResult
+				res.Status = StatusSuccess
+			} else {
+				res.Status = StatusExecutionError
+				res.ErrorMessage = "invalid matrix format for determinant"
+			}
 		}
 
 	case OpProbability:
@@ -104,7 +344,33 @@ func (b *FastNumericBackend) Execute(req MathRequest) MathResult {
 		}
 
 	default:
-		if strings.HasPrefix(cleanExpr, "sqrt(") && strings.HasSuffix(cleanExpr, ")") {
+		if strings.HasPrefix(strings.ToUpper(cleanExpr), "GCD(") {
+			re := regexp.MustCompile(`\d+`)
+			nums := re.FindAllString(cleanExpr, 2)
+			if len(nums) == 2 {
+				aBig, _ := new(big.Int).SetString(nums[0], 10)
+				bBig, _ := new(big.Int).SetString(nums[1], 10)
+				g := new(big.Int).GCD(nil, nil, aBig, bBig)
+				res.ExactResult = g.String()
+				res.NumericResult = g.String()
+				res.RawResult = g.String()
+				res.Status = StatusSuccess
+			}
+		} else if strings.HasPrefix(strings.ToUpper(cleanExpr), "LCM(") {
+			re := regexp.MustCompile(`\d+`)
+			nums := re.FindAllString(cleanExpr, 2)
+			if len(nums) == 2 {
+				aBig, _ := new(big.Int).SetString(nums[0], 10)
+				bBig, _ := new(big.Int).SetString(nums[1], 10)
+				g := new(big.Int).GCD(nil, nil, aBig, bBig)
+				prod := new(big.Int).Mul(aBig, bBig)
+				l := new(big.Int).Quo(prod, g)
+				res.ExactResult = l.String()
+				res.NumericResult = l.String()
+				res.RawResult = l.String()
+				res.Status = StatusSuccess
+			}
+		} else if strings.HasPrefix(cleanExpr, "sqrt(") && strings.HasSuffix(cleanExpr, ")") {
 			inner := strings.TrimSuffix(strings.TrimPrefix(cleanExpr, "sqrt("), ")")
 			val, err := strconv.ParseFloat(inner, 64)
 			if err == nil && val >= 0 {

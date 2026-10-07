@@ -4,6 +4,7 @@
 
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <map>
 #include <sstream>
 
@@ -91,6 +92,7 @@ struct UnitParser {
             if (!parse_power(r)) return false;
             v.dim = combine(v.dim, r.dim, sign);
             v.scale = sign > 0 ? v.scale * r.scale : v.scale / r.scale;
+            if (!std::isfinite(v.scale) || v.scale <= 0) { error = "the magnitude is zero, infinite or out of range"; return false; }
         }
         out = v;
         return true;
@@ -111,6 +113,7 @@ struct UnitParser {
             if (neg) e = -e;
             for (int k = 0; k < 9; ++k) base.dim.e[k] *= e;
             base.scale = std::pow(base.scale, e);
+            if (!std::isfinite(base.scale) || base.scale <= 0) { error = "the magnitude is zero, infinite or out of range"; return false; }
         }
         out = base;
         return true;
@@ -131,7 +134,9 @@ struct UnitParser {
         if (std::isdigit(static_cast<unsigned char>(s[i]))) {   // a pure number is a scale factor ("1000 m")
             size_t j = i;
             while (j < s.size() && (std::isdigit(static_cast<unsigned char>(s[j])) || s[j] == '.')) ++j;
+            if (j - i > 40) { error = "number too long"; return false; }
             out.scale = std::strtod(s.substr(i, j - i).c_str(), nullptr);
+            if (!std::isfinite(out.scale) || out.scale <= 0) { error = "a scale factor must be a positive finite number"; return false; }
             out.dim = Dimension();
             i = j;
             return true;
@@ -198,7 +203,8 @@ VerifyResult UnitEngine::verify_equation(const std::string& eq) {
     if (!b.ok) return unit_result(VerifyState::kUnknown, "right side: " + b.error + " (units are never guessed)", eq);
     const std::string norm = a.dim.to_string() + " == " + b.dim.to_string();
     if (!(a.dim == b.dim)) return unit_result(VerifyState::kContradicted, "dimensionally inconsistent: [" + a.dim.to_string() + "] versus [" + b.dim.to_string() + "]", norm);
-    if (std::fabs(a.scale - b.scale) > 1e-9 * std::fabs(a.scale)) return unit_result(VerifyState::kContradicted, "same dimension, different magnitude (factor " + std::to_string(a.scale / b.scale) + ")", norm);
+    if (!std::isfinite(a.scale) || !std::isfinite(b.scale)) return unit_result(VerifyState::kUnknown, "a magnitude is not a finite number", norm);
+    if (!(std::fabs(a.scale - b.scale) <= 1e-9 * std::fabs(a.scale))) return unit_result(VerifyState::kContradicted, "same dimension, different magnitude (factor " + std::to_string(a.scale / b.scale) + ")", norm);
     return unit_result(VerifyState::kVerified, "dimensions and magnitudes agree: [" + a.dim.to_string() + "]", norm);
 }
 
@@ -206,6 +212,7 @@ VerifyResult UnitEngine::verify_convertible(const std::string& from, const std::
     const UnitValue a = parse(from), b = parse(to);
     if (!a.ok) return unit_result(VerifyState::kUnknown, "from: " + a.error, from + " -> " + to);
     if (!b.ok) return unit_result(VerifyState::kUnknown, "to: " + b.error, from + " -> " + to);
+    if (!std::isfinite(a.scale) || !std::isfinite(b.scale) || b.scale == 0) return unit_result(VerifyState::kUnknown, "a magnitude is not a finite number", from + " -> " + to);
     if (a.dim == b.dim) return unit_result(VerifyState::kVerified, "convertible (factor " + std::to_string(a.scale / b.scale) + ")", from + " -> " + to);
     return unit_result(VerifyState::kContradicted, "not convertible: [" + a.dim.to_string() + "] versus [" + b.dim.to_string() + "]", from + " -> " + to);
 }

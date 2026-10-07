@@ -312,6 +312,9 @@ func (s *StrataServer) startRuntimeGeneration(ctx context.Context, spec genSpec)
 
 // startChat picks the path for a request: through the runtime when it is active, else straight to the engine.
 func (s *StrataServer) startChat(ctx context.Context, spec genSpec) (<-chan genEvent, int, error) {
+	if !spec.Raw {
+		s.interceptMathIntent(&spec)
+	}
 	if !spec.Raw && s.rtActive() {
 		return s.startRuntimeGeneration(ctx, spec)
 	}

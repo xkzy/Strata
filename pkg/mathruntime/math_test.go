@@ -182,3 +182,36 @@ func TestMultiTenantCache(t *testing.T) {
 		t.Errorf("cache should be empty after tenant invalidation")
 	}
 }
+
+func TestBenchmarkQuestionsInterception(t *testing.T) {
+	runtime := NewMathRuntime(nil)
+
+	cases := []struct {
+		prompt   string
+		expected string
+	}{
+		{"Calculate 123456789 * 987654321. Give only the exact final numerical answer.", "121932631112635269"},
+		{"What is 987654321987654321 - 123456789123456789? State the exact difference.", "864197532864197532"},
+		{"Compute 847291 * 392817. State the exact product.", "332830308747"},
+		{"Evaluate 1/3 + 1/6 + 1/12 as an exact simplified fraction.", "7/12"},
+		{"Calculate (7/13) * (26/21) in lowest terms.", "2/3"},
+		{"Simplify (5/8 - 1/4) / (3/16) to an exact integer or fraction.", "2"},
+		{"Compute the determinant of the 2x2 matrix [[17, 23], [41, 59]]. State the exact integer value.", "60"},
+		{"Find the determinant of [[2, 0, 1], [3, 0, 0], [5, 1, 1]].", "3"},
+		{"What is the combination C(12, 5)? Give the exact integer result.", "792"},
+		{"What is the Greatest Common Divisor GCD(4620, 3696)?", "924"},
+		{"Find the inverse of [[4, 7], [2, 6]]. Give only the final matrix directly.", "[[0.6, -0.7], [-0.2, 0.4]]"},
+	}
+
+	for _, tc := range cases {
+		res := runtime.InterceptAndVerifyIntent(tc.prompt)
+		if res == nil {
+			t.Errorf("failed to intercept intent for %q", tc.prompt)
+			continue
+		}
+		if res.ExactResult != tc.expected && res.NumericResult != tc.expected {
+			t.Errorf("for prompt %q: expected %q, got exact=%q, num=%q", tc.prompt, tc.expected, res.ExactResult, res.NumericResult)
+		}
+	}
+}
+

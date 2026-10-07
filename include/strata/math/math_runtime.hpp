@@ -101,8 +101,9 @@ public:
     ExpressionValidator& validator() { return *validator_; }
     MathResultCache& cache() { return *cache_; }
     FastNumericBackend& fast_backend() { return *fast_backend_; }
-    MathicsBackend& mathics_backend() { return *mathics_backend_; }
-    SageBackend& sage_backend() { return *sage_backend_; }
+    UnifiedCasBackend& cas_backend() { return *cas_backend_; }
+    UnifiedCasBackend& mathics_backend() { return *cas_backend_; }
+    UnifiedCasBackend& sage_backend() { return *cas_backend_; }
 
 private:
     std::shared_ptr<context::VirtualContextManager> vctx_;
@@ -112,8 +113,7 @@ private:
     std::unique_ptr<ExpressionValidator> validator_;
     std::unique_ptr<MathResultCache> cache_;
     std::unique_ptr<FastNumericBackend> fast_backend_;
-    std::unique_ptr<MathicsBackend> mathics_backend_;
-    std::unique_ptr<SageBackend> sage_backend_;
+    std::unique_ptr<UnifiedCasBackend> cas_backend_;
 
     mutable MathRuntimeStats stats_;
     mutable std::mutex stats_mu_;

@@ -17,6 +17,7 @@ type MathRuntime struct {
 	Parser         *ExpressionParser
 	Cache          *MathResultCache
 	FastBackend    *FastNumericBackend
+	CasBackend     *UnifiedCasBackend
 	MathicsBackend *MathicsBackend
 	SageBackend    *SageBackend
 
@@ -41,33 +42,85 @@ func NewMathRuntime(limits *MathSecurityLimits) *MathRuntime {
 		lim = *limits
 	}
 
+	cas := NewUnifiedCasBackend()
 	return &MathRuntime{
 		Limits:         lim,
 		Validator:      NewExpressionValidator(lim),
 		Parser:         NewExpressionParser(),
 		Cache:          NewMathResultCache(10000),
 		FastBackend:    NewFastNumericBackend(),
+		CasBackend:     cas,
 		MathicsBackend: NewMathicsBackend(),
 		SageBackend:    NewSageBackend(),
 	}
 }
 
 func (r *MathRuntime) RouteBackend(req MathRequest, complexity int) bool {
-	// Returns true for FastBackend, false for MathicsBackend
-	isArith := r.Validator.IsPureArithmetic(req.Expression)
+	if req.Mode == ModeSymbolic {
+		return false
+	}
 	switch req.Operation {
-	case OpEvaluate, OpNumericEvaluate, OpDeterminant, OpProbability:
-		if isArith || req.Operation == OpDeterminant || req.Operation == OpProbability {
-			if r.FastBackend.SupportsOperation(req.Operation, req.Mode) {
-				return true
-			}
-		}
+	case OpMatrixInverse, OpMatrixMultiply, OpMatrixTrace, OpEigenvalues, OpLinearSystem,
+		OpStatistics, OpModInverse, OpModPow, OpDeterminant, OpProbability, OpEvaluate, OpNumericEvaluate:
+		return true
+	case OpSimplify, OpFactor, OpExpand, OpSolve, OpDifferentiate, OpIntegrate, OpLimit:
+		return true
 	}
 	return false
 }
 
 func (r *MathRuntime) ProcessRequest(req MathRequest) MathResult {
 	atomic.AddUint64(&r.stats.totalCalculations, 1)
+
+	// Step 0: Check for Variable Assignment (e.g. x = 10)
+	assignParts := strings.Split(req.Expression, "=")
+	if len(assignParts) == 2 && !strings.ContainsAny(assignParts[0], "+-*/^()[]") {
+		varName := strings.TrimSpace(assignParts[0])
+		if varName != "" && !strings.Contains(varName, "==") {
+			valReq := req
+			valReq.Expression = strings.TrimSpace(assignParts[1])
+			valRes := r.ProcessRequest(valReq)
+			if valRes.Status == StatusSuccess {
+				if req.SessionID != "" {
+					r.Cache.SetSessionVar(req.SessionID, varName, valRes.ExactResult)
+				}
+				return MathResult{
+					RequestID:           req.RequestID,
+					Status:              StatusSuccess,
+					BackendName:         "MathSessionStore",
+					BackendVersion:      "1.0.0",
+					CanonicalExpression: req.Expression,
+					ExactResult:         valRes.ExactResult,
+					NumericResult:       valRes.NumericResult,
+					RawResult:           valRes.ExactResult,
+					CompactObservation:  fmt.Sprintf("[MathAssignment: %s = %s]", varName, valRes.ExactResult),
+					ExecutionTimeMs:     0.01,
+				}
+			}
+		}
+	}
+
+	// Step 0b: Substitute Session Variables
+	if req.SessionID != "" {
+		if val, ok := r.Cache.GetSessionVar(req.SessionID, strings.TrimSpace(req.Expression)); ok {
+			return MathResult{
+				RequestID:           req.RequestID,
+				Status:              StatusSuccess,
+				BackendName:         "MathSessionStore",
+				BackendVersion:      "1.0.0",
+				CanonicalExpression: req.Expression,
+				ExactResult:         val,
+				NumericResult:       val,
+				RawResult:           val,
+				CompactObservation:  fmt.Sprintf("[MathVar: %s = %s]", req.Expression, val),
+				ExecutionTimeMs:     0.01,
+			}
+		}
+		vars := r.Cache.GetSessionVars(req.SessionID)
+		for k, v := range vars {
+			req.Expression = strings.ReplaceAll(req.Expression, k, v)
+		}
+	}
 
 	// Step 1: Validation
 	valid, err := r.Validator.Validate(req.Expression)
@@ -356,6 +409,78 @@ func (r *MathRuntime) InterceptAndEvaluate(text string) (string, []MathResult) {
 	}
 
 	return transformed, results
+}
+
+func (r *MathRuntime) InterceptAndVerifyIntent(text string) *MathResult {
+	if text == "" {
+		return nil
+	}
+
+	// 1. Check for theorem verification intent
+	reg := GetTheoremRegistry()
+	for _, thm := range reg.theorems {
+		if strings.Contains(strings.ToLower(text), strings.ToLower(thm.Name)) || strings.Contains(strings.ToLower(text), strings.ToLower(thm.ID)) {
+			numRe := regexp.MustCompile(`[-+]?[0-9]+(?:\.[0-9]+)?`)
+			matches := numRe.FindAllString(text, -1)
+			ver := reg.VerifyTheorem(thm.ID, matches, "")
+			if ver.Matches {
+				return &MathResult{
+					Status:              StatusSuccess,
+					BackendName:         "StrataTheoremEngine",
+					BackendVersion:      "1.0.0",
+					CanonicalExpression: thm.Name,
+					ExactResult:         ver.GroundTruthResult,
+					CompactObservation:  fmt.Sprintf("[Theorem Verified: %s => %s]", thm.Name, ver.GroundTruthResult),
+				}
+			}
+		}
+	}
+
+	// 2. Check for special Sage/NumberTheory functions (euler_phi, is_prime, xgcd, fibonacci, etc.)
+	sageFuncRe := regexp.MustCompile(`(?i)\b(euler_phi|is_prime|xgcd|fibonacci|power_mod|divisors)\s*\(([0-9\s\,\-\+]+)\)`)
+	if m := sageFuncRe.FindStringSubmatch(text); len(m) > 0 {
+		res := r.ProcessRequest(MathRequest{
+			Operation:  OpEvaluate,
+			Expression: m[0],
+			Mode:       ModeExact,
+		})
+		if res.Status == StatusSuccess && (res.ExactResult != "" || res.NumericResult != "") {
+			return &res
+		}
+	}
+
+	// 3. Check for Matrix Determinant
+	detRe := regexp.MustCompile(`(?i)\b(?:det|determinant(?:\s+of)?)\s*\(?\s*(\[\[[0-9\s\,\-\+\.\/\[\]]+\]\])\s*\)?`)
+	if m := detRe.FindStringSubmatch(text); len(m) > 1 {
+		res := r.ProcessRequest(MathRequest{
+			Operation:  OpDeterminant,
+			Expression: m[1],
+			Mode:       ModeExact,
+		})
+		if res.Status == StatusSuccess && (res.ExactResult != "" || res.NumericResult != "") {
+			return &res
+		}
+	}
+
+	// 4. Check for general calculation intents
+	intents := r.Parser.DetectCalculationIntents(text)
+	if len(intents) > 0 {
+		intent := intents[0]
+		req := MathRequest{
+			Operation:  intent.Operation,
+			Expression: intent.Expression,
+			Variable:   intent.Variable,
+			Point:      intent.Point,
+			Order:      intent.Order,
+			Mode:       ModeExact,
+		}
+		res := r.ProcessRequest(req)
+		if res.Status == StatusSuccess && (res.ExactResult != "" || res.NumericResult != "") {
+			return &res
+		}
+	}
+
+	return nil
 }
 
 func (r *MathRuntime) GetStats() MathRuntimeStats {

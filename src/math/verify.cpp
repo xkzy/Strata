@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // src/math/verify.cpp - deterministic verification with explicit assumptions; units and dimensions (see verify.hpp)
 #include "strata/math/verify.hpp"
+#include "strata/math/theorems.hpp"
 
 #include "strata/math/cas/engine.hpp"
 
@@ -510,6 +511,12 @@ VerifyResult MathVerifier::verify_inequality(const std::string& relation, const 
 }
 
 VerifyResult MathVerifier::verify(const std::string& statement, const std::string& as) const {
+    // 1. Check if the statement is a known mathematical theorem claim
+    VerifyResult thm = TheoremEngine::instance().verify_claim(statement, as);
+    if (thm.state != VerifyState::kUnknown) {
+        return thm;
+    }
+
     const std::string s = normalize_equals(statement);
     Assumptions dummy;
     try {

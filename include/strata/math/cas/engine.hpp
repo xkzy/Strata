@@ -110,6 +110,7 @@ private:
     friend struct IntegrateOps;
     Expr matrix_function(const std::string& head, const std::vector<Expr>& args);   // nullptr if not applicable
     Expr number_theory(const std::string& head, const std::vector<Expr>& args);     // numtheory.cpp; nullptr if not applicable
+    Expr discrete_math(const std::string& head, const std::vector<Expr>& args);     // discrete.cpp: statistics, combinatorics, graphs; nullptr if not applicable
     Expr extended_math(const std::string& head, const std::vector<Expr>& args);     // extended.cpp: linear algebra, vector calculus, Apart, inequalities, CRT; nullptr if not applicable
     Expr iteration_function(const std::string& head, const std::vector<Expr>& args);
     Expr expand_rec(const Expr& e);
