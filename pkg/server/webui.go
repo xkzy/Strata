@@ -180,6 +180,9 @@ func (s *StrataServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 		d := s.sharedDefaults()
 		writeJSON(w, http.StatusOK, map[string]interface{}{"shared": len(d) > 0, "defaults": d})
 	case http.MethodPost:
+		if !ownPage(w, r, "the settings can be changed") {
+			return
+		}
 		var req struct {
 			Defaults map[string]interface{} `json:"defaults"`
 		}
@@ -215,6 +218,9 @@ func (s *StrataServer) handleRunConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, runconfig.View(cfg, path))
 	case http.MethodPost:
+		if !ownPage(w, r, "the run config can be changed") {
+			return
+		}
 		var req struct {
 			Set map[string]interface{} `json:"set"`
 		}

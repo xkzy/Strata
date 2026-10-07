@@ -126,6 +126,42 @@ func TestWebUIRunConfig(t *testing.T) {
 	}
 }
 
+// A plain form post from any site (text/plain, form-urlencoded) must not change the run config or the shared settings:
+// only JSON, which a page elsewhere cannot send without a CORS preflight this server never grants.
+func TestStateChangingPostsNeedJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "strata-m.json")
+	if err := os.WriteFile(path, []byte(`{"exe":"e","args":["--x","1"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(NewStrataServer(ServerConfig{Port: 8080, ModelName: "m", MaxContext: 4096, ConfigFile: path}).Router())
+	defer ts.Close()
+	for _, c := range []struct{ path, body string }{
+		{"/config", `{"set":{"power_policy":"LOW_LATENCY"}}`},
+		{"/settings", `{"defaults":{"temperature":0.5}}`},
+	} {
+		for _, ctype := range []string{"text/plain", "application/x-www-form-urlencoded", ""} {
+			req, _ := http.NewRequest("POST", ts.URL+c.path, strings.NewReader(c.body))
+			if ctype != "" {
+				req.Header.Set("Content-Type", ctype)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusUnsupportedMediaType {
+				t.Errorf("POST %s as %q = %d, want 415", c.path, ctype, resp.StatusCode)
+			}
+		}
+	}
+	if raw, _ := os.ReadFile(path); strings.Contains(string(raw), "LOW_LATENCY") {
+		t.Error("a refused post changed the run config")
+	}
+	if _, got := getJSON(t, ts.URL+"/settings"); got["shared"] != false {
+		t.Errorf("a refused post changed the shared settings: %v", got)
+	}
+}
+
 func TestWebUIRunConfigMissing(t *testing.T) {
 	ts := httptest.NewServer(setupTestServer().Router())
 	defer ts.Close()

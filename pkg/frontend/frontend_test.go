@@ -80,3 +80,21 @@ func TestFrontendHandler_ServeIndexAndAssets(t *testing.T) {
 		t.Errorf("expected font/woff2, got %s", respFont.Header.Get("Content-Type"))
 	}
 }
+
+// The session id keys the conversation's server-side state (the math variables), so it must not be guessable.
+func TestAppJSSessionIDsUseTheCSPRNG(t *testing.T) {
+	data, err := embeddedWeb.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(data)
+	if strings.Contains(src, "Math.random") {
+		t.Error("app.js must not use Math.random (not a CSPRNG)")
+	}
+	if strings.Contains(src, "crypto.randomUUID") {
+		t.Error("crypto.randomUUID needs a secure context: a page on a plain-http LAN address would break")
+	}
+	if !strings.Contains(src, "crypto.getRandomValues(new Uint8Array(16))") || strings.Count(src, "randomId()") < 3 {
+		t.Error("app.js must make its session ids with randomId() (128 bits from crypto.getRandomValues)")
+	}
+}
