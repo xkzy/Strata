@@ -104,6 +104,7 @@ type Config struct {
 	Verification   bool
 	Identity       string // model + tokenizer + template identity (KV compatibility)
 	StartTimeout   time.Duration
+	DrainTimeout   time.Duration // how long a cancelled request may take to finish before the sidecar is killed (default 30s)
 }
 
 type Client struct {
@@ -124,6 +125,9 @@ type Client struct {
 func New(cfg Config) *Client {
 	if cfg.StartTimeout <= 0 {
 		cfg.StartTimeout = 30 * time.Second
+	}
+	if cfg.DrainTimeout <= 0 {
+		cfg.DrainTimeout = 30 * time.Second
 	}
 	return &Client{cfg: cfg}
 }
@@ -326,7 +330,7 @@ func (c *Client) Run(ctx context.Context, req Request, be Backend, sink func(tex
 			if !cancelSent {
 				cancelSent = true
 				_ = c.send(map[string]any{"op": "cancel", "id": id})
-				drainDeadline = time.After(30 * time.Second)
+				drainDeadline = time.After(c.cfg.DrainTimeout)
 			}
 		case <-drainDeadline:
 			c.abandon()
@@ -486,4 +490,6 @@ func (c *Client) abandon() {
 	if c.cmd != nil && c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()
 	}
+	// forget it right away: the exit is noticed asynchronously and the next request must not reuse a dying process
+	c.cmd, c.ready = nil, false
 }

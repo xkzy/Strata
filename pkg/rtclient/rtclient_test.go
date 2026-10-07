@@ -37,6 +37,9 @@ func fakeSidecar() {
 		case "config":
 			out(map[string]any{"op": "ready"})
 		case "request":
+			if os.Getenv("STRATA_FAKE_MODE") == "hang" {
+				continue // never answers, ignores cancel
+			}
 			id := m["id"].(float64)
 			out(map[string]any{"op": "emit", "id": id - 1, "text": "STALE"})
 			out(map[string]any{"op": "done", "id": id - 1, "finish": "stale"})
@@ -70,5 +73,32 @@ func TestRunIgnoresMessagesOfOtherRequests(t *testing.T) {
 		if d.Finish != "stop" {
 			t.Fatalf("run %d: finish %q came from another request", i, d.Finish)
 		}
+	}
+}
+
+func TestStuckCancelKillsSidecarAndNextRequestIsFresh(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Skip(err)
+	}
+	t.Setenv("STRATA_FAKE_RT", "1")
+	t.Setenv("STRATA_FAKE_MODE", "hang")
+	c := New(Config{Binary: exe, StartTimeout: 10 * time.Second, DrainTimeout: 200 * time.Millisecond})
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err = c.Run(ctx, Request{Messages: []Message{{Role: "user", Content: "hi"}}}, nil, nil)
+	ae, ok := err.(*APIError)
+	if !ok || ae.Status != 504 {
+		t.Fatalf("want a 504 after the drain timeout, got %v", err)
+	}
+	// the stuck sidecar is gone; the next request starts a fresh one (which now behaves)
+	t.Setenv("STRATA_FAKE_MODE", "")
+	var got strings.Builder
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel2()
+	d, err := c.Run(ctx2, Request{Messages: []Message{{Role: "user", Content: "hi"}}}, nil, func(s string) { got.WriteString(s) })
+	if err != nil || d.Finish != "stop" || got.String() != "OK" {
+		t.Fatalf("fresh sidecar: err=%v done=%+v text=%q", err, d, got.String())
 	}
 }
