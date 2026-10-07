@@ -329,6 +329,8 @@ InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, co
         double cur_temp = temp.current_temperature();
         samp.temperature = cur_temp;
         auto session = deps_.generator->start(ids, samp, request.scope.key());
+        // whatever happens below (an exception from a verifier, the sink or the prompt builder), the engine must not stay busy
+        struct SessionGuard { std::unique_ptr<IGenSession>& s; ~SessionGuard() { if (s) { try { s->cancel(); } catch (...) {} } } } session_guard{session};
         loop.reset();
 
         bool restart = false, ended = false;

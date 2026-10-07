@@ -329,12 +329,17 @@ func (c *Client) Run(ctx context.Context, req Request, be Backend, sink func(tex
 				drainDeadline = time.After(30 * time.Second)
 			}
 		case <-drainDeadline:
+			c.abandon()
 			return nil, &APIError{Status: 504, Type: "runtime_error", Msg: "the runtime did not finish after cancellation"}
 		case <-closed:
 			return nil, &APIError{Status: 502, Type: "runtime_error", Msg: "the runtime process ended unexpectedly"}
 		case m, ok := <-in:
 			if !ok {
 				return nil, &APIError{Status: 502, Type: "runtime_error", Msg: "the runtime process ended unexpectedly"}
+			}
+			// a message of an earlier request (one that was abandoned) must never reach this one
+			if mid, has := m["id"]; has && int64(asInt(mid)) != id {
+				continue
 			}
 			switch m["op"] {
 			case "emit":
@@ -470,5 +475,15 @@ func (c *Client) Close() {
 	if c.cmd != nil {
 		_ = c.send(map[string]any{"op": "quit"})
 		time.AfterFunc(2*time.Second, func() { _ = c.cmd.Process.Kill() })
+	}
+}
+
+// abandon kills a sidecar that is still working for a request nobody waits for; the next request starts a fresh one,
+// so nothing of the abandoned request (output, session state) can reach another caller.
+func (c *Client) abandon() {
+	c.procMu.Lock()
+	defer c.procMu.Unlock()
+	if c.cmd != nil && c.cmd.Process != nil {
+		_ = c.cmd.Process.Kill()
 	}
 }
