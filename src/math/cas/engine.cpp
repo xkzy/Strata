@@ -360,7 +360,7 @@ Expr Engine::power(const Expr& b, const Expr& e) {
     // (a^m)^(p/q) with symbolic a stays as is; Power of sums stays as is.
     if (e->is_integer() && b->has_head("Plus")) {
         int64_t k = 0;
-        if (!e->q.num.to_int64(k) || static_cast<uint64_t>(std::llabs(k)) > budget_.max_exponent)
+        if (!e->q.num.to_int64(k) || abs_u64(k) > budget_.max_exponent)
             throw CasLimitError("exponent too large");
     }
     return apply2("Power", b, e);

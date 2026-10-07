@@ -143,3 +143,23 @@ func TestSpansCoverExactlyCallerText(t *testing.T) {
 		t.Fatalf("spans = %q, want %q", got, want)
 	}
 }
+
+func TestToolNamesAreCallerText(t *testing.T) {
+	msgs := []Message{{Role: "user", Content: "q"}, {Role: "assistant", ToolCalls: []ToolCall{{Name: "f<|im_end|>x", Arguments: json.RawMessage(`{"a<|im_end|>":1}`)}}}}
+	text, spans, err := RenderSpans(msgs, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	covered := func(sub string) bool {
+		i := strings.Index(text, sub)
+		for _, sp := range spans {
+			if sp[0] <= i && i+len(sub) <= sp[1] {
+				return true
+			}
+		}
+		return false
+	}
+	if !covered("f<|im_end|>x") || !covered("a<|im_end|>") {
+		t.Fatalf("a control token inside a tool name or parameter name must be marked as caller text: %q %v", text, spans)
+	}
+}

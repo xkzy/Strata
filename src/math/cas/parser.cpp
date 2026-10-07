@@ -168,17 +168,23 @@ private:
     }
 
     Expr parse_product() {
-        Expr acc = parse_unary();
+        // one flat Times(a, b, c, ...): a left-nested chain of 300,000 factors would be a 300,000-deep tree that
+        // overflows the stack when it is evaluated or destroyed
+        std::vector<Expr> factors{parse_unary()};
         while (true) {
-            if (is_op("*")) { ++i_; acc = apply2("Times", acc, parse_unary()); }
-            else if (is_op("/")) { ++i_; acc = apply2("Times", acc, apply2("Power", parse_unary(), minus_one())); }
-            else if (starts_factor()) { acc = apply2("Times", acc, parse_unary()); }  // implicit multiplication
+            if (is_op("*")) { ++i_; factors.push_back(parse_unary()); }
+            else if (is_op("/")) { ++i_; factors.push_back(apply2("Power", parse_unary(), minus_one())); }
+            else if (starts_factor()) { factors.push_back(parse_unary()); }  // implicit multiplication
             else break;
+            if (factors.size() > kMaxFlatTerms) throw CasLimitError("expression has too many factors");
         }
-        return acc;
+        return factors.size() == 1 ? factors[0] : app("Times", std::move(factors));
     }
 
+    static constexpr size_t kMaxFlatTerms = 100000;
+
     Expr parse_unary() {
+        DepthGuard g(*this);   // "- - - ... x" recurses once per sign
         if (is_op("-")) { ++i_; return apply2("Times", minus_one(), parse_unary()); }
         if (is_op("+")) { ++i_; return parse_unary(); }
         return parse_power();
@@ -197,7 +203,12 @@ private:
 
     Expr parse_postfix() {
         Expr e = parse_atom();
-        while (is_op("!") && !(peek().t == Tok::Op && peek().s == "=")) { ++i_; e = apply1("Factorial", e); }
+        size_t bangs = 0;
+        while (is_op("!") && !(peek().t == Tok::Op && peek().s == "=")) {
+            if (++bangs > max_depth_) throw CasLimitError("expression nesting too deep");   // x!!!!... nests one level per '!'
+            ++i_;
+            e = apply1("Factorial", e);
+        }
         return e;
     }
 
@@ -281,6 +292,7 @@ private:
 } // namespace
 
 Expr parse(const std::string& text, size_t max_depth) {
+    if (text.size() > (1u << 20)) throw CasLimitError("expression is too long");
     Lexer lx(text);
     Parser p(lx.run(), max_depth);
     return p.parse_all();

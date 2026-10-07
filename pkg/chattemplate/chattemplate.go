@@ -189,11 +189,17 @@ func RenderSpans(messages []Message, opt Options) (string, [][2]int, error) {
 				// a missing (null) name is refused by the caller that builds the messages; an empty string renders as such
 				switch {
 				case j == 0 && content != "":
-					sb.WriteString("\n\n<tool_call>\n<function=" + tc.Name + ">\n")
+					sb.WriteString("\n\n<tool_call>\n<function=")
+					user(tc.Name)
+					sb.WriteString(">\n")
 				case j == 0:
-					sb.WriteString("<tool_call>\n<function=" + tc.Name + ">\n")
+					sb.WriteString("<tool_call>\n<function=")
+					user(tc.Name)
+					sb.WriteString(">\n")
 				default:
-					sb.WriteString("\n<tool_call>\n<function=" + tc.Name + ">\n")
+					sb.WriteString("\n<tool_call>\n<function=")
+					user(tc.Name)
+					sb.WriteString(">\n")
 				}
 				keys, vals, err := orderedObject(tc.Arguments)
 				if err != nil {

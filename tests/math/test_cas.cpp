@@ -131,6 +131,24 @@ static void test_limits_of_resources() {
     CHECK(ms < 3000.0, "all hostile inputs finish within 3 s (" + std::to_string(ms) + " ms)");
 }
 
+static void test_hostile_shapes_do_not_crash() {
+    std::printf("[Test] Pathological inputs are refused, not crashed on...\n");
+    CHECK(run(std::string(200000, '-') + "x").rfind("LIMIT", 0) == 0, "200,000 unary minus signs");
+    CHECK(run(std::string(200000, '+') + "x").rfind("LIMIT", 0) == 0, "200,000 unary plus signs");
+    CHECK(run("x" + std::string(200000, '!')).rfind("LIMIT", 0) == 0, "200,000 factorial marks");
+    std::string prod = "x";
+    for (int i = 0; i < 300000; ++i) prod += "*x";
+    CHECK(run(prod).rfind("LIMIT", 0) == 0, "300,000 factors");
+    CHECK(run(std::string(2000000, '1')).rfind("LIMIT", 0) == 0, "a 2 MB expression");
+    CHECK(run("(x+1)^(-9223372036854775808)").rfind("LIMIT", 0) == 0, "INT64_MIN exponent");
+    CHECK(run("(x+1)^9223372036854775807").rfind("LIMIT", 0) == 0, "INT64_MAX exponent");
+    CHECK(run("fibonacci(-9223372036854775808)").rfind("LIMIT", 0) == 0, "INT64_MIN Fibonacci index");
+    CHECK(run("nextprime(10,-9223372036854775808)") != "", "INT64_MIN prime step is refused");
+    std::string flat = "x";
+    for (int i = 0; i < 50000; ++i) flat += "*x";
+    CHECK(run(flat) == "x^50001", "a long but legitimate product still works");
+}
+
 static void test_derivative_vs_finite_difference() {
     std::printf("[CAS 4/12] D[f] against central finite differences on random expressions...\n");
     std::mt19937 rng(7);
@@ -529,6 +547,7 @@ int main() {
     test_bigint_and_rationals();
     test_evaluator();
     test_limits_of_resources();
+    test_hostile_shapes_do_not_crash();
     test_derivative_vs_finite_difference();
     test_factor_expand_roundtrip();
     test_solve();

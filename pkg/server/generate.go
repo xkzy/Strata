@@ -74,7 +74,8 @@ func (s *StrataServer) startGeneration(ctx context.Context, spec genSpec) (<-cha
 	var ids []int
 	startInReasoning := false
 	if spec.Raw {
-		ids = tok.Encode(spec.RawPrompt, true)
+		// a raw completion is plain text: control tokens (<|im_end|> ...) typed in it stay text, like any caller-supplied string
+		ids = tok.Encode(spec.RawPrompt, false)
 	} else {
 		text, plain, err := chattemplate.RenderSpans(spec.Messages, spec.Opt)
 		if err != nil {

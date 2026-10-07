@@ -127,7 +127,7 @@ bool Engine::rational_function(const Expr& e, const std::string& var, Poly& num_
     }
     if (e->name == "Power" && e->args.size() == 2 && e->args[1]->is_integer()) {
         int64_t k = 0;
-        if (!e->args[1]->q.num.to_int64(k) || static_cast<uint64_t>(std::llabs(k)) > budget_.max_exponent) throw CasLimitError("exponent too large");
+        if (!e->args[1]->q.num.to_int64(k) || abs_u64(k) > budget_.max_exponent) throw CasLimitError("exponent too large");
         Poly bn, bd;
         if (!rational_function(e->args[0], var, bn, bd)) return false;
         if (k >= 0) { num_p = poly_pow(bn, k, tk); den_p = poly_pow(bd, k, tk); }

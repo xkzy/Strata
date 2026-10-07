@@ -229,7 +229,7 @@ struct SeriesOps {
                 Ser bs = from_expr(b, N, x0);
                 if (p->is_integer()) {
                     int64_t k = 0;
-                    if (!p->q.num.to_int64(k) || std::llabs(k) > 100000) throw CasLimitError("exponent too large");
+                    if (!p->q.num.to_int64(k) || abs_u64(k) > 100000) throw CasLimitError("exponent too large");
                     return pow_int(bs, k, N);
                 }
                 if (p->is_number()) {

@@ -483,8 +483,8 @@ std::vector<Claim> ClaimDetector::scan(const std::string& text, size_t from, siz
         // ---- formal: number theory stated in words ("97 is prime", "the 20th Fibonacci number is 6765") ----
         {
             const std::string ls = lower(sentence);
-            if (ls.find("prime") != std::string::npos || ls.find("composite") != std::string::npos || ls.find("even") != std::string::npos ||
-                ls.find("odd") != std::string::npos || ls.find("fibonacci") != std::string::npos) {
+            if (sentence.size() <= 2000 && (ls.find("prime") != std::string::npos || ls.find("composite") != std::string::npos || ls.find("even") != std::string::npos ||
+                ls.find("odd") != std::string::npos || ls.find("fibonacci") != std::string::npos)) {   // std::regex recurses with input length: bounded
                 static const std::regex r_prime(R"((\d{1,40})\s+is\s+(not\s+)?(?:a\s+)?(prime|composite)\b)", std::regex::icase);
                 static const std::regex r_parity(R"((\d{1,40})\s+is\s+(not\s+)?(?:an?\s+)?(even|odd)\b)", std::regex::icase);
                 static const std::regex r_fib(R"((\d{1,6})(?:st|nd|rd|th)\s+fibonacci(?:\s+number)?\s+is\s+(\d{1,80}))", std::regex::icase);

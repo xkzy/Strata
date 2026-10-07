@@ -203,6 +203,9 @@ std::string ExpressionParser::format_compact_observation(const std::string& expr
 
 std::vector<ParsedCalculationIntent> ExpressionParser::detect_calculation_intents(const std::string& text) const {
     std::vector<ParsedCalculationIntent> results;
+    // std::regex matches recursively in the length of the input: a very long text overflows the stack. Prompts that
+    // ask for a calculation are short; a longer text is not scanned.
+    if (text.size() > 4096) return results;
 
     // Pattern 1: Explicit arithmetic calculation like "2384 * 7291" or "2,384 x 7,291"
     std::regex arith_regex(R"((?:calculate|eval|compute)?\s*([0-9]+(?:\.[0-9]+)?\s*[\+\-\*\/\^×÷]\s*[0-9]+(?:\.[0-9]+)?(?:\s*[\+\-\*\/\^×÷]\s*[0-9]+(?:\.[0-9]+)?)*))",

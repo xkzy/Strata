@@ -18,6 +18,9 @@
 
 namespace strata::math::cas {
 
+// |v| as an unsigned value, defined for INT64_MIN too (std::llabs is not).
+inline uint64_t abs_u64(int64_t v) { return v < 0 ? 0 - static_cast<uint64_t>(v) : static_cast<uint64_t>(v); }
+
 struct Budget {
     uint64_t max_steps = 4'000'000;     // evaluation steps
     size_t max_terms = 20'000;          // terms in one expanded sum

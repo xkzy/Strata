@@ -188,10 +188,10 @@ Expr Engine::number_theory(const std::string& head, const std::vector<Expr>& arg
     if (head == "NextPrime" && (args.size() == 1 || args.size() == 2) && get_int(args[0], n)) {
         int64_t steps = 1;
         if (args.size() == 2 && !get_i64(args[1], steps)) return nullptr;
-        if (steps == 0 || std::llabs(steps) > 1000) return nullptr;
+        if (steps == 0 || abs_u64(steps) > 1000) return nullptr;
         const int dir = steps > 0 ? 1 : -1;
         B cur = n;
-        for (int64_t s = 0; s < std::llabs(steps); ++s) {
+        for (uint64_t s = 0; s < abs_u64(steps); ++s) {
             for (int guard = 0;; ++guard) {
                 cur = cur + B(dir);
                 tk();
@@ -311,7 +311,7 @@ Expr Engine::number_theory(const std::string& head, const std::vector<Expr>& arg
         return integer(mm.is_one() ? result : 0);
     }
     if ((head == "Fibonacci" || head == "LucasL") && args.size() == 1 && get_i64(args[0], k)) {
-        const uint64_t a = static_cast<uint64_t>(std::llabs(k));
+        const uint64_t a = abs_u64(k);
         if (a > 400000) throw CasLimitError(head + ": index too large");
         B v;
         if (head == "Fibonacci") { v = fib_pair(a).first; if (k < 0 && a % 2 == 0) v = -v; }
