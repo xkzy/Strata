@@ -47,6 +47,7 @@ type ServerConfig struct {
 	RuntimeBinary string
 	WindowTokens  int    // physical context window the runtime fills (default 32768, at most the engine's context)
 	BindHost      string // address the HTTP server listens on; empty is treated as loopback
+	APIMonitor    bool   // keep the last requests' prompts and answers for the standalone Monitor page (opt-in)
 }
 
 type StrataServer struct {
@@ -71,6 +72,7 @@ type StrataServer struct {
 	eng             engineState
 	shared          sharedState
 	mon             requestMonitor
+	apiMon          apiMonitorState
 	cfgMu           sync.Mutex // one run-config write at a time
 	rt              rtState
 	server          *http.Server
@@ -140,10 +142,10 @@ func (s *StrataServer) Router() http.Handler {
 	mux := http.NewServeMux()
 
 	// OpenAI / Anthropic APIs
-	mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
-	mux.HandleFunc("/v1/completions", s.handleCompletions)
-	mux.HandleFunc("/v1/messages", s.handleAnthropicMessages)
-	mux.HandleFunc("/v1/responses", s.handleResponsesAPI)
+	mux.HandleFunc("/v1/chat/completions", s.recordAPI(s.handleChatCompletions))
+	mux.HandleFunc("/v1/completions", s.recordAPI(s.handleCompletions))
+	mux.HandleFunc("/v1/messages", s.recordAPI(s.handleAnthropicMessages))
+	mux.HandleFunc("/v1/responses", s.recordAPI(s.handleResponsesAPI))
 	mux.HandleFunc("/v1/models", s.handleModels)
 	mux.HandleFunc("/models", s.handleModels)
 
@@ -176,6 +178,11 @@ func (s *StrataServer) Router() http.Handler {
 	mux.HandleFunc("/config", s.handleRunConfig)
 	mux.HandleFunc("/settings", s.handleSettings)
 	mux.HandleFunc("/mcp", s.handleMcpStatus)
+
+	// The standalone Monitor page
+	mux.HandleFunc("/api/requests", s.handleAPIRequests)
+	mux.HandleFunc("/load", s.handleLoad)
+	mux.HandleFunc("/unload", s.handleUnload)
 
 	// Math Runtime Endpoints (#20)
 	mux.HandleFunc("/v1/strata/math/evaluate", s.handleMathEvaluate)
@@ -224,8 +231,12 @@ func (s *StrataServer) Router() http.Handler {
 // publicPath says whether a request needs no API key: the health probes, the web UI shell and the read-only setup
 // queries. Everything that changes state (setup configure / download / cancel, generation, config) needs the key.
 func publicPath(r *http.Request) bool {
+	// the page and its scripts, styles and fonts: a browser fetches them before the user can type a key
+	if strings.HasPrefix(r.URL.Path, "/web/") || strings.HasPrefix(r.URL.Path, "/fonts/") {
+		return r.Method == http.MethodGet
+	}
 	switch r.URL.Path {
-	case "/health", "/api/health", "/":
+	case "/health", "/api/health", "/", "/monitor", "/monitor.html", "/api-monitor", "/favicon.ico":
 		return true
 	case "/api/setup/hardware", "/api/setup/models", "/api/setup/status":
 		return r.Method == http.MethodGet
@@ -344,14 +355,6 @@ func (s *StrataServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	if out["loaded"] != true {
 		out["status"] = "degraded" // the server is up, the model is not
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (s *StrataServer) handleStatus(w http.ResponseWriter, r *http.Request) {
-	out := map[string]interface{}{"model": s.Config.ModelName, "max_context": s.Config.MaxContext, "busy": len(s.activeCancelIDs()) > 0}
-	for k, v := range s.engineStatus() {
-		out[k] = v
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -788,6 +791,13 @@ func (s *StrataServer) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *StrataServer) handleRoot(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/monitor", "/monitor.html", "/api-monitor", "/web/monitor.html", "/web/monitor.js":
+		if !s.apiMonitorOn() { // the standalone page exists only when the monitor is on (it keeps prompts and answers)
+			http.NotFound(w, r)
+			return
+		}
+	}
 	if s.Frontend != nil {
 		s.Frontend.ServeHTTP(w, r)
 		return
