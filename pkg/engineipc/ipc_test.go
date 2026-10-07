@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -297,4 +298,30 @@ func TestMissingBinaryAndMissingModel(t *testing.T) {
 		t.Fatalf("expected a no-model error, got %v", err)
 	}
 	_ = strconv.Itoa
+}
+
+// After Stop and Start, the old process's exit (and a late READY from it) must not be taken for the new process's:
+// /unload then /load answered "the engine process exited: signal: killed" about one time in fifteen.
+func TestStaleProcessDoesNotFailARestartedEngine(t *testing.T) {
+	old := exec.Command("true")
+	if err := old.Start(); err != nil {
+		t.Skip("no `true` binary:", err)
+	}
+	eo := NewEngineOrchestrator(EngineConfig{})
+	eo.mu.Lock()
+	eo.cmd = exec.Command("true") // the restarted engine's process, not the one that exits below
+	eo.state = StateStarting
+	eo.readyCh = make(chan struct{})
+	eo.mu.Unlock()
+
+	eo.watchProcess(old) // the old process exits after Start moved the state on
+	if st, why := eo.Status(); st != StateStarting {
+		t.Fatalf("a stale process's exit changed the state to %v (%s)", st, why)
+	}
+
+	// a late READY line from the old process's output
+	eo.readLoop(bufio.NewReader(strings.NewReader("READY 4096 stop\n")), make(chan string, 4), make(chan struct{}))
+	if st, _ := eo.Status(); st != StateStarting {
+		t.Fatalf("a stale process's READY made the engine %v", st)
+	}
 }
