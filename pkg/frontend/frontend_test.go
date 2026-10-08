@@ -117,3 +117,16 @@ func TestMonitorShowsTheUnloadedState(t *testing.T) {
 		t.Error("app.js must label the unloaded state")
 	}
 }
+
+func TestMonitorShowsLoadingAndErrorStates(t *testing.T) {
+	html, _ := embeddedWeb.ReadFile("web/index.html")
+	js, _ := embeddedWeb.ReadFile("web/app.js")
+	if !strings.Contains(string(html), `data-s="loading"`) {
+		t.Error(`index.html needs a state badge with data-s="loading"`)
+	}
+	for _, s := range []string{`live.state === "loading"`, `live.state === "error"`} {
+		if !strings.Contains(string(js), s) {
+			t.Errorf("app.js must label %s", s)
+		}
+	}
+}
