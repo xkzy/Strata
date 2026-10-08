@@ -278,6 +278,85 @@ void test_mask_isolation_with_negative_logits() {
     }
 }
 
+void test_large_sequence_tiled_prefill_parity() {
+    using namespace strata::kernels;
+
+    const size_t head_dim = 64;
+    const size_t seq_len = 256;
+
+    std::mt19937 rng(1337);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+
+    std::vector<float> q(seq_len * head_dim);
+    std::vector<float> k(seq_len * head_dim);
+    std::vector<float> v(seq_len * head_dim);
+    std::vector<float> out_tiled(seq_len * head_dim, 0.0f);
+    std::vector<float> out_ref(seq_len * head_dim, 0.0f);
+
+    for (size_t i = 0; i < seq_len * head_dim; ++i) {
+        q[i] = dist(rng);
+        k[i] = dist(rng);
+        v[i] = dist(rng);
+    }
+
+    const float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+    MathContext ctx;
+
+    // 1. Tiled FlashAttention-2 Prefill
+    FastAttention::flash_attention_prefill(
+        q.data(), k.data(), v.data(), out_tiled.data(),
+        seq_len, head_dim, scale, true, ctx
+    );
+
+    // 2. Reference sequential decode per row
+    for (size_t r = 0; r < seq_len; ++r) {
+        const float* q_r = q.data() + r * head_dim;
+        float* out_r = out_ref.data() + r * head_dim;
+        FastAttention::scaled_dot_product_decode(
+            q_r, k.data(), v.data(), out_r,
+            r + 1, head_dim, scale, nullptr, ctx
+        );
+    }
+
+    // Verify numerical parity across all 256 x 64 elements
+    for (size_t i = 0; i < seq_len * head_dim; ++i) {
+        float diff = std::abs(out_tiled[i] - out_ref[i]);
+        assert(diff < 1e-4f);
+    }
+}
+
+void test_mha_gqa_prefill() {
+    using namespace strata::kernels;
+
+    const size_t head_dim = 32;
+    const size_t seq_len = 64;
+    const size_t num_q_heads = 8;
+    const size_t num_kv_heads = 2; // GQA 4:1
+
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+
+    std::vector<float> q(seq_len * num_q_heads * head_dim);
+    std::vector<float> k(seq_len * num_kv_heads * head_dim);
+    std::vector<float> v(seq_len * num_kv_heads * head_dim);
+    std::vector<float> out(seq_len * num_q_heads * head_dim, 0.0f);
+
+    for (auto& x : q) x = dist(rng);
+    for (auto& x : k) x = dist(rng);
+    for (auto& x : v) x = dist(rng);
+
+    FastAttention::flash_attention_prefill_mha(
+        q.data(), k.data(), v.data(), out.data(),
+        seq_len, num_q_heads, num_kv_heads, head_dim,
+        1.0f / std::sqrt(static_cast<float>(head_dim)), true
+    );
+
+    // Ensure non-zero, finite outputs
+    for (float val : out) {
+        assert(!std::isnan(val) && !std::isinf(val));
+    }
+}
+
 int main() {
     std::cout << "Running Fast Attention unit tests..." << std::endl;
     test_basic_decode();
@@ -288,6 +367,8 @@ int main() {
     test_multi_head_decode();
     test_edge_cases();
     test_alias_and_prefill();
+    test_large_sequence_tiled_prefill_parity();
+    test_mha_gqa_prefill();
 
     std::cout << "test_fast_attention passed" << std::endl;
     return 0;

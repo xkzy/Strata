@@ -2,6 +2,7 @@
 #pragma once
 
 #include "strata/kernels/math_policy.hpp"
+#include "strata/kernels/fast_parallel.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -232,7 +233,7 @@ public:
     }
 
     // ------------------------------------------------------------------------
-    // Prefill Attention Reference Pipeline
+    // Prefill Attention: Tiled Online-Softmax FlashAttention-2 Engine
     // ------------------------------------------------------------------------
     static void flash_attention_prefill(
         const float* __restrict__ q,
@@ -246,17 +247,151 @@ public:
         const MathContext& ctx = MathContext()) {
         if (!q || !k || !v || !out || seq_len == 0 || head_dim == 0) return;
 
-        for (size_t i = 0; i < seq_len; ++i) {
-            const float* q_i = q + i * head_dim;
-            float* out_i = out + i * head_dim;
-            size_t active_keys = causal ? (i + 1) : seq_len;
+        // Block tiling configuration (tuning for L1/L2 cache locality)
+        constexpr size_t Br = 64; // Query block size
+        constexpr size_t Bc = 64; // Key/Value block size
 
-            scaled_dot_product_decode(
-                q_i, k, v, out_i,
-                active_keys, head_dim, scale, nullptr, ctx
-            );
+        const size_t num_q_blocks = (seq_len + Br - 1) / Br;
+        const size_t num_kv_blocks = (seq_len + Bc - 1) / Bc;
+
+        #pragma omp parallel for schedule(dynamic) if (num_q_blocks >= fast_parallel::kFlashPrefillMinQBlocks)
+        for (size_t q_blk = 0; q_blk < num_q_blocks; ++q_blk) {
+            const size_t r_start = q_blk * Br;
+            const size_t r_end = std::min(seq_len, r_start + Br);
+            const size_t current_br = r_end - r_start;
+
+            // Per-thread block state: running max, running sum-of-exp, running output accumulator
+            std::vector<float> m(current_br, -1e30f);
+            std::vector<float> l(current_br, 0.0f);
+            std::vector<float> acc(current_br * head_dim, 0.0f);
+            std::vector<float> tile_scores(Bc);
+
+            for (size_t kv_blk = 0; kv_blk < num_kv_blocks; ++kv_blk) {
+                const size_t c_start = kv_blk * Bc;
+                const size_t c_end = std::min(seq_len, c_start + Bc);
+
+                // Causal pruning: if lowest key pos in block > highest query pos in block, skip entirely
+                if (causal && c_start >= r_end) {
+                    break;
+                }
+
+                for (size_t r = r_start; r < r_end; ++r) {
+                    const size_t local_r = r - r_start;
+                    const float* q_row = q + r * head_dim;
+                    float* acc_row = acc.data() + local_r * head_dim;
+
+                    const size_t active_c_end = causal ? std::min(c_end, r + 1) : c_end;
+                    if (c_start >= active_c_end) continue;
+
+                    const size_t active_len = active_c_end - c_start;
+
+                    // 1. Compute QK dot products for this row and tile
+                    float tile_max = -1e30f;
+                    for (size_t c_idx = 0; c_idx < active_len; ++c_idx) {
+                        const size_t c = c_start + c_idx;
+                        const float* k_row = k + c * head_dim;
+                        float dot = dot_product(q_row, k_row, head_dim);
+                        float score = sanitize_logit(dot * scale, ctx);
+                        tile_scores[c_idx] = score;
+                        if (score > tile_max) tile_max = score;
+                    }
+
+                    // 2. Online softmax update
+                    float m_prev = m[local_r];
+                    float m_new = std::max(m_prev, tile_max);
+                    float alpha = std::exp(m_prev - m_new);
+
+                    // Rescale previous accumulator and sum-of-exp
+                    for (size_t d = 0; d < head_dim; ++d) {
+                        acc_row[d] *= alpha;
+                    }
+                    float l_new = l[local_r] * alpha;
+
+                    // 3. Accumulate new tile weights into output and sum
+                    for (size_t c_idx = 0; c_idx < active_len; ++c_idx) {
+                        const size_t c = c_start + c_idx;
+                        float p = std::exp(tile_scores[c_idx] - m_new);
+                        l_new += p;
+                        const float* v_row = v + c * head_dim;
+                        accumulate_weighted(acc_row, v_row, p, head_dim);
+                    }
+
+                    m[local_r] = m_new;
+                    l[local_r] = l_new;
+                }
+            }
+
+            // Final normalization and writeout to destination
+            for (size_t r = r_start; r < r_end; ++r) {
+                const size_t local_r = r - r_start;
+                const float* acc_row = acc.data() + local_r * head_dim;
+                float* out_row = out + r * head_dim;
+                const float inv_l = l[local_r] > 0.0f ? (1.0f / (l[local_r] + 1e-9f)) : 0.0f;
+
+                for (size_t d = 0; d < head_dim; ++d) {
+                    out_row[d] = acc_row[d] * inv_l;
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Multi-Head / Grouped-Query Attention (GQA) Prefill Attention
+    // ------------------------------------------------------------------------
+    static void flash_attention_prefill_mha(
+        const float* __restrict__ q,       // [seq_len, num_q_heads, head_dim]
+        const float* __restrict__ k,       // [seq_len, num_kv_heads, head_dim]
+        const float* __restrict__ v,       // [seq_len, num_kv_heads, head_dim]
+        float* __restrict__ out,           // [seq_len, num_q_heads, head_dim]
+        size_t seq_len,
+        size_t num_q_heads,
+        size_t num_kv_heads,
+        size_t head_dim,
+        float scale,
+        bool causal = true,
+        const MathContext& ctx = MathContext()) {
+        if (!q || !k || !v || !out || seq_len == 0 || head_dim == 0) return;
+
+        const size_t gqa_ratio = num_q_heads / (num_kv_heads > 0 ? num_kv_heads : 1);
+
+        #pragma omp parallel for collapse(2) schedule(dynamic) if (seq_len * seq_len * num_q_heads * head_dim >= fast_parallel::kPrefillMhaMinWork)
+        for (size_t h = 0; h < num_q_heads; ++h) {
+            for (size_t r = 0; r < seq_len; ++r) {
+                const size_t kv_h = (gqa_ratio > 0) ? (h / gqa_ratio) : 0;
+                const float* q_row = q + (r * num_q_heads + h) * head_dim;
+                float* out_row = out + (r * num_q_heads + h) * head_dim;
+
+                const size_t active_keys = causal ? (r + 1) : seq_len;
+
+                // Fast decode for current row with strided KV access
+                std::vector<float> scores(active_keys);
+                float max_score = -1e30f;
+
+                for (size_t s = 0; s < active_keys; ++s) {
+                    const float* k_row = k + (s * num_kv_heads + kv_h) * head_dim;
+                    float dot = dot_product(q_row, k_row, head_dim);
+                    float score = sanitize_logit(dot * scale, ctx);
+                    scores[s] = score;
+                    if (score > max_score) max_score = score;
+                }
+
+                float sum_exp = 0.0f;
+                for (size_t s = 0; s < active_keys; ++s) {
+                    scores[s] = std::exp(scores[s] - max_score);
+                    sum_exp += scores[s];
+                }
+                const float inv_sum = sum_exp > 0.0f ? (1.0f / (sum_exp + 1e-9f)) : 0.0f;
+
+                std::fill(out_row, out_row + head_dim, 0.0f);
+                for (size_t s = 0; s < active_keys; ++s) {
+                    const float weight = scores[s] * inv_sum;
+                    const float* v_row = v + (s * num_kv_heads + kv_h) * head_dim;
+                    accumulate_weighted(out_row, v_row, weight, head_dim);
+                }
+            }
         }
     }
 };
 
 } // namespace strata::kernels
+

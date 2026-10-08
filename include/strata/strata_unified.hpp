@@ -13,11 +13,17 @@
 #include "strata/generation/generation_loop_detector.hpp"
 #include "strata/guard/anti_loop_manager.hpp"
 #include "strata/kernels/fast_activations.hpp"
+#include "strata/kernels/fast_attention.hpp"
 #include "strata/kernels/fast_matmul.hpp"
+#include "strata/kernels/fast_moe.hpp"
 #include "strata/kernels/fast_norm.hpp"
 #include "strata/kernels/fast_quant.hpp"
 #include "strata/kernels/fast_rope.hpp"
 #include "strata/kernels/fast_softmax.hpp"
+#include "strata/kernels/kernel_dispatcher.hpp"
+#include "strata/kernels/math_policy.hpp"
+#include "strata/logic_verification/logic_verification_runtime.hpp"
+#include "strata/math/math_runtime.hpp"
 #include "strata/models/model_adapter.hpp"
 #include "strata/runtime/device.hpp"
 #include "strata/runtime/memory.hpp"
@@ -53,6 +59,8 @@ public:
     runtime::GenericMoERuntime& model_runtime() { return *model_runtime_; }
     context::VirtualContextManager& context_runtime() { return *vctx_; }
     tools::ToolRuntime& tool_runtime() { return *tool_runtime_; }
+    math::MathRuntime& math_runtime() { return *math_runtime_; }
+    logic::LogicVerificationRuntime& logic_verifier() { return *logic_verifier_; }
     runtime::HardwareTopology& topology() { return runtime::HardwareTopology::instance(); }
 
     // End-to-end interactive inference query
@@ -68,6 +76,8 @@ private:
     std::unique_ptr<runtime::GenericMoERuntime> model_runtime_;
     std::shared_ptr<context::VirtualContextManager> vctx_;
     std::unique_ptr<tools::ToolRuntime> tool_runtime_;
+    std::shared_ptr<math::MathRuntime> math_runtime_;
+    std::unique_ptr<logic::LogicVerificationRuntime> logic_verifier_;
 };
 
 } // namespace strata

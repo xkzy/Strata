@@ -19,16 +19,24 @@ bool StrataUnifiedRuntime::initialize(std::string& err) {
         // 2. Initialize Tool Runtime (connected to Virtual Context)
         tool_runtime_ = std::make_unique<tools::ToolRuntime>(vctx_);
 
-        // 3. Initialize Model Runtime
-        runtime::RuntimeOptions model_opts;
-        model_opts.model_path = options_.model_path;
-        model_opts.architecture = options_.architecture;
-        model_opts.max_context = options_.physical_context_limit;
-        model_opts.enable_heterogeneous = options_.enable_heterogeneous_scheduler;
+        // 3. Initialize Math Runtime (connected to Virtual Context)
+        math_runtime_ = std::make_shared<math::MathRuntime>(vctx_);
 
-        model_runtime_ = std::make_unique<runtime::GenericMoERuntime>(model_opts);
-        if (!model_runtime_->initialize(err)) {
-            return false;
+        // 4. Initialize Deterministic Logic Verification Runtime
+        logic_verifier_ = std::make_unique<logic::LogicVerificationRuntime>(vctx_, math_runtime_);
+
+        // 5. Initialize Model Runtime (if model path provided)
+        if (!options_.model_path.empty()) {
+            runtime::RuntimeOptions model_opts;
+            model_opts.model_path = options_.model_path;
+            model_opts.architecture = options_.architecture;
+            model_opts.max_context = options_.physical_context_limit;
+            model_opts.enable_heterogeneous = options_.enable_heterogeneous_scheduler;
+
+            model_runtime_ = std::make_unique<runtime::GenericMoERuntime>(model_opts);
+            if (!model_runtime_->initialize(err)) {
+                return false;
+            }
         }
 
         initialized_ = true;
@@ -63,6 +71,14 @@ std::string StrataUnifiedRuntime::print_full_system_status() const {
 
     if (tool_runtime_) {
         ss << tool_runtime_->print_diagnostics() << "\n";
+    }
+
+    if (math_runtime_) {
+        ss << math_runtime_->print_diagnostics() << "\n";
+    }
+
+    if (logic_verifier_) {
+        ss << logic_verifier_->print_diagnostics() << "\n";
     }
 
     ss << "######################################################################\n";
