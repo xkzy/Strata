@@ -1291,7 +1291,7 @@ Strata itself: [MIT](../LICENSE). The model files are not part of it; their lice
 - Ideas from [Splash](https://github.com/incoai/splash), [ninfer](https://github.com/Neroued/ninfer) and
   [HyperQwen](https://github.com/syv-ai/HyperQwen); references in the paper.
 - The web app's font: [Outfit](https://github.com/Outfitio/Outfit-Fonts) (SIL Open Font License 1.1, see
-  `serve/web/fonts/OFL.txt`). Its Monitor tab started from @code-martin's dashboard idea (PR #22).
+  `pkg/frontend/web/fonts/OFL.txt`). Its Monitor tab started from @code-martin's dashboard idea (PR #22).
 - The experimental speed projection's vector (`data/experimental-speed-projection/`): Qwen Community License 1.0,
   made from the model's activations (see its README).
 
