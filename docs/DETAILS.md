@@ -745,6 +745,48 @@ slots and the RAM budget, how many were parked, restored and evicted, and the la
 log), and for every setup how many prompt tokens the cache gave back - in the last request and since the start.
 `/metrics` has the same under `"conversation_cache"`.
 
+**What a chat switch costs (measured KV events).** The engine prints one `KVEV v1 <park|restore|checkpoint>
+tier=... tokens=0-N bytes=... ms=...` line (park and restore also `parked=... parked_bytes=...`) on stderr for each cache event. The server keeps the last 256 in a ledger
+and `/metrics` shows, under `conversation_cache`: `ledger` (parks, restores, checkpoints, the last event) and, on each
+request, `restore_ms` (measured: the restore events between the request's start and its first token), `prefill_ms`
+(estimate: the time to the first token minus the restore, so it includes the fixed first-token time) and `saved_ms`
+(estimate: the reused tokens priced at the highest time-per-token among the listed requests that read their prompt
+from scratch; `null` when there is none). A value that cannot be known is `null`, not 0. When the monitor has no reused
+count for a request, the restore event's token count is used. The Monitor's Conversation cache card shows them.
+The runtime's `virtual_kv` metrics (the page table) say `"source": "modeled"`: their sizes and costs are estimates, not
+these measurements.
+
+Measured once with `tools/parking_test.py` (conversation A of 3,682 tokens, then B, then A's follow-up), on an
+RTX 4060 8 GB, 30 GB RAM, the Coder IQ1_M pack, `--conversation-cache-mib 8192 --conversation-cache-slots 4`, engine
+built from this tree. Single run:
+
+| Event | Tokens | Bytes | Time |
+|---|---|---|---|
+| Checkpoint (end of A's prompt) | 3,675 | 113 MiB | 35.0 ms |
+| Park A (B arrives) | 3,778 | 258 MiB | 67.6 ms |
+| Restore A (live) | 3,778 | 258 MiB | 34.9 ms |
+| Park A again (retained K/V reused) | 3,911 | 323 MiB | 60.3 ms |
+| Restore B's checkpoint | 266 | 229 MiB | 23.8 ms |
+
+Through the server (`/metrics`, five alternating requests A, B, A, B, A of about 3,000 and 1,500 tokens, same machine
+and engine flags, one run): the two first reads took 4,155 ms for 1,552 tokens and 7,593 ms for 3,060 tokens (about
+2.5 ms a token); the three requests that came back from the cache restored in 21.5 to 25.4 ms and reached their
+first token in 704 to 731 ms. Before `saved_ms` priced tokens at that cold-read rate it used the restored request's
+own time and reported 140 s "saved" on a 0.7 s request; this run found it.
+
+The same five requests with longer prompts (about 6,000 tokens each, same machine and flags, one run): the two first
+reads took 11,291 ms for 5,652 tokens and 11,549 ms for 6,060 tokens (about 2.0 ms a token, so the price per token did
+not rise with the length in this range); the three that came back from the cache restored in 25 to 34 ms and reached
+their first token in 665 to 720 ms. `saved_ms` for them was 11.3 to 12.1 s, in line with the 11.5 s a cold read of a
+6,060-token prompt took. With the engine reporting `parked=<n> parked_bytes=<n>` on its park and restore lines, the card
+shows the parked conversations and their memory (2 conversations, 791 MB here), and the restored token count fills the
+reuse figures the monitor does not record.
+
+A's follow-up decoded the same 107 tokens whether A was live or parked. Not measured: more than one run, a
+conversation larger than 8,000 tokens (the engine's resident window here is 8,192), a long chat past 16K tokens, NVMe
+session files, concurrent requests, a layer split, and the Monitor card with the newly filled parked and reuse figures
+(it was checked in a browser with the earlier cost rows only).
+
 Snapshots contain running state, checkpoints, used K/V pages, and draft-layer K/V.
 They add host RAM, not another model or VRAM allocation. The byte budget also counts
 an incoming snapshot during a switch. After a restore, unchanged K/V pages can be

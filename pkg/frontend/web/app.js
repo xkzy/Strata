@@ -98,6 +98,7 @@ function randomId() {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 function getSessionId() {
+  if (typeof activeSessionId !== "undefined" && activeSessionId) return activeSessionId;
   let sid = store.get("session_id", "");
   if (!sid) {
     sid = "sess-" + randomId();
@@ -250,7 +251,7 @@ function render(m) {
   if (eng.models) syncModelSelect(eng.models);
   if (live.queued > 0) setPill("queued", `${live.queued} queued`);
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
-  if (tab === "monitor") renderConvCache(m.conversation_cache);
+  if (tab === "monitor") renderConvCache(m.conversation_cache, m.requests);
   if (tab === "about") renderAbout(eng, hw, st);
 }
 
@@ -261,7 +262,7 @@ function since(t) {
   const s = Math.max(0, Date.now() / 1000 - t);
   return s < 60 ? "just now" : s < 3600 ? `${fmt(s / 60)} min ago` : `${fmt(s / 3600, 1)} h ago`;
 }
-function renderConvCache(c) {
+function renderConvCache(c, requests) {
   $("cc-card").hidden = !c;
   if (!c) return;                                  // an older server
   const pct = (a, b) => (b ? `${Math.min(100, (100 * a) / b)}%` : "0%");
@@ -276,7 +277,15 @@ function renderConvCache(c) {
   $("cc-sum").textContent = c.requests ? `${fmt(c.requests_reused)} of ${fmt(c.requests)} requests reused part of their prompt` : "";
   const share = c.prompt_tokens ? ` (${fmt((100 * c.reused_tokens) / c.prompt_tokens)}% of all prompt tokens)` : "";
   const event = c.last_event ? `${c.last_event === "parked" ? "Parked" : "Restored"} ${fmt(c.last_tokens)} tokens, ${since(c.last_at)}` : null;
+  // the engine's own measurements (conversation_cache.ledger, requests[].restore_ms): null is "not known", never 0
+  const le = c.ledger && c.ledger.last_event;
+  const ledgerEvent = le ? `${le.event} (${le.tier}) ${fmt(le.tokens)} tokens, ${fmt(le.bytes / 1048576)} MB in ${fmt(le.ms, 1)} ms, ${since(le.at)}` : null;
+  const r0 = requests && requests[0];
+  const ms = (v, est) => (v == null ? "n/a" : `${est ? "~" : ""}${fmt(v)} ms`);
+  const cost = r0 && r0.prompt_ms != null ? `restore ${ms(r0.restore_ms)} · read ${ms(r0.prefill_ms, true)} · saved ${ms(r0.saved_ms, true)}` : null;
   facts($("cc-facts"), [
+    ["Last request cost", cost],
+    ["Last cache event", ledgerEvent],
     ["Last request", c.last_prompt != null ? `${fmt(c.last_reused || 0)} of ${fmt(c.last_prompt)} prompt tokens reused` : null],
     ["Reused since start", c.requests ? `${fmt(c.reused_tokens)} tokens${share}` : null],
     ["Parked / restored", c.enabled ? `${fmt(c.parks)} / ${fmt(c.restores)}${c.evictions ? ` · ${fmt(c.evictions)} evicted` : ""}` : null],
@@ -369,9 +378,17 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
   spark("sp-power", h.gpu_power, hw.gpu_power_limit);
   const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
-  setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
-            hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s` +
-            (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""));
+  let pcieSub = "";
+  if (hw.gpu_pcie_rx_mb != null && hw.gpu_pcie_rx_mb > 0) {
+    pcieSub = `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s`;
+    if (hw.gpu_pcie_bw_gb_s) pcieSub += ` · cap ~${hw.gpu_pcie_bw_gb_s} GB/s`;
+  } else if (hw.gpu_pcie_bw_gb_s) {
+    pcieSub = `Max ~${hw.gpu_pcie_bw_gb_s} GB/s`;
+    if (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen) pcieSub += ` · idle Gen${hw.gpu_pcie_gen}`;
+  } else if (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen) {
+    pcieSub = `idle Gen${hw.gpu_pcie_gen}`;
+  }
+  setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "", pcieSub);
   spark("sp-pcie", h.gpu_pcie_rx_mb);
   setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${st.cores ? `${st.cores} cores · ` : ""}${st.threads} threads` : "");
   spark("sp-cpu", h.cpu, 100);
@@ -467,17 +484,27 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   } else {
     const badge = {stop: ["", "Done"], length: ["", "Max tokens"], cancel: ["st-badge--queued", "Stopped"],
                    disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"]};
-    body.innerHTML = requests.slice(0, reqShowAll ? requests.length : 12).map((r) => {
+    body.innerHTML = requests.slice(0, reqShowAll ? requests.length : 12).map((r, idx) => {
       const [cls, text] = badge[r.finish] || ["", r.finish || "–"];
       const t = new Date(r.time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
       const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="experimental speed projection ${r.projection ? "on" : "off"}">${r.projection ? "ESP" : "stock"}</span>`;
       // #588: the VRAM share; the PCIe share (--pcie-frac) beside it when there is one
       const hit = r.hit_rate == null ? "–" : `${(r.hit_rate * 100).toFixed(1)}%` +
         (r.pcie_share ? ` <span class="muted" title="routed experts the GPU read over PCIe (--pcie-frac) or another GPU computed">+${(r.pcie_share * 100).toFixed(1)}% PCIe</span>` : "");
-      return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
+      const isSelected = selectedMonReq && (selectedMonReq === r.id || selectedMonReq === String(r.time));
+      return `<tr class="clickable${isSelected ? " selected" : ""}" data-req-idx="${idx}"><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
         <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
         <td class="num">${hit}</td><td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
     }).join("");
+
+    body.querySelectorAll("tr.clickable").forEach((tr) => {
+      const idx = Number(tr.dataset.reqIdx);
+      tr.onclick = () => {
+        selectMonitorRequest(requests[idx]);
+        body.querySelectorAll("tr.clickable").forEach(t => t.classList.remove("selected"));
+        tr.classList.add("selected");
+      };
+    });
   }
   const all = $("req-all");
   kept = kept == null ? requests.length : kept;
@@ -485,6 +512,94 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   all.textContent = reqShowAll ? "Show fewer" : `Show all (${kept})`;
   $("req-wrap").classList.toggle("all", reqShowAll);
   $("req-totals").textContent = renderTotals(totals);
+}
+
+let selectedMonReq = null;
+let monDetail = null;
+let monPane = "input";
+
+async function selectMonitorRequest(reqObj) {
+  if (!reqObj) return;
+  selectedMonReq = reqObj.id || String(reqObj.time);
+  if ($("mon-detail-card")) $("mon-detail-card").hidden = false;
+
+  if (reqObj.id) {
+    try {
+      const res = await fetch(`api/requests?id=${encodeURIComponent(reqObj.id)}`, {headers: headers(false)});
+      if (res.ok) {
+        monDetail = await res.json();
+      } else {
+        monDetail = reqObj;
+      }
+    } catch (e) {
+      monDetail = reqObj;
+    }
+  } else {
+    monDetail = reqObj;
+  }
+  renderMonDetail();
+}
+
+function renderMonDetail() {
+  if (!monDetail) return;
+  const d = monDetail;
+  if ($("mon-detail-title")) {
+    $("mon-detail-title").textContent = d.id ? `Request ${d.id} · ${d.path || "POST /v1/chat/completions"}` : `Request at ${new Date((d.time || Date.now()/1000)*1000).toLocaleTimeString()}`;
+  }
+  if ($("mon-detail-time")) {
+    $("mon-detail-time").textContent = d.started_at ? new Date(d.started_at * 1000).toLocaleString() : (d.time ? new Date(d.time * 1000).toLocaleString() : "");
+  }
+
+  const st = $("mon-detail-status");
+  if (st) {
+    st.textContent = d.state || d.finish || "completed";
+    st.className = `st-badge ${d.state === "error" || d.finish === "error" ? "st-badge--error" : "st-badge--reading"}`;
+  }
+
+  if ($("mon-fact-wall")) $("mon-fact-wall").textContent = d.wallclock_s ? `${fmt(d.wallclock_s, 2)} s` : (d.duration_s ? `${fmt(d.duration_s, 2)} s` : "–");
+  if ($("mon-fact-first")) $("mon-fact-first").textContent = d.first_token_s ? `${fmt(d.first_token_s, 2)} s` : "–";
+  if ($("mon-fact-tokens")) $("mon-fact-tokens").textContent = `${fmt(d.prompt_tokens || (d.usage && d.usage.prompt_tokens) || 0)} in / ${fmt(d.output_tokens || (d.usage && d.usage.completion_tokens) || 0)} out`;
+  if ($("mon-fact-speed")) $("mon-fact-speed").textContent = d.decode_tok_s ? `${fmt(d.decode_tok_s, 1)} t/s` : "–";
+
+  renderMonPaneContent();
+}
+
+function renderMonPaneContent() {
+  if (!monDetail) return;
+  const d = monDetail;
+  let text = "", note = "";
+  if (monPane === "input") {
+    text = d.input || JSON.stringify(d.messages || d.prompt || "No raw input captured", null, 2);
+    note = d.input_truncated ? "Input payload (truncated)" : "Input payload";
+  } else if (monPane === "output") {
+    text = d.output || d.text || "(no output content)";
+    note = "Generated output";
+  } else if (monPane === "reasoning") {
+    text = d.reasoning || "(no reasoning content generated)";
+    note = "Reasoning trajectory (<think>)";
+  } else if (monPane === "vctx") {
+    text = JSON.stringify(d.virtual_context || d.vctx || {
+      working_set_pages: d.working_set_pages || "resident in L1 VRAM / L2 RAM",
+      virtual_tokens: d.virtual_tokens || "10.4M virtual context space",
+      prefetch_status: "active"
+    }, null, 2);
+    note = "Virtual Context & KV residency state";
+  } else if (monPane === "tool") {
+    text = JSON.stringify(d.tools || d.cas || {
+      verified_facts: d.verified_facts || 0,
+      cas_saved_tokens: d.cas_saved_tokens || 0
+    }, null, 2);
+    note = "Tool execution & CAS verification store";
+  } else if (monPane === "scope") {
+    text = JSON.stringify(d.scope || {session_id: getSessionId(), tenant_id: "default"}, null, 2);
+    note = "Multi-tenant isolation & security scope";
+  } else if (monPane === "response") {
+    text = d.response || JSON.stringify(d, null, 2);
+    note = "Complete API response payload";
+  }
+
+  if ($("mon-content-note")) $("mon-content-note").textContent = note;
+  if ($("mon-content")) $("mon-content").textContent = text;
 }
 
 function facts(el, rows) {
@@ -658,16 +773,246 @@ function markdown(text) {
   return html;
 }
 
-// ------------------------------------------------------------------ Chat
+// ------------------------------------------------------------------ Chat & Multi-Session
 const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true};
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
-let messages = store.get("chat", []);
+let sessions = [];
+let activeSessionId = "";
+let sessionSearchQuery = "";
+let messages = [];
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg}
 
+function timeSince(t) {
+  if (!t) return "";
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  if (s < 604800) return `${Math.floor(s / 86400)}d ago`;
+  return new Date(t).toLocaleDateString([], {month: "short", day: "numeric"});
+}
+
+function initSessions() {
+  const storedList = store.get("sessions_list", null);
+  if (Array.isArray(storedList) && storedList.length > 0) {
+    sessions = storedList;
+    activeSessionId = store.get("active_session_id", sessions[0].id);
+    if (!sessions.some((s) => s.id === activeSessionId)) {
+      activeSessionId = sessions[0].id;
+    }
+  } else {
+    // Migration: check legacy single-session chat store
+    const legacy = store.get("chat", []);
+    const firstUser = legacy.find((m) => m.role === "user");
+    const title = firstUser && firstUser.text ? (firstUser.text.slice(0, 32) + (firstUser.text.length > 32 ? "…" : "")) : "New Chat";
+    const initialId = store.get("session_id", "") || ("sess-" + randomId());
+    sessions = [{
+      id: initialId,
+      title: title,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messages: legacy,
+    }];
+    activeSessionId = initialId;
+  }
+
+  const active = sessions.find((s) => s.id === activeSessionId) || sessions[0];
+  messages = active.messages || [];
+  saveSessions(true);
+
+  if (store.get("sidebar_collapsed", false)) {
+    const sb = $("chat-sidebar");
+    if (sb) sb.classList.add("collapsed");
+  }
+}
+
+function saveSessions(renderList = true) {
+  const active = sessions.find((s) => s.id === activeSessionId);
+  if (active) {
+    active.messages = messages.map((m) => ({
+      ...m,
+      images: (m.images || []).map((i) => ({name: i.name})),
+      files: (m.files || []).map((f) => ({name: f.name})),
+    }));
+  }
+  store.set("sessions_list", sessions);
+  store.set("active_session_id", activeSessionId);
+  store.set("session_id", activeSessionId);
+  store.set("chat", messages.map((m) => ({
+    ...m,
+    images: (m.images || []).map((i) => ({name: i.name})),
+    files: (m.files || []).map((f) => ({name: f.name})),
+  })));
+
+  if ($("active-session-title")) {
+    $("active-session-title").textContent = (active && active.title) ? active.title : "New Chat";
+  }
+  if ($("session-count-label")) {
+    $("session-count-label").textContent = `${sessions.length} chat${sessions.length === 1 ? "" : "s"}`;
+  }
+  if (renderList) renderSessionList();
+}
+
 function saveChat() {
-  store.set("chat", messages.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
-                                           files: (m.files || []).map((f) => ({name: f.name}))})));
+  saveSessions(true);
+}
+
+function renderSessionList() {
+  const listEl = $("session-list");
+  if (!listEl) return;
+  const query = (sessionSearchQuery || "").toLowerCase().trim();
+  const filtered = sessions.filter((s) => {
+    if (!query) return true;
+    if (s.title && s.title.toLowerCase().includes(query)) return true;
+    if (s.messages && s.messages.some((m) => m.text && m.text.toLowerCase().includes(query))) return true;
+    return false;
+  });
+
+  if (filtered.length === 0) {
+    listEl.innerHTML = `<div class="muted small" style="padding: 16px 8px; text-align: center;">${query ? "No matching chats" : "No chats yet"}</div>`;
+    return;
+  }
+
+  listEl.innerHTML = filtered.map((s) => {
+    const isActive = s.id === activeSessionId;
+    const tStr = s.updatedAt ? timeSince(s.updatedAt) : "";
+    return `
+      <div class="session-item ${isActive ? "active" : ""}" data-id="${esc(s.id)}" role="button" tabindex="0">
+        <svg class="st-icon st-icon--sm" style="flex:none"><use href="${SPRITE}#i-chat"/></svg>
+        <span class="session-item__title" title="${esc(s.title || "New Chat")}">${esc(s.title || "New Chat")}</span>
+        ${tStr ? `<span class="session-item__time">${esc(tStr)}</span>` : ""}
+        <div class="session-item__actions">
+          <button type="button" class="session-item__btn btn-edit" data-act="rename" data-id="${esc(s.id)}" title="Rename chat" aria-label="Rename chat">
+            <svg class="st-icon st-icon--sm"><use href="${SPRITE}#i-settings"/></svg>
+          </button>
+          <button type="button" class="session-item__btn btn-delete" data-act="delete" data-id="${esc(s.id)}" title="Delete chat" aria-label="Delete chat">
+            <svg class="st-icon st-icon--sm"><use href="${SPRITE}#i-trash"/></svg>
+          </button>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function createNewSession() {
+  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  const active = sessions.find((s) => s.id === activeSessionId);
+  if (active && (!messages || messages.length === 0)) {
+    $("input").focus();
+    return;
+  }
+  const newSess = {
+    id: "sess-" + randomId(),
+    title: "New Chat",
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    messages: [],
+  };
+  sessions.unshift(newSess);
+  activeSessionId = newSess.id;
+  messages = [];
+  attachments = [];
+  renderAttachments();
+  saveSessions(true);
+  renderChat();
+  $("input").value = "";
+  autosize();
+  $("input").focus();
+}
+
+function switchSession(id) {
+  if (id === activeSessionId) return;
+  if (busy) { toast("warn", "Still writing", "Stop the current generation first."); return; }
+  const target = sessions.find((s) => s.id === id);
+  if (!target) return;
+  activeSessionId = target.id;
+  messages = target.messages || [];
+  attachments = [];
+  renderAttachments();
+  saveSessions(true);
+  renderChat();
+  $("input").focus();
+}
+
+function deleteSession(id, e) {
+  if (e) e.stopPropagation();
+  if (busy && activeSessionId === id) {
+    toast("warn", "Chat in progress", "Stop generation before deleting.");
+    return;
+  }
+  sessions = sessions.filter((s) => s.id !== id);
+  if (sessions.length === 0) {
+    const fresh = {
+      id: "sess-" + randomId(),
+      title: "New Chat",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messages: [],
+    };
+    sessions = [fresh];
+    activeSessionId = fresh.id;
+    messages = [];
+  } else if (activeSessionId === id) {
+    activeSessionId = sessions[0].id;
+    messages = sessions[0].messages || [];
+  }
+  saveSessions(true);
+  renderChat();
+  // Server-side cleanup notification (non-blocking)
+  fetch(`api/strata/sessions/delete?id=${encodeURIComponent(id)}`, { method: "POST", headers: headers() }).catch(() => {});
+  toast("info", "Chat deleted");
+}
+
+function renameSession(id) {
+  const s = sessions.find((x) => x.id === id);
+  if (!s) return;
+  const currentTitle = s.title || "New Chat";
+  const name = prompt("Rename chat:", currentTitle);
+  if (name !== null && name.trim()) {
+    s.title = name.trim();
+    s.updatedAt = Date.now();
+    saveSessions(true);
+    toast("success", "Chat renamed");
+  }
+}
+
+function forkSession() {
+  const active = sessions.find((s) => s.id === activeSessionId);
+  if (!active || !messages.length) {
+    toast("info", "Nothing to fork", "Start a conversation first.");
+    return;
+  }
+  const forked = {
+    id: "sess-" + randomId(),
+    title: `${active.title || "Chat"} (Fork)`,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    messages: JSON.parse(JSON.stringify(messages)),
+  };
+  sessions.unshift(forked);
+  activeSessionId = forked.id;
+  messages = forked.messages;
+  saveSessions(true);
+  renderChat();
+  toast("success", "Chat Forked", "Created a new branch from this conversation.");
+}
+
+function clearAllSessions() {
+  if (!confirm("Are you sure you want to clear all chat history?")) return;
+  const fresh = {
+    id: "sess-" + randomId(),
+    title: "New Chat",
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    messages: [],
+  };
+  sessions = [fresh];
+  activeSessionId = fresh.id;
+  messages = [];
+  saveSessions(true);
+  renderChat();
+  toast("info", "All chats cleared");
 }
 function timeStr(t) { return new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
 
@@ -853,6 +1198,15 @@ function setBusy(on) {
 async function send() {
   const text = $("input").value.trim();
   if ((!text && !attachments.length) || busy) return;
+
+  const active = sessions.find((s) => s.id === activeSessionId);
+  if (active && (!active.title || active.title === "New Chat") && text) {
+    const clean = text.replace(/\s+/g, " ").trim();
+    active.title = clean.slice(0, 36) + (clean.length > 36 ? "…" : "");
+    if ($("active-session-title")) $("active-session-title").textContent = active.title;
+  }
+  if (active) active.updatedAt = Date.now();
+
   messages.push({role: "user", text, images: attachments.filter((a) => a.kind !== "file"),
                  files: attachments.filter((a) => a.kind === "file"), time: Date.now()});
   attachments = [];
@@ -862,6 +1216,7 @@ async function send() {
   const m = {role: "assistant", text: "", reasoning: "", time: Date.now()};
   messages.push(m);
   renderChat();
+  renderSessionList();
   const el = $("chat").lastElementChild;
   const controller = new AbortController();
   busy = {controller, msg: m};
@@ -955,20 +1310,66 @@ $("input").addEventListener("keydown", (e) => {
 function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, innerHeight * 0.4)}px`; }
 $("input").addEventListener("input", autosize);
 
-$("new-btn").onclick = () => {
-  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
-  if (!messages.length) return;
-  const backup = messages;
-  const backupSid = store.get("session_id", "");
-  messages = [];
-  const newSid = "sess-" + randomId();
-  store.set("session_id", newSid);
-  saveChat();
-  renderChat();
-  toast("info", "New chat", "The last one was cleared.", 6000, {label: "Undo", run: () => { messages = backup; store.set("session_id", backupSid); saveChat(); renderChat(); }});
-};
+$("new-btn").onclick = () => createNewSession();
+if ($("sidebar-new-btn")) $("sidebar-new-btn").onclick = () => createNewSession();
+
+if ($("sidebar-close-btn")) {
+  $("sidebar-close-btn").onclick = () => {
+    const sb = $("chat-sidebar");
+    if (sb) {
+      sb.classList.add("collapsed");
+      store.set("sidebar_collapsed", true);
+    }
+  };
+}
+
+if ($("sidebar-open-btn")) {
+  $("sidebar-open-btn").onclick = () => {
+    const sb = $("chat-sidebar");
+    if (sb) {
+      sb.classList.toggle("collapsed");
+      store.set("sidebar_collapsed", sb.classList.contains("collapsed"));
+    }
+  };
+}
+
+if ($("active-session-title")) $("active-session-title").onclick = () => renameSession(activeSessionId);
+if ($("rename-session-btn")) $("rename-session-btn").onclick = () => renameSession(activeSessionId);
+if ($("fork-session-btn")) $("fork-session-btn").onclick = () => forkSession();
+if ($("clear-all-sessions-btn")) $("clear-all-sessions-btn").onclick = () => clearAllSessions();
+
+if ($("session-search-input")) {
+  $("session-search-input").oninput = (e) => {
+    sessionSearchQuery = e.target.value;
+    renderSessionList();
+  };
+}
+
+if ($("session-list")) {
+  $("session-list").addEventListener("click", (e) => {
+    const editBtn = e.target.closest("[data-act='rename']");
+    if (editBtn) {
+      e.stopPropagation();
+      renameSession(editBtn.dataset.id);
+      return;
+    }
+    const delBtn = e.target.closest("[data-act='delete']");
+    if (delBtn) {
+      e.stopPropagation();
+      deleteSession(delBtn.dataset.id, e);
+      return;
+    }
+    const item = e.target.closest(".session-item");
+    if (item && item.dataset.id) {
+      switchSession(item.dataset.id);
+    }
+  });
+}
+
 $("export-btn").onclick = () => {
   if (!messages.length) { toast("info", "Nothing to save yet"); return; }
+  const activeSess = sessions.find((s) => s.id === activeSessionId);
+  const titleSlug = (activeSess && activeSess.title ? activeSess.title.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 30) : "chat");
   const tools = (m) => (m.tools || []).filter((t) => t.result != null).map((t) =>
     `<details><summary>Tool ${t.server ? `${t.server} / ` : ""}${t.tool || t.name}${t.ok ? "" : " (error)"}</summary>\n\n` +
     `\`\`\`json\n${JSON.stringify(t.arguments || {}, null, 2)}\n\`\`\`\n\n\`\`\`\n${t.result}\n\`\`\`\n\n</details>\n\n`).join("");
@@ -976,7 +1377,7 @@ $("export-btn").onclick = () => {
     `## ${health.model}\n\n${m.reasoning ? `<details><summary>Thinking</summary>\n\n${m.reasoning}\n\n</details>\n\n` : ""}${tools(m)}${m.text || m.error || ""}\n`).join("\n");
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([md], {type: "text/markdown"}));
-  a.download = `strata-chat-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.md`;
+  a.download = `strata-${titleSlug}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.md`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 };
@@ -1151,6 +1552,10 @@ $("sampling-btn").onclick = () => openDrawer(true);
 $("drawer-close").onclick = () => openDrawer(false);
 $("scrim").onclick = () => openDrawer(false);
 // ------------------------------------------------------------------ Setup & Hardware Configuration
+let allSetupModels = [];
+let detectedHwSpecs = null;
+let activeSetupCat = "all";
+let setupSearchQuery = "";
 let selectedModelOpt = null;
 let setupDlPolling = false;
 
@@ -1159,8 +1564,10 @@ async function loadSetup() {
     const r = await fetch("api/setup/models", { headers: headers() });
     if (r.ok) {
       const data = await r.json();
+      detectedHwSpecs = data.hardware;
+      allSetupModels = data.models || [];
       renderSetupHardware(data.hardware);
-      renderSetupModels(data.models || [], data.recommended);
+      filterAndRenderModels(data.recommended);
     }
   } catch (e) {
     console.error("Failed to load setup models:", e);
@@ -1176,24 +1583,90 @@ function renderSetupHardware(hw) {
   if ($("hw-vram")) $("hw-vram").textContent = hw.vram_gb ? `${fmt(hw.vram_gb, 1)} GB` : (hw.gpu_vendor === "CPU" ? "Shared RAM" : "–");
 }
 
-function renderSetupModels(models, recommended) {
+function filterAndRenderModels(recommended) {
   const container = $("models-grid");
   if (!container) return;
   container.innerHTML = "";
 
-  models.forEach((m) => {
+  const q = setupSearchQuery.toLowerCase().trim();
+  const filtered = allSetupModels.filter((m) => {
+    // 1. Category Filter
+    if (activeSetupCat === "recommended" && !m.recommended) return false;
+    if (activeSetupCat === "huggingface" && m.source !== "huggingface") return false;
+    if (activeSetupCat === "ollama" && m.source !== "ollama") return false;
+    if (activeSetupCat === "local" && m.source !== "local") return false;
+    if (activeSetupCat === "coder" && m.category !== "coder") return false;
+    if (activeSetupCat === "reasoning" && m.category !== "reasoning") return false;
+    if (activeSetupCat === "lightweight" && m.category !== "lightweight") return false;
+
+    // 2. Search Query Filter
+    if (q) {
+      const matchName = (m.name || "").toLowerCase().includes(q);
+      const matchDesc = (m.description || "").toLowerCase().includes(q);
+      const matchQuant = (m.quantization || "").toLowerCase().includes(q);
+      const matchParam = (m.param_size || "").toLowerCase().includes(q);
+      const matchTags = (m.tags || []).some((t) => t.toLowerCase().includes(q));
+      if (!matchName && !matchDesc && !matchQuant && !matchParam && !matchTags) return false;
+    }
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    container.innerHTML = `
+      <div style="grid-column: 1 / -1; text-align: center; padding: var(--st-s-6); color: var(--st-ink-muted);">
+        <p>No models matching <strong>${esc(setupSearchQuery || activeSetupCat)}</strong>.</p>
+        <p class="small">Try changing filters or use the <em>Custom Hugging Face Import</em> bar above.</p>
+      </div>
+    `;
+    return;
+  }
+
+  const hostRam = (detectedHwSpecs && detectedHwSpecs.ram_total_gb) || 16.0;
+
+  filtered.forEach((m) => {
     const isRec = recommended && (m.name === recommended.name || m.recommended);
     const card = document.createElement("div");
     card.className = `model-card-item ${isRec ? "recommended" : ""}`;
-    card.id = `mcard-${m.name}`;
-    
+    card.id = `mcard-${encodeURIComponent(m.name)}`;
+
+    let sourceLabel = "Hugging Face";
+    let sourceIcon = "🤗";
+    if (m.source === "ollama") {
+      sourceLabel = "Ollama";
+      sourceIcon = "🦙";
+    } else if (m.source === "local") {
+      sourceLabel = "Local Pack";
+      sourceIcon = "⚡";
+    } else if (m.source === "custom") {
+      sourceLabel = "Custom";
+      sourceIcon = "🌐";
+    }
+
+    let ramClass = "ram-fit-ok";
+    let ramIcon = "✓";
+    if (hostRam < m.min_ram_gb) {
+      ramClass = hostRam >= m.min_ram_gb * 0.75 ? "ram-fit-warn" : "ram-fit-err";
+      ramIcon = hostRam >= m.min_ram_gb * 0.75 ? "⚠" : "✕";
+    }
+
+    const tagsHtml = (m.tags || [])
+      .slice(0, 4)
+      .map((t) => `<span class="model-tag">${esc(t)}</span>`)
+      .join("");
+
     card.innerHTML = `
-      ${isRec ? `<span class="model-rec-badge">★ Recommended</span>` : ""}
+      <div class="model-card-top">
+        <span class="model-source-badge" data-source="${esc(m.source || 'huggingface')}">
+          ${sourceIcon} ${sourceLabel}
+        </span>
+        ${isRec ? `<span class="model-rec-badge">★ Recommended</span>` : ""}
+      </div>
       <div class="model-card-name">${esc(m.name)}</div>
+      <div class="model-tags-row">${tagsHtml}</div>
       <div class="model-card-desc">${esc(m.description || "")}</div>
       <div class="model-card-meta">
-        <span>Min RAM: ${fmt(m.min_ram_gb, 0)} GB</span>
-        <span>Size: ${fmt(m.size_gb, 1)} GB</span>
+        <span class="${ramClass}">${ramIcon} Min RAM: ${fmt(m.min_ram_gb, 0)} GB</span>
+        <span>Size: ${m.size_gb ? fmt(m.size_gb, 1) + " GB" : "Instant"}</span>
       </div>
     `;
 
@@ -1201,9 +1674,19 @@ function renderSetupModels(models, recommended) {
     container.appendChild(card);
   });
 
-  const defaultPick = recommended || models[0];
-  if (defaultPick) {
-    selectSetupModel(defaultPick);
+  // Preserve selection or select default
+  if (selectedModelOpt) {
+    const stillThere = filtered.find((m) => m.name === selectedModelOpt.name);
+    if (stillThere) {
+      selectSetupModel(stillThere);
+    } else if (filtered.length > 0) {
+      selectSetupModel(filtered[0]);
+    }
+  } else {
+    const defaultPick = recommended || filtered[0];
+    if (defaultPick) {
+      selectSetupModel(defaultPick);
+    }
   }
 }
 
@@ -1212,11 +1695,63 @@ function selectSetupModel(m) {
   for (const el of document.querySelectorAll(".model-card-item")) {
     el.classList.remove("selected");
   }
-  const chosen = $(`mcard-${m.name}`);
+  const chosen = $(`mcard-${encodeURIComponent(m.name)}`);
   if (chosen) chosen.classList.add("selected");
 
   if ($("setup-custom-url")) $("setup-custom-url").value = m.download_url || "";
-  if ($("setup-dest-path")) $("setup-dest-path").value = `models/${m.filename || (m.name.toLowerCase() + ".gguf")}`;
+  if ($("setup-dest-path")) {
+    if (m.filename && (m.filename.startsWith("/") || m.filename.includes("\\"))) {
+      $("setup-dest-path").value = m.filename;
+    } else {
+      $("setup-dest-path").value = `models/${m.filename || (m.name.toLowerCase() + ".gguf")}`;
+    }
+  }
+
+  // Update download button label depending on local vs remote
+  const btn = $("setup-download-btn");
+  if (btn) {
+    if (m.download_url === "" || m.source === "ollama" || m.source === "local") {
+      btn.innerHTML = `<svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-check"/></svg>Activate Local Model (Instant)`;
+    } else {
+      btn.innerHTML = `<svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-download"/></svg>Download & Activate (${fmt(m.size_gb, 1)} GB)`;
+    }
+  }
+}
+
+async function importCustomSetupModel() {
+  const inputEl = $("setup-import-input");
+  if (!inputEl) return;
+  const val = inputEl.value.trim();
+  if (!val) {
+    toast("warn", "Enter Model", "Please enter a Hugging Face repo ID or direct GGUF URL.");
+    return;
+  }
+
+  try {
+    const r = await fetch("api/setup/resolve", {
+      method: "POST",
+      headers: headers(true),
+      body: JSON.stringify({ input: val }),
+    });
+    if (r.ok) {
+      const resolved = await r.json();
+      allSetupModels.unshift(resolved);
+      activeSetupCat = "all";
+      document.querySelectorAll("#setup-cat-filters .st-pill").forEach((b) => {
+        b.classList.toggle("active", b.dataset.cat === "all");
+      });
+      setupSearchQuery = "";
+      if ($("setup-search-input")) $("setup-search-input").value = "";
+      filterAndRenderModels(resolved);
+      selectSetupModel(resolved);
+      toast("success", "Model Resolved", `Added ${resolved.name} from ${resolved.repo_id}`);
+    } else {
+      const err = await r.json().catch(() => ({}));
+      toast("error", "Resolution failed", err.error || "Could not resolve model from Hugging Face.");
+    }
+  } catch (e) {
+    toast("error", "Network error", e.message);
+  }
 }
 
 async function startSetupDownload() {
@@ -1269,6 +1804,9 @@ async function saveSetupConfig() {
     model_path: ($("setup-dest-path") && $("setup-dest-path").value.trim()) || "",
     max_context: +($("setup-ctx") ? $("setup-ctx").value : 32768),
     virtual_limit: +($("setup-virt-ctx") ? $("setup-virt-ctx").value : 2097152),
+    pool_workers: +($("setup-pool-workers") ? $("setup-pool-workers").value : 16),
+    pcie_frac: +($("setup-pcie-frac") ? $("setup-pcie-frac").value : 0.5),
+    gpus: ($("setup-gpus") && $("setup-gpus").value.trim()) || "",
   };
 
   try {
@@ -1367,11 +1905,58 @@ if ($("hw-refresh-btn")) $("hw-refresh-btn").onclick = loadSetup;
 if ($("setup-download-btn")) $("setup-download-btn").onclick = startSetupDownload;
 if ($("setup-save-btn")) $("setup-save-btn").onclick = saveSetupConfig;
 if ($("setup-cancel-btn")) $("setup-cancel-btn").onclick = cancelSetupDownload;
+if ($("setup-import-btn")) $("setup-import-btn").onclick = importCustomSetupModel;
+if ($("setup-import-input")) {
+  $("setup-import-input").onkeydown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      importCustomSetupModel();
+    }
+  };
+}
+if ($("setup-search-input")) {
+  $("setup-search-input").oninput = (e) => {
+    setupSearchQuery = e.target.value;
+    filterAndRenderModels();
+  };
+}
+document.querySelectorAll("#setup-cat-filters .st-pill").forEach((pill) => {
+  pill.onclick = () => {
+    activeSetupCat = pill.dataset.cat || "all";
+    document.querySelectorAll("#setup-cat-filters .st-pill").forEach((p) => p.classList.remove("active"));
+    pill.classList.add("active");
+    filterAndRenderModels();
+  };
+});
+
+if ($("mon-detail-close")) {
+  $("mon-detail-close").onclick = () => {
+    if ($("mon-detail-card")) $("mon-detail-card").hidden = true;
+    selectedMonReq = null;
+    document.querySelectorAll("#req-body tr.clickable").forEach(t => t.classList.remove("selected"));
+  };
+}
+
+if ($("mon-copy-btn")) {
+  $("mon-copy-btn").onclick = () => {
+    const text = $("mon-content") ? $("mon-content").textContent : "";
+    if (text) copyText(text, null);
+  };
+}
+
+document.querySelectorAll("[data-mon-pane]").forEach((btn) => {
+  btn.onclick = () => {
+    monPane = btn.dataset.monPane;
+    document.querySelectorAll("[data-mon-pane]").forEach(b => b.setAttribute("aria-selected", String(b === btn)));
+    renderMonPaneContent();
+  };
+});
 
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawer").dataset.open === "true") openDrawer(false); });
 
 // ------------------------------------------------------------------ start
 setBusy(false);
+initSessions();
 renderChat();
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);

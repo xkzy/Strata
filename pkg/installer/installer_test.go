@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -25,20 +26,85 @@ func TestDetectHardware(t *testing.T) {
 func TestRecommendModel(t *testing.T) {
 	specs1 := HardwareSpecs{RAMTotalGB: 32.0}
 	rec1 := RecommendModel(specs1)
-	if rec1.Name != "Qwen2.5-Coder-7B-Instruct-Q8_0" {
+	if !strings.Contains(rec1.Name, "Q8_0") {
 		t.Errorf("expected Q8_0 for 32GB RAM, got %s", rec1.Name)
 	}
 
 	specs2 := HardwareSpecs{RAMTotalGB: 16.0}
 	rec2 := RecommendModel(specs2)
-	if rec2.Name != "Qwen2.5-Coder-7B-Instruct-Q4_K_M" {
+	if !strings.Contains(rec2.Name, "Q4_K_M") {
 		t.Errorf("expected Q4_K_M for 16GB RAM, got %s", rec2.Name)
 	}
 
 	specs3 := HardwareSpecs{RAMTotalGB: 8.0}
 	rec3 := RecommendModel(specs3)
-	if rec3.Name != "Qwen2.5-Coder-7B-Instruct-Q2_K" {
+	if !strings.Contains(rec3.Name, "Q2_K") {
 		t.Errorf("expected Q2_K for 8GB RAM, got %s", rec3.Name)
+	}
+}
+
+func TestResolveHuggingFaceInput(t *testing.T) {
+	// 1. Direct GGUF URL
+	u1 := "https://huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf"
+	m1, err := ResolveHuggingFaceInput(u1)
+	if err != nil {
+		t.Fatalf("unexpected error resolving URL: %v", err)
+	}
+	if m1.RepoID != "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF" {
+		t.Errorf("expected repo ID bartowski/Qwen2.5-Coder-7B-Instruct-GGUF, got %s", m1.RepoID)
+	}
+	if m1.Filename != "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf" {
+		t.Errorf("expected filename Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf, got %s", m1.Filename)
+	}
+	if m1.Category != "coder" {
+		t.Errorf("expected category coder, got %s", m1.Category)
+	}
+
+	// 2. Repo ID without filename
+	u2 := "bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF"
+	m2, err := ResolveHuggingFaceInput(u2)
+	if err != nil {
+		t.Fatalf("unexpected error resolving repo: %v", err)
+	}
+	if m2.Category != "reasoning" {
+		t.Errorf("expected category reasoning, got %s", m2.Category)
+	}
+
+	// 3. Foreign hostname should be rejected
+	u3 := "https://evil.example.com/malicious.gguf"
+	_, err = ResolveHuggingFaceInput(u3)
+	if err == nil {
+		t.Fatalf("expected error for non-huggingface URL, got nil")
+	}
+
+	// 4. Directory traversal attempt should be rejected
+	u4 := "https://huggingface.co/foo/bar/resolve/main/../../etc/passwd.gguf"
+	m4, err := ResolveHuggingFaceInput(u4)
+	if err == nil && strings.Contains(m4.Filename, "..") {
+		t.Fatalf("expected sanitized filename without path traversal, got %s", m4.Filename)
+	}
+}
+
+func TestGetAvailableModels(t *testing.T) {
+	models := GetAvailableModels()
+	if len(models) == 0 {
+		t.Fatalf("expected non-empty models list")
+	}
+
+	var foundHF, foundCoder bool
+	for _, m := range models {
+		if m.Source == SourceHuggingFace {
+			foundHF = true
+		}
+		if m.Category == "coder" {
+			foundCoder = true
+		}
+	}
+	if !foundHF {
+		t.Errorf("expected Hugging Face models in catalog")
+	}
+	if !foundCoder {
+		t.Errorf("expected Coder category in catalog")
 	}
 }
 

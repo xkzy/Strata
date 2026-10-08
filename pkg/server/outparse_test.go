@@ -110,3 +110,58 @@ func TestNonStringValuesKeepTheirJSONType(t *testing.T) {
 		t.Fatalf("%s", tl[0].Arguments)
 	}
 }
+
+func TestJSONToolCallParsing(t *testing.T) {
+	stream := "<tool_call>\n{\"name\": \"get_current_weather\", \"arguments\": {\"city\": \"San Francisco\", \"unit\": \"celsius\"}}\n</tool_call>"
+	for _, n := range []int{1, 5, 20, 1000} {
+		_, c, tl := feedAll(newOutParser(false, nil), split(stream, n))
+		if c != "" || len(tl) != 1 {
+			t.Fatalf("chunk %d: content=%q tools=%v", n, c, tl)
+		}
+		if tl[0].Name != "get_current_weather" {
+			t.Fatalf("tool name = %s", tl[0].Name)
+		}
+		var args map[string]interface{}
+		if err := json.Unmarshal([]byte(tl[0].Arguments), &args); err != nil || args["city"] != "San Francisco" {
+			t.Fatalf("arguments = %s", tl[0].Arguments)
+		}
+	}
+}
+
+func TestJSONToolCallInCodeBlock(t *testing.T) {
+	stream := "<tool_call>\n```json\n{\"name\": \"calculator\", \"arguments\": {\"expr\": \"42 * 2\"}}\n```\n</tool_call>"
+	_, c, tl := feedAll(newOutParser(false, nil), split(stream, 7))
+	if c != "" || len(tl) != 1 {
+		t.Fatalf("content=%q tools=%v", c, tl)
+	}
+	if tl[0].Name != "calculator" || !strings.Contains(tl[0].Arguments, "42 * 2") {
+		t.Fatalf("tool = %+v", tl[0])
+	}
+}
+
+func TestJSONArrayToolCalls(t *testing.T) {
+	stream := "<tool_call>\n[{\"name\": \"tool_a\", \"arguments\": {\"x\": 1}}, {\"name\": \"tool_b\", \"arguments\": {\"y\": 2}}]\n</tool_call>"
+	_, c, tl := feedAll(newOutParser(false, nil), split(stream, 4))
+	if c != "" || len(tl) != 2 {
+		t.Fatalf("content=%q tools=%v", c, tl)
+	}
+	if tl[0].Name != "tool_a" || tl[1].Name != "tool_b" {
+		t.Fatalf("tools = %+v", tl)
+	}
+}
+
+func TestReasoningStartingInContentMode(t *testing.T) {
+	stream := "<think>\nThinking through the title generation...\nLet's choose a brief name.\n</think>\nResume HANDOFF.md work"
+	for _, n := range []int{1, 3, 10, 1000} {
+		r, c, tl := feedAll(newOutParser(false, nil), split(stream, n))
+		if !strings.Contains(r, "Thinking through the title generation") {
+			t.Fatalf("reasoning = %q", r)
+		}
+		if c != "Resume HANDOFF.md work" {
+			t.Fatalf("content = %q (expected 'Resume HANDOFF.md work')", c)
+		}
+		if len(tl) != 0 {
+			t.Fatalf("tools = %v", tl)
+		}
+	}
+}

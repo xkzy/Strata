@@ -268,6 +268,7 @@ STRATA_D float4 fast_gelu4(float4 v) {
 // CPU Batch Vectorized Helpers
 // ----------------------------------------------------------------------------
 inline void fast_activate_array(const float* __restrict__ in, float* __restrict__ out, size_t n, ActivationType type) {
+    #pragma omp parallel for schedule(static) if (n >= 4096)
     for (size_t i = 0; i < n; ++i) {
         out[i] = fast_math::fast_activate(type, in[i]);
     }
@@ -275,6 +276,7 @@ inline void fast_activate_array(const float* __restrict__ in, float* __restrict_
 
 inline void fast_swiglu_array(const float* __restrict__ gate, const float* __restrict__ up,
                               float* __restrict__ out, size_t n) {
+    #pragma omp parallel for schedule(static) if (n >= 4096)
     for (size_t i = 0; i < n; ++i) {
         out[i] = fast_math::fast_swiglu(gate[i], up[i]);
     }

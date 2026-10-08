@@ -221,6 +221,45 @@ Json metrics_json(const RuntimeMetrics& m) {
     return j;
 }
 
+Json kv_metrics_json(const KVTableStats& s) {
+    Json j = Json::object();
+    j.set("total_pages", Json::integer(s.total_pages));
+    j.set("lookups", Json::integer(s.lookups));
+    j.set("promotions", Json::integer(s.promotions));
+    j.set("demotions", Json::integer(s.demotions));
+    j.set("evictions", Json::integer(s.evictions));
+    j.set("page_faults", Json::integer(s.page_faults));
+    // The runtime's pages describe logical context pages with estimated sizes and costs, not the engine's real
+    // KV; the engine's measured numbers are under conversation_cache.ledger in the server's /metrics.
+    j.set("source", Json::string("modeled"));
+
+    Json pages = Json::object();
+    pages.set("gpu_vram", Json::integer(s.tier_pages[0]));
+    pages.set("host_ram", Json::integer(s.tier_pages[1]));
+    pages.set("compressed_ram", Json::integer(s.tier_pages[2]));
+    pages.set("nvme_disk", Json::integer(s.tier_pages[3]));
+    pages.set("recompute", Json::integer(s.tier_pages[4]));
+    j.set("tier_pages", std::move(pages));
+
+    Json bytes = Json::object();
+    bytes.set("gpu_vram", Json::integer(s.tier_bytes[0]));
+    bytes.set("host_ram", Json::integer(s.tier_bytes[1]));
+    bytes.set("compressed_ram", Json::integer(s.tier_bytes[2]));
+    bytes.set("nvme_disk", Json::integer(s.tier_bytes[3]));
+    bytes.set("recompute", Json::integer(s.tier_bytes[4]));
+    j.set("tier_bytes", std::move(bytes));
+
+    Json hits = Json::object();
+    hits.set("l1_vram_hits", Json::integer(s.hits[0]));
+    hits.set("l2_ram_hits", Json::integer(s.hits[1]));
+    hits.set("l3_compressed_hits", Json::integer(s.hits[2]));
+    hits.set("l4_nvme_hits", Json::integer(s.hits[3]));
+    hits.set("l5_recompute_hits", Json::integer(s.hits[4]));
+    j.set("hits", std::move(hits));
+
+    return j;
+}
+
 } // namespace
 
 int main() {
@@ -249,6 +288,7 @@ int main() {
             Json j = metrics_json(runtime->metrics());
             Json r;
             if (Json::parse(runtime->contexts().retrieval_metrics().to_json(), r)) j.set("retrieval", r);   // hybrid retrieval and cache counters
+            j.set("virtual_kv", kv_metrics_json(runtime->contexts().kv_stats()));
             return j;
         });
         Json r = Json::object();

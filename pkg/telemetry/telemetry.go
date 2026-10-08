@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -41,7 +42,7 @@ type TelemetryCollector struct {
 	prevDiskAt                  time.Time
 	noPower                     bool // the NVIDIA card answers power.draw with [N/A]
 	igpu                        *drmGPU
-	pcie                        [3]int // gen, max gen, width of the NVIDIA card (0: unknown)
+	pcie                        [3]int // gen, max gen, width of the GPU link (0: unknown)
 
 	// Static hardware facts
 	static map[string]interface{}
@@ -59,6 +60,7 @@ type TelemetryCollector struct {
 	historyCPUUtil  []float64
 	historyIGPUUtil []float64
 	historyDiskRead []float64
+	historyPcieRx   []float64
 
 	tokSource func() float64 // decode speed of the running request (nil or 0: idle)
 }
@@ -75,9 +77,14 @@ func NewTelemetryCollector() *TelemetryCollector {
 		historyTokS:     make([]float64, 0, HistoryCapacity),
 		historyRAMUtil:  make([]float64, 0, HistoryCapacity),
 		historyCPUUtil:  make([]float64, 0, HistoryCapacity),
+		historyPcieRx:   make([]float64, 0, HistoryCapacity),
 	}
 	if runtime.GOOS == "linux" {
 		tc.igpu = discoverIGPU("/sys/class/drm")
+		gen, maxGen, width, _ := discoverDrmPCIe("/sys/class/drm")
+		if gen > 0 || maxGen > 0 || width > 0 {
+			tc.pcie = [3]int{gen, maxGen, width}
+		}
 	}
 	tc.detectStaticHardware()
 	return tc
@@ -260,7 +267,21 @@ func (tc *TelemetryCollector) sampleOnce() {
 		tc.now["gpu_pcie_gen"] = tc.pcie[0]
 		tc.now["gpu_pcie_gen_max"] = tc.pcie[1]
 		tc.now["gpu_pcie_width"] = tc.pcie[2]
+		bw := PcieBandwidthGBps(tc.pcie[1], tc.pcie[2])
+		tc.now["gpu_pcie_bw_gb_s"] = mathRound(bw, 1)
 	}
+
+	rxMB, txMB, okPcie := tc.readPcieThroughput()
+	if okPcie {
+		tc.now["gpu_pcie_rx_mb"] = mathRound(rxMB, 1)
+		tc.now["gpu_pcie_tx_mb"] = mathRound(txMB, 1)
+	}
+	var pcieRxMB float64
+	if v, ok := tc.now["gpu_pcie_rx_mb"].(float64); ok {
+		pcieRxMB = v
+	}
+	tc.pushHistory(&tc.historyPcieRx, pcieRxMB)
+
 	if diskOK {
 		tc.now["disk_read_mb"] = mathRound(diskRead, 1)
 		tc.now["disk_write_mb"] = mathRound(diskWrite, 1)
@@ -399,17 +420,33 @@ func (tc *TelemetryCollector) readGPU() (vramUsedBytes, vramTotalBytes uint64, g
 	}
 
 	// 2. Try AMD sysfs
-	if _, err := os.Stat("/sys/class/drm/card0/device/mem_info_vram_used"); err == nil {
-		if data, err := os.ReadFile("/sys/class/drm/card0/device/mem_info_vram_used"); err == nil {
-			vramUsedBytes, _ = strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+	if runtime.GOOS == "linux" {
+		entries, err := os.ReadDir("/sys/class/drm")
+		if err == nil {
+			bestVRAM := uint64(0)
+			for _, e := range entries {
+				if !cardDir.MatchString(e.Name()) {
+					continue
+				}
+				dir := filepath.Join("/sys/class/drm", e.Name(), "device")
+				tot, _ := readUint(filepath.Join(dir, "mem_info_vram_total"))
+				if tot > bestVRAM {
+					bestVRAM = tot
+					vramTotalBytes = tot
+					vramUsedBytes, _ = readUint(filepath.Join(dir, "mem_info_vram_used"))
+					if u, ok := readUint(filepath.Join(dir, "gpu_busy_percent")); ok {
+						gpuUtil = float64(u)
+					}
+				}
+			}
+			if vramTotalBytes > 0 {
+				gen, maxGen, width, _ := discoverDrmPCIe("/sys/class/drm")
+				if gen > 0 || maxGen > 0 || width > 0 {
+					tc.pcie = [3]int{gen, maxGen, width}
+				}
+				return vramUsedBytes, vramTotalBytes, gpuUtil, 45.0, 50.0
+			}
 		}
-		if data, err := os.ReadFile("/sys/class/drm/card0/device/mem_info_vram_total"); err == nil {
-			vramTotalBytes, _ = strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
-		}
-		if data, err := os.ReadFile("/sys/class/drm/card0/device/gpu_busy_percent"); err == nil {
-			gpuUtil, _ = strconv.ParseFloat(strings.TrimSpace(string(data)), 64)
-		}
-		return vramUsedBytes, vramTotalBytes, gpuUtil, 45.0, 50.0
 	}
 
 	return 0, 0, 0, 0, 0
@@ -430,16 +467,17 @@ func (tc *TelemetryCollector) Snapshot() map[string]interface{} {
 	}
 
 	historyCopy := map[string]interface{}{
-		"gpu_util":     copySlice(tc.historyGPUUtil),
-		"gpu_mem_used": copySlice(tc.historyVRAMUsed),
-		"gpu_temp":     copySlice(tc.historyGPUTemp),
-		"gpu_power":    copySlice(tc.historyGPUPower),
-		"tok_s":        copySlice(tc.historyTokS),
-		"ram_util":     copySlice(tc.historyRAMUtil),
-		"cpu_util":     copySlice(tc.historyCPUUtil),
-		"cpu":          copySlice(tc.historyCPUUtil),
-		"igpu_util":    copySlice(tc.historyIGPUUtil),
-		"disk_read_mb": copySlice(tc.historyDiskRead),
+		"gpu_util":       copySlice(tc.historyGPUUtil),
+		"gpu_mem_used":   copySlice(tc.historyVRAMUsed),
+		"gpu_temp":       copySlice(tc.historyGPUTemp),
+		"gpu_power":      copySlice(tc.historyGPUPower),
+		"tok_s":          copySlice(tc.historyTokS),
+		"ram_util":       copySlice(tc.historyRAMUtil),
+		"cpu_util":       copySlice(tc.historyCPUUtil),
+		"cpu":            copySlice(tc.historyCPUUtil),
+		"igpu_util":      copySlice(tc.historyIGPUUtil),
+		"disk_read_mb":   copySlice(tc.historyDiskRead),
+		"gpu_pcie_rx_mb": copySlice(tc.historyPcieRx),
 	}
 
 	return map[string]interface{}{

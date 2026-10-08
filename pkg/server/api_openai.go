@@ -393,7 +393,11 @@ func (s *StrataServer) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 				fmt.Fprint(w, "data: [DONE]\n\n")
 				return
 			case ev.End:
-				fin := chunk(map[string]interface{}{}, ev.Finish)
+				finReason := ev.Finish
+				if nTools > 0 && (finReason == "stop" || finReason == "") {
+					finReason = "tool_calls"
+				}
+				fin := chunk(map[string]interface{}{}, finReason)
 				if ev.Finish == "cancel" {
 					fin = chunk(map[string]interface{}{}, "stop")
 				}
@@ -448,6 +452,9 @@ func (s *StrataServer) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 	}
 	if finish == "cancel" {
 		finish = "stop"
+	}
+	if len(tools) > 0 && (finish == "stop" || finish == "") {
+		finish = "tool_calls"
 	}
 	msg := map[string]interface{}{"role": "assistant", "content": content.String()}
 	if reasoning.Len() > 0 {

@@ -282,3 +282,36 @@ func TestAnonymousCallersNeverShareAContext(t *testing.T) {
 		}
 	}
 }
+
+func TestRuntimeMetricsReportsVirtualKV(t *testing.T) {
+	ts, _ := startRTServer(t, "</think>\n\nHello from Strata.")
+	_, _ = postDebug(t, ts.URL+"/v1/chat/completions", `{"messages":[{"role":"user","content":"Hello!"}],"reasoning_effort":"none"}`, nil)
+
+	mresp, err := http.Get(ts.URL + "/v1/strata/runtime/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mresp.Body.Close()
+
+	var res struct {
+		Metrics struct {
+			Requests  float64        `json:"requests"`
+			VirtualKV map[string]any `json:"virtual_kv"`
+		} `json:"metrics"`
+	}
+	if err := json.NewDecoder(mresp.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Metrics.Requests < 1 {
+		t.Fatalf("expected requests >= 1, got %v", res.Metrics.Requests)
+	}
+	if res.Metrics.VirtualKV == nil {
+		t.Fatalf("expected virtual_kv object in metrics, got nil: %+v", res.Metrics)
+	}
+	if _, ok := res.Metrics.VirtualKV["total_pages"]; !ok {
+		t.Fatalf("expected total_pages in virtual_kv metrics: %+v", res.Metrics.VirtualKV)
+	}
+	if res.Metrics.VirtualKV["source"] != "modeled" {
+		t.Errorf("virtual_kv must say it is modeled, got source=%v", res.Metrics.VirtualKV["source"])
+	}
+}

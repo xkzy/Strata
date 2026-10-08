@@ -116,7 +116,9 @@ public:
         const MathContext& ctx = MathContext()) {
         if (!q || !k_cache || !v_cache || !out || seq_len == 0 || head_dim == 0) return;
 
-        std::vector<float> scores(seq_len);
+        float local_scores[1024];
+        std::vector<float> heap_scores;
+        float* scores = (seq_len <= 1024) ? local_scores : (heap_scores.resize(seq_len), heap_scores.data());
         float max_score = -1e30f;
 
         for (size_t s = 0; s < seq_len; ++s) {
@@ -193,12 +195,16 @@ public:
         if (!q || !k_cache || !v_cache || !out || num_heads == 0 || num_kv_heads == 0 || seq_len == 0 || head_dim == 0) return;
 
         const size_t gqa_group_size = num_heads / num_kv_heads;
-        std::vector<float> scores(seq_len);
 
+        #pragma omp parallel for schedule(static) if (num_heads >= 4 && seq_len >= 32)
         for (size_t h = 0; h < num_heads; ++h) {
             const size_t kv_head = (gqa_group_size > 0) ? std::min(h / gqa_group_size, num_kv_heads - 1) : 0;
             const float* q_h = q + h * head_dim;
             float* out_h = out + h * head_dim;
+
+            float local_scores[1024];
+            std::vector<float> heap_scores;
+            float* scores = (seq_len <= 1024) ? local_scores : (heap_scores.resize(seq_len), heap_scores.data());
 
             float max_score = -1e30f;
 

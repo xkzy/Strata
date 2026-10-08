@@ -210,6 +210,22 @@ int main() {
         CHECK(w2.paged_in * 4 <= w2.page_ids.size() + 8, "second request reuses most of the first working set");
         CHECK(has(w1, "Status note 31337"), "specific old note found at scale");
     }
+    {   std::printf("[12] virtual KV memory paging plan and prefetch queue\n");
+        VirtualContext vc("c12", me, small_cfg());
+        NewItem sys; sys.role = "system"; sys.content = "System instructions and repository map."; sys.pinned = true;
+        vc.append(sys);
+        NewItem f1; f1.role = "user"; f1.content = "Function process_packet definition in net/packet.go";
+        vc.append(f1);
+        NewItem q; q.role = "user"; q.content = "How does process_packet handle packet headers?";
+        uint64_t qid = vc.append(q);
+
+        SelectionRequest r; r.query = q.content; r.budget_tokens = 4096; r.current_items = {qid}; r.requester = me;
+        auto plan = vc.plan_virtual_kv_paging(r);
+        CHECK(!plan.hot_vram_pages.empty(), "working set pages assigned to VRAM");
+        CHECK(vc.kv_page_table() != nullptr, "kv_page_table accessible");
+        auto stats = vc.kv_page_table()->stats();
+        CHECK(stats.total_pages >= 3, "all pages registered in KV page table");
+    }
     std::printf(g_fail ? "%d FAILED\n" : "ALL PASSED\n", g_fail);
     return g_fail ? 1 : 0;
 }

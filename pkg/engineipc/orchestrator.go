@@ -182,6 +182,9 @@ type TokenEvent struct {
 	TokenID      int     `json:"token_id,omitempty"`
 	Text         string  `json:"text"`
 	IsEnd        bool    `json:"is_end"`
+	IsProgress   bool    `json:"is_progress,omitempty"`
+	PromptRead   int     `json:"prompt_read,omitempty"`
+	PromptTotal  int     `json:"prompt_total,omitempty"`
 	FinishReason string  `json:"finish_reason,omitempty"`
 	PromptTokens int     `json:"prompt_tokens,omitempty"`
 	GenTokens    int     `json:"gen_tokens,omitempty"`
@@ -248,6 +251,7 @@ type EngineOrchestrator struct {
 	tokenizer  TextCodec
 	cancelFunc context.CancelFunc
 	logTail    []string
+	kv         KVLedger // the engine's KVEV cache events (see kvledger.go)
 	readyCh    chan struct{}
 	reqSem     chan struct{} // one request at a time: the engine has one session
 }
@@ -388,12 +392,7 @@ func (eo *EngineOrchestrator) pumpStderr(r io.Reader) {
 	for sc.Scan() {
 		line := sc.Text()
 		fmt.Fprintln(os.Stderr, line)
-		eo.mu.Lock()
-		eo.logTail = append(eo.logTail, line)
-		if len(eo.logTail) > 30 {
-			eo.logTail = eo.logTail[len(eo.logTail)-30:]
-		}
-		eo.mu.Unlock()
+		eo.noteStderrLine(line, time.Now())
 	}
 }
 
@@ -676,8 +675,20 @@ func (eo *EngineOrchestrator) GenerateIDs(ctx context.Context, ids []int, sampli
 		case strings.HasPrefix(line, "ERR"):
 			out <- TokenEvent{Error: errors.New(strings.TrimSpace(strings.TrimPrefix(line, "ERR"))), IsEnd: true, FinishReason: "error", GenTokens: genCount}
 			return
+		case strings.HasPrefix(line, "PP "):
+			// Format: PP <read> <total> [fraction] [speed]
+			fields := strings.Fields(line)
+			if len(fields) >= 3 {
+				read, _ := strconv.Atoi(fields[1])
+				total, _ := strconv.Atoi(fields[2])
+				var speed float64
+				if len(fields) >= 5 {
+					speed, _ = strconv.ParseFloat(fields[4], 64)
+				}
+				out <- TokenEvent{IsProgress: true, PromptRead: read, PromptTotal: total, TokPerSec: speed}
+			}
 		}
-		// PP / RESUME / REUSED / INFO lines are progress; ignored here
+		// RESUME / REUSED / INFO lines are progress; ignored here
 	}
 }
 

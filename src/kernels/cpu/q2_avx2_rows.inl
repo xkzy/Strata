@@ -20,6 +20,9 @@ inline void row_multi(const uint8_t* row, const ActQ* const* a, int nblocks, flo
     for (int t = 0; t < NT; ++t) { acc[t] = _mm256_setzero_ps(); corr[t] = 0.f; }
     for (int b = 0; b < nblocks; ++b) {
         const uint8_t* blk = row + (size_t) b * 18;
+#if defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER)
+        _mm_prefetch((const char*)(blk + 72), _MM_HINT_T0);
+#endif
         const float d = h2f(blk);
         __m256i lo, hi;
         unpack64(blk + 2, lo, hi);

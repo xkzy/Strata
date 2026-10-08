@@ -54,14 +54,10 @@ private:
         size_t top_k,
         int32_t* __restrict__ out_indices,
         float* __restrict__ out_weights,
-        std::vector<ExpertScore>& scores,
+        ExpertScore* scores,
         const MathContext& ctx) {
-        if (!logits || !out_indices || !out_weights || num_experts == 0 || top_k == 0) return;
+        if (!logits || !out_indices || !out_weights || !scores || num_experts == 0 || top_k == 0) return;
         top_k = std::min(top_k, num_experts);
-
-        if (scores.size() != num_experts) {
-            scores.resize(num_experts);
-        }
 
         for (size_t i = 0; i < num_experts; ++i) {
             scores[i] = {static_cast<int32_t>(i), sanitize_logit(logits[i], ctx)};
@@ -69,7 +65,7 @@ private:
 
         // Partial quick-select for top-k: O(N + K log K), stable tie-breaking
         std::partial_sort(
-            scores.begin(), scores.begin() + top_k, scores.end(),
+            scores, scores + top_k, scores + num_experts,
             [](const ExpertScore& a, const ExpertScore& b) {
                 if (a.score != b.score) return a.score > b.score;
                 return a.index < b.index;
@@ -105,7 +101,9 @@ public:
         float* __restrict__ out_weights,
         const MathContext& ctx = MathContext()) {
         if (!logits || !out_indices || !out_weights || num_experts == 0 || top_k == 0) return;
-        std::vector<ExpertScore> scores(num_experts);
+        ExpertScore local_scores[256];
+        std::vector<ExpertScore> heap_scores;
+        ExpertScore* scores = (num_experts <= 256) ? local_scores : (heap_scores.resize(num_experts), heap_scores.data());
         route_topk_impl(logits, num_experts, top_k, out_indices, out_weights, scores, ctx);
     }
 
@@ -123,7 +121,9 @@ public:
         const MathContext& ctx = MathContext()) {
         if (!logits || !out_indices || !out_weights || num_tokens == 0 || num_experts == 0 || top_k == 0) return;
 
-        std::vector<ExpertScore> scores(num_experts);
+        ExpertScore local_scores[256];
+        std::vector<ExpertScore> heap_scores;
+        ExpertScore* scores = (num_experts <= 256) ? local_scores : (heap_scores.resize(num_experts), heap_scores.data());
         for (size_t t = 0; t < num_tokens; ++t) {
             const float* tok_logits = logits + t * num_experts;
             int32_t* tok_indices = out_indices + t * top_k;

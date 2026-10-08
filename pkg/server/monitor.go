@@ -26,6 +26,7 @@ type monitoredRequest struct {
 	started      time.Time
 	firstToken   time.Time
 	promptTokens int
+	promptRead   int
 	maxTokens    int
 	generated    int
 	stamps       []time.Time // the last few seconds' tokens, for the current rate
@@ -57,6 +58,16 @@ func (m *requestMonitor) begin(promptTokens, maxTokens int) *monitoredRequest {
 	r := &monitoredRequest{m: m, started: time.Now(), promptTokens: promptTokens, maxTokens: maxTokens}
 	m.running[r] = struct{}{}
 	return r
+}
+
+// promptProgress updates the prompt ingestion progress during prefill.
+func (r *monitoredRequest) promptProgress(read, total int) {
+	r.m.mu.Lock()
+	defer r.m.mu.Unlock()
+	r.promptRead = read
+	if total > 0 {
+		r.promptTokens = total
+	}
 }
 
 // token notes one generated token (the first one ends the prompt's reading).
@@ -163,6 +174,8 @@ func (m *requestMonitor) live(loaded bool) map[string]interface{} {
 	out["elapsed_s"] = round1(now.Sub(cur.started).Seconds())
 	if cur.firstToken.IsZero() {
 		out["state"] = "reading"
+		out["prompt_read"] = cur.promptRead
+		out["prompt_total"] = cur.promptTokens
 		return out
 	}
 	out["state"] = "generating"

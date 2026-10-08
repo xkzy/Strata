@@ -44,6 +44,20 @@ var editable = []editableKey{
 	{key: "open_browser", kind: "bool", help: "Open the chat page in the browser when the model is ready"},
 	{key: "vram_reserve_mib", kind: "arg", flag: "--vram-reserve-mib",
 		help: "VRAM in MiB the engine leaves free for other programs (engine default 700)"},
+	{key: "pool_workers", kind: "arg", flag: "--pool-workers",
+		help: "CPU worker threads for offloaded MoE expert compute (e.g. 8-16 for 16-core CPU; 0 = engine default)"},
+	{key: "pcie_frac", kind: "arg_float", flag: "--pcie-frac",
+		help: "Share of offloaded experts transferred over PCIe to GPU vs computed on CPU (0.0 = 100% CPU pool, 1.0 = GPU DMA)"},
+	{key: "gpus", kind: "arg_str", flag: "--gpus",
+		help: "GPU devices to split layers across (e.g. '0' for dGPU only, '0,1' for dGPU + iGPU multi-GPU split)"},
+	{key: "threads", kind: "arg", flag: "--threads",
+		help: "CPU threads for prompt ingestion and math runtime"},
+	{key: "prefill", kind: "arg_str", flag: "--prefill",
+		help: "Prompt chunk size for prefill ingestion ('auto', '2048', '4096', or '8192'; larger chunks dramatically speed up prefill on Tensor Cores)"},
+	{key: "kv_resident", kind: "arg", flag: "--kv-resident",
+		help: "KV cache tokens kept in GPU VRAM during KV streaming (e.g. 16384 or 32768; frees several GB of VRAM for large prefill chunks & expert cache on 8GB GPUs)"},
+	{key: "prompt_cache", kind: "arg", flag: "--prompt-cache",
+		help: "Reuse previously computed prompt KV states across turns (1 = enable near-instant multi-turn prefill, 0 = recompute)"},
 	{key: "power_policy", kind: "enum", choices: []string{"MAX_THROUGHPUT", "LOW_LATENCY", "BALANCED", "ENERGY_SAVING"},
 		help: "What the adaptive resource controller aims for (#18): throughput, latency, a balance, or saved energy"},
 	{key: "resource_adapt", kind: "bool",
@@ -67,6 +81,9 @@ func argValue(cfg map[string]interface{}, flag string) interface{} {
 			if n, err := strconv.Atoi(v); err == nil {
 				return n
 			}
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				return f
+			}
 			return v
 		}
 	}
@@ -78,7 +95,7 @@ func valueOf(cfg map[string]interface{}, e editableKey) interface{} {
 	case "sampling":
 		s, _ := cfg["sampling"].(map[string]interface{})
 		return s[strings.TrimPrefix(e.key, "sampling.")]
-	case "arg":
+	case "arg", "arg_float", "arg_str":
 		return argValue(cfg, e.flag)
 	}
 	return cfg[e.key]
@@ -90,8 +107,10 @@ func View(cfg map[string]interface{}, path string) map[string]interface{} {
 	for _, e := range editable {
 		kind := e.kind
 		switch kind {
-		case "sampling", "arg", "int>=0", "num>=0":
+		case "sampling", "arg", "arg_float", "int>=0", "num>=0":
 			kind = "number"
+		case "arg_str":
+			kind = "string"
 		}
 		k := map[string]interface{}{"key": e.key, "value": valueOf(cfg, e), "help": e.help, "kind": kind}
 		if e.kind == "enum" {
@@ -192,6 +211,15 @@ func check(key string, v interface{}, cfg map[string]interface{}) (interface{}, 
 	case "int>=0", "arg":
 		f, err := number(key, v, true, 0, nil, false)
 		return num(f, true), err
+	case "arg_float":
+		f, err := number(key, v, false, 0, &one, false)
+		return num(f, false), err
+	case "arg_str":
+		s, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s: expected a string, not %v", key, v)
+		}
+		return strings.TrimSpace(s), nil
 	case "num>=0":
 		f, err := number(key, v, false, 0, nil, false)
 		return num(f, false), err

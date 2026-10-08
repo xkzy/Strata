@@ -78,19 +78,35 @@ public:
         size_t j = 0;
 #if defined(__AVX512F__)
         __m512 scale_v = _mm512_set1_ps(rsqrt_scale);
-        for (; j + 16 <= dim; j += 16) {
-            __m512 xv = _mm512_loadu_ps(x + j);
-            __m512 wv = weight ? _mm512_loadu_ps(weight + j) : _mm512_set1_ps(1.0f);
-            __m512 res = _mm512_mul_ps(_mm512_mul_ps(xv, scale_v), wv);
-            _mm512_storeu_ps(out + j, res);
+        if (weight) {
+            for (; j + 16 <= dim; j += 16) {
+                __m512 xv = _mm512_loadu_ps(x + j);
+                __m512 wv = _mm512_loadu_ps(weight + j);
+                __m512 res = _mm512_mul_ps(_mm512_mul_ps(xv, scale_v), wv);
+                _mm512_storeu_ps(out + j, res);
+            }
+        } else {
+            for (; j + 16 <= dim; j += 16) {
+                __m512 xv = _mm512_loadu_ps(x + j);
+                __m512 res = _mm512_mul_ps(xv, scale_v);
+                _mm512_storeu_ps(out + j, res);
+            }
         }
 #elif defined(__AVX2__)
         __m256 scale_v = _mm256_set1_ps(rsqrt_scale);
-        for (; j + 8 <= dim; j += 8) {
-            __m256 xv = _mm256_loadu_ps(x + j);
-            __m256 wv = weight ? _mm256_loadu_ps(weight + j) : _mm256_set1_ps(1.0f);
-            __m256 res = _mm256_mul_ps(_mm256_mul_ps(xv, scale_v), wv);
-            _mm256_storeu_ps(out + j, res);
+        if (weight) {
+            for (; j + 8 <= dim; j += 8) {
+                __m256 xv = _mm256_loadu_ps(x + j);
+                __m256 wv = _mm256_loadu_ps(weight + j);
+                __m256 res = _mm256_mul_ps(_mm256_mul_ps(xv, scale_v), wv);
+                _mm256_storeu_ps(out + j, res);
+            }
+        } else {
+            for (; j + 8 <= dim; j += 8) {
+                __m256 xv = _mm256_loadu_ps(x + j);
+                __m256 res = _mm256_mul_ps(xv, scale_v);
+                _mm256_storeu_ps(out + j, res);
+            }
         }
 #endif
         for (; j < dim; ++j) {
@@ -145,19 +161,35 @@ public:
         size_t j = 0;
 #if defined(__AVX512F__)
         __m512 scale_v = _mm512_set1_ps(rsqrt_scale);
-        for (; j + 16 <= dim; j += 16) {
-            __m512 rv = _mm512_loadu_ps(inout_residual + j);
-            __m512 wv = weight ? _mm512_loadu_ps(weight + j) : _mm512_set1_ps(1.0f);
-            __m512 res = _mm512_mul_ps(_mm512_mul_ps(rv, scale_v), wv);
-            _mm512_storeu_ps(out_norm + j, res);
+        if (weight) {
+            for (; j + 16 <= dim; j += 16) {
+                __m512 rv = _mm512_loadu_ps(inout_residual + j);
+                __m512 wv = _mm512_loadu_ps(weight + j);
+                __m512 res = _mm512_mul_ps(_mm512_mul_ps(rv, scale_v), wv);
+                _mm512_storeu_ps(out_norm + j, res);
+            }
+        } else {
+            for (; j + 16 <= dim; j += 16) {
+                __m512 rv = _mm512_loadu_ps(inout_residual + j);
+                __m512 res = _mm512_mul_ps(rv, scale_v);
+                _mm512_storeu_ps(out_norm + j, res);
+            }
         }
 #elif defined(__AVX2__)
         __m256 scale_v = _mm256_set1_ps(rsqrt_scale);
-        for (; j + 8 <= dim; j += 8) {
-            __m256 rv = _mm256_loadu_ps(inout_residual + j);
-            __m256 wv = weight ? _mm256_loadu_ps(weight + j) : _mm256_set1_ps(1.0f);
-            __m256 res = _mm256_mul_ps(_mm256_mul_ps(rv, scale_v), wv);
-            _mm256_storeu_ps(out_norm + j, res);
+        if (weight) {
+            for (; j + 8 <= dim; j += 8) {
+                __m256 rv = _mm256_loadu_ps(inout_residual + j);
+                __m256 wv = _mm256_loadu_ps(weight + j);
+                __m256 res = _mm256_mul_ps(_mm256_mul_ps(rv, scale_v), wv);
+                _mm256_storeu_ps(out_norm + j, res);
+            }
+        } else {
+            for (; j + 8 <= dim; j += 8) {
+                __m256 rv = _mm256_loadu_ps(inout_residual + j);
+                __m256 res = _mm256_mul_ps(rv, scale_v);
+                _mm256_storeu_ps(out_norm + j, res);
+            }
         }
 #endif
         for (; j < dim; ++j) {
@@ -173,12 +205,66 @@ public:
         if (dim == 0) return;
 
         float sum_sq = 0.0f;
-        for (size_t i = 0; i < dim; ++i) sum_sq += x[i] * x[i];
+        size_t i = 0;
+#if defined(__AVX512F__)
+        __m512 sq_acc = _mm512_setzero_ps();
+        for (; i + 16 <= dim; i += 16) {
+            __m512 v = _mm512_loadu_ps(x + i);
+            sq_acc = _mm512_fmadd_ps(v, v, sq_acc);
+        }
+        sum_sq = hsum512_ps(sq_acc);
+#elif defined(__AVX2__) && defined(__FMA__)
+        __m256 sq_acc = _mm256_setzero_ps();
+        for (; i + 8 <= dim; i += 8) {
+            __m256 v = _mm256_loadu_ps(x + i);
+            sq_acc = _mm256_fmadd_ps(v, v, sq_acc);
+        }
+        sum_sq = hsum256_ps(sq_acc);
+#endif
+        for (; i < dim; ++i) sum_sq += x[i] * x[i];
 
         const float mean_sq = sum_sq / static_cast<float>(dim);
         const float rsqrt_scale = 1.0f / std::sqrt(mean_sq + eps);
 
-        for (size_t j = 0; j < dim; ++j) {
+        size_t j = 0;
+#if defined(__AVX512F__)
+        __m512 scale_v = _mm512_set1_ps(rsqrt_scale);
+        __m512 one_v = _mm512_set1_ps(1.0f);
+        if (weight) {
+            for (; j + 16 <= dim; j += 16) {
+                __m512 xv = _mm512_loadu_ps(x + j);
+                __m512 wv = _mm512_loadu_ps(weight + j);
+                __m512 factor = _mm512_add_ps(one_v, wv);
+                __m512 res = _mm512_mul_ps(_mm512_mul_ps(xv, scale_v), factor);
+                _mm512_storeu_ps(out + j, res);
+            }
+        } else {
+            for (; j + 16 <= dim; j += 16) {
+                __m512 xv = _mm512_loadu_ps(x + j);
+                __m512 res = _mm512_mul_ps(xv, scale_v);
+                _mm512_storeu_ps(out + j, res);
+            }
+        }
+#elif defined(__AVX2__)
+        __m256 scale_v = _mm256_set1_ps(rsqrt_scale);
+        __m256 one_v = _mm256_set1_ps(1.0f);
+        if (weight) {
+            for (; j + 8 <= dim; j += 8) {
+                __m256 xv = _mm256_loadu_ps(x + j);
+                __m256 wv = _mm256_loadu_ps(weight + j);
+                __m256 factor = _mm256_add_ps(one_v, wv);
+                __m256 res = _mm256_mul_ps(_mm256_mul_ps(xv, scale_v), factor);
+                _mm256_storeu_ps(out + j, res);
+            }
+        } else {
+            for (; j + 8 <= dim; j += 8) {
+                __m256 xv = _mm256_loadu_ps(x + j);
+                __m256 res = _mm256_mul_ps(xv, scale_v);
+                _mm256_storeu_ps(out + j, res);
+            }
+        }
+#endif
+        for (; j < dim; ++j) {
             out[j] = x[j] * rsqrt_scale * (1.0f + (weight ? weight[j] : 0.0f));
         }
     }
@@ -188,6 +274,7 @@ public:
     // ------------------------------------------------------------------------
     static void head_rmsnorm(float* __restrict__ qk, size_t n_heads, size_t head_dim,
                              const float* __restrict__ weight = nullptr, float eps = 1e-6f) {
+        #pragma omp parallel for schedule(static) if (n_heads >= 4)
         for (size_t h = 0; h < n_heads; ++h) {
             float* head_ptr = qk + h * head_dim;
             const float* w_ptr = weight ? weight + h * head_dim : nullptr;

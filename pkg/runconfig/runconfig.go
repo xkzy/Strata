@@ -29,6 +29,10 @@ type StrataConfig struct {
 	AnthropicThinking     string                 `json:"anthropic_thinking"` // "model" or "on_request"
 	PowerPolicy           string                 `json:"power_policy"`       // "MAX_THROUGHPUT", "LOW_LATENCY", "BALANCED", "ENERGY_SAVING"
 	ResourceAdapt         bool                   `json:"resource_adapt"`
+	PoolWorkers           int                    `json:"pool_workers,omitempty"`
+	PcieFrac              float64                `json:"pcie_frac,omitempty"`
+	GPUs                  string                 `json:"gpus,omitempty"`
+	Threads               int                    `json:"threads,omitempty"`
 	Sampling              SamplingConfig         `json:"sampling"`
 	MCPServers            map[string]interface{} `json:"mcp_servers,omitempty"`
 	AllowedHosts          []string               `json:"allowed_hosts,omitempty"`

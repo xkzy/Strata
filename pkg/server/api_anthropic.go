@@ -288,6 +288,7 @@ func (s *StrataServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Re
 			open = kind
 			send("content_block_start", map[string]interface{}{"type": "content_block_start", "index": index, "content_block": block})
 		}
+		nTools := 0
 		for ev := range events {
 			switch {
 			case ev.Err != nil:
@@ -296,8 +297,12 @@ func (s *StrataServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Re
 				return
 			case ev.End:
 				closeBlock()
+				stopReason := anStopReason(ev.Finish)
+				if nTools > 0 && (stopReason == "end_turn" || stopReason == "") {
+					stopReason = "tool_use"
+				}
 				send("message_delta", map[string]interface{}{"type": "message_delta",
-					"delta": map[string]interface{}{"stop_reason": anStopReason(ev.Finish), "stop_sequence": nil},
+					"delta": map[string]interface{}{"stop_reason": stopReason, "stop_sequence": nil},
 					"usage": map[string]interface{}{"output_tokens": ev.GenTokens}})
 				send("message_stop", map[string]interface{}{"type": "message_stop"})
 				return
@@ -312,8 +317,9 @@ func (s *StrataServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Re
 				}
 				send("content_block_delta", map[string]interface{}{"type": "content_block_delta", "index": index, "delta": map[string]interface{}{"type": "text_delta", "text": ev.Text}})
 			case ev.Kind == "tool":
-				openBlock("tool_use", map[string]interface{}{"type": "tool_use", "id": fmt.Sprintf("toolu_%d", time.Now().UnixNano()), "name": ev.Tool.Name, "input": map[string]interface{}{}})
+				openBlock("tool_use", map[string]interface{}{"type": "tool_use", "id": fmt.Sprintf("toolu_%d_%d", time.Now().UnixNano(), nTools), "name": ev.Tool.Name, "input": map[string]interface{}{}})
 				send("content_block_delta", map[string]interface{}{"type": "content_block_delta", "index": index, "delta": map[string]interface{}{"type": "input_json_delta", "partial_json": ev.Tool.Arguments}})
+				nTools++
 			}
 		}
 		return
@@ -328,6 +334,7 @@ func (s *StrataServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Re
 		blocks = append(blocks, map[string]interface{}{"type": kind, key: text})
 	}
 	finish, gen := "stop", 0
+	hasTool := false
 	for ev := range events {
 		switch {
 		case ev.Err != nil:
@@ -343,6 +350,7 @@ func (s *StrataServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Re
 			var input interface{}
 			_ = json.Unmarshal([]byte(ev.Tool.Arguments), &input)
 			blocks = append(blocks, map[string]interface{}{"type": "tool_use", "id": fmt.Sprintf("toolu_%d_%d", time.Now().UnixNano(), len(blocks)), "name": ev.Tool.Name, "input": input})
+			hasTool = true
 		}
 	}
 	for _, b := range blocks {
@@ -352,6 +360,9 @@ func (s *StrataServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Re
 	}
 	if blocks == nil {
 		blocks = []map[string]interface{}{}
+	}
+	if hasTool && (finish == "stop" || finish == "") {
+		finish = "tool_calls"
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"id": msgID, "type": "message", "role": "assistant", "model": model, "content": blocks,

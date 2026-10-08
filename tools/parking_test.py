@@ -57,6 +57,15 @@ def run(a, cfg, tok, with_b):
     if with_b and "SNAPSHOT_VERIFY draft=" not in log:
         print("no SNAPSHOT_VERIFY line: the draft ring was not read back", flush=True)
     reparked = [int(x) for x in re.findall(r"parked \d+ tokens .*reused_kv_bytes=(\d+)", log)]
+    kvev = re.findall(r"^KVEV v1 (park|restore|checkpoint) tier=(live|checkpoint|parked) tokens=(\d+)-(\d+) bytes=(\d+) ms=([\d.]+)$",
+                      log, re.M)
+    if with_b:   # the server's KV ledger (pkg/engineipc/kvledger.go) reads these lines
+        kinds = {k[0] for k in kvev}
+        assert {"park", "restore"} <= kinds, f"no KVEV park/restore line in the engine log (saw {sorted(kinds)})"
+        for ev, tier, a_, b_, nbytes, ms in kvev:
+            assert int(b_) >= int(a_) and int(nbytes) > 0 and float(ms) >= 0, f"implausible KVEV line: {ev} {a_}-{b_} {nbytes} {ms}"
+        print(f"KVEV lines: {len(kvev)} ({', '.join(sorted(kinds))}); " +
+              "; ".join(f"{e} {t} {int(b)-int(a)} tok {int(n)/2**20:.0f} MiB {m} ms" for e, t, a, b, n, m in kvev[-4:]), flush=True)
     return len(pa), len(follow), got, done, dt, restored, reparked
 
 

@@ -101,7 +101,41 @@ func (s *StrataServer) startGeneration(ctx context.Context, spec genSpec) (<-cha
 		}
 	}
 	ctxLimit := s.Config.MaxContext
-	avail := ctxLimit - len(ids)
+	if ctxLimit <= 0 {
+		ctxLimit = 65536
+	}
+	const engineSafetyMargin = 8
+	targetHeadroom := min(max(spec.MaxTokens, 512), 4096)
+	if targetHeadroom >= ctxLimit-engineSafetyMargin-16 {
+		targetHeadroom = 512
+	}
+	maxPromptTokens := ctxLimit - targetHeadroom - engineSafetyMargin
+	if maxPromptTokens < 16 {
+		maxPromptTokens = ctxLimit - engineSafetyMargin - 1
+	}
+
+	if len(ids) > maxPromptTokens && !spec.Raw && len(spec.Messages) > 1 {
+		// Virtual context sliding window compaction for multi-turn chats
+		msgs := append([]chattemplate.Message(nil), spec.Messages...)
+		for len(msgs) > 1 && len(ids) > maxPromptTokens {
+			if msgs[0].Role == "system" || msgs[0].Role == "developer" {
+				if len(msgs) > 2 {
+					msgs = append(msgs[:1], msgs[2:]...)
+				} else {
+					break
+				}
+			} else {
+				msgs = msgs[1:]
+			}
+			text, plain, err := chattemplate.RenderSpans(msgs, spec.Opt)
+			if err == nil {
+				ids = tok.EncodeWithPlain(text, true, plain)
+				startInReasoning = spec.Opt.AddGenerationPrompt && strings.HasSuffix(text, "<think>\n")
+			}
+		}
+	}
+
+	avail := ctxLimit - len(ids) - engineSafetyMargin
 	if avail < 1 {
 		return nil, 0, &apiError{Status: 400, Type: "context_length_exceeded",
 			Msg: fmt.Sprintf("the prompt is %d tokens, which does not fit the model's context of %d tokens", len(ids), ctxLimit)}
@@ -150,6 +184,10 @@ func (s *StrataServer) startGeneration(ctx context.Context, spec genSpec) (<-cha
 				if alive {
 					send(genEvent{End: true, Err: ev.Error, GenTokens: ev.GenTokens})
 				}
+				continue
+			}
+			if ev.IsProgress {
+				rq.promptProgress(ev.PromptRead, ev.PromptTotal)
 				continue
 			}
 			if !ev.IsEnd {

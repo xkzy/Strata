@@ -146,7 +146,9 @@ func (s *StrataServer) Router() http.Handler {
 	mux.HandleFunc("/v1/messages", s.recordAPI(s.handleAnthropicMessages))
 	mux.HandleFunc("/v1/responses", s.recordAPI(s.handleResponsesAPI))
 	mux.HandleFunc("/v1/models", s.handleModels)
+	mux.HandleFunc("/v1/models/", s.handleModels)
 	mux.HandleFunc("/models", s.handleModels)
+	mux.HandleFunc("/models/", s.handleModels)
 
 	// Health, Status & Telemetry
 	mux.HandleFunc("/health", s.handleHealth)
@@ -168,6 +170,7 @@ func (s *StrataServer) Router() http.Handler {
 	// In-Web Hardware & Model Setup Endpoints
 	mux.HandleFunc("/api/setup/hardware", s.handleSetupHardware)
 	mux.HandleFunc("/api/setup/models", s.handleSetupModels)
+	mux.HandleFunc("/api/setup/resolve", s.handleSetupResolve)
 	mux.HandleFunc("/api/setup/configure", s.handleSetupConfigure)
 	mux.HandleFunc("/api/setup/download", s.handleSetupDownload)
 	mux.HandleFunc("/api/setup/status", s.handleSetupStatus)
@@ -240,8 +243,8 @@ func publicPath(r *http.Request) bool {
 	switch r.URL.Path {
 	case "/health", "/api/health", "/", "/monitor", "/monitor.html", "/api-monitor", "/favicon.ico":
 		return true
-	case "/api/setup/hardware", "/api/setup/models", "/api/setup/status":
-		return r.Method == http.MethodGet
+	case "/api/setup/hardware", "/api/setup/models", "/api/setup/status", "/api/setup/resolve":
+		return true
 	}
 	return false
 }
@@ -389,17 +392,87 @@ func (s *StrataServer) activeCancelIDs() []string {
 	return ids
 }
 
-func (s *StrataServer) handleModels(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"object": "list",
-		"data": []map[string]interface{}{
+func (s *StrataServer) modelEntry(id string) map[string]interface{} {
+	ctx := s.Config.MaxContext
+	if ctx <= 0 {
+		ctx = 65536
+	}
+	virt := s.Config.VirtualLimit
+	if virt < ctx {
+		virt = 2000000
+	}
+	created := s.started.Unix()
+	if created <= 0 {
+		created = time.Now().Unix()
+	}
+	return map[string]interface{}{
+		"id":                      id,
+		"object":                  "model",
+		"created":                 created,
+		"owned_by":                "strata",
+		"context_window":          virt,
+		"max_context_length":      virt,
+		"context_length":          virt,
+		"max_tokens":              virt,
+		"max_input_tokens":        virt,
+		"max_output_tokens":       16384,
+		"physical_context_window": ctx,
+		"physical_context_length": ctx,
+		"virtual_context_limit":   virt,
+		"virtual_context_tokens":  virt,
+		"permission": []map[string]interface{}{
 			{
-				"id":       s.Config.ModelName,
-				"object":   "model",
-				"created":  time.Now().Unix(),
-				"owned_by": "strata",
+				"id":                   "modelperm-" + id,
+				"object":               "model_permission",
+				"created":              created,
+				"allow_create_engine":  false,
+				"allow_sampling":       true,
+				"allow_logprobs":       true,
+				"allow_search_indices": false,
+				"allow_view":           true,
+				"allow_fine_tuning":    false,
+				"organization":         "*",
+				"group":                nil,
+				"is_blocking":          false,
 			},
 		},
+	}
+}
+
+func (s *StrataServer) handleModels(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/v1/models")
+	path = strings.TrimPrefix(path, "/models")
+	path = strings.TrimPrefix(path, "/")
+
+	primaryID := s.Config.ModelName
+	if primaryID == "" {
+		primaryID = "qwen3.8-flash-next-coder-iq1_m"
+	}
+
+	if path != "" {
+		writeJSON(w, http.StatusOK, s.modelEntry(path))
+		return
+	}
+
+	seen := make(map[string]bool)
+	var data []map[string]interface{}
+	addModel := func(id string) {
+		id = strings.TrimSpace(id)
+		if id != "" && !seen[id] {
+			seen[id] = true
+			data = append(data, s.modelEntry(id))
+		}
+	}
+
+	addModel(primaryID)
+	addModel("strata")
+	addModel("qwen3.8-flash-next")
+	addModel("qwen3.8-flash-next-coder")
+	addModel("coder")
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"object": "list",
+		"data":   data,
 	})
 }
 
@@ -479,9 +552,29 @@ func (s *StrataServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		engInfo = s.EngineIPC.Info()
 	}
 	mergeEngineInfo(engineMap, engInfo)
+	var kvTotals engineipc.KVTotals
+	if s.EngineIPC != nil {
+		requests = annotateKVCost(requests, s.EngineIPC.KVLedger().Events())
+		kvTotals = s.EngineIPC.KVLedger().Totals()
+	}
+	cc := conversationCacheView(engInfo, requests, totals)
+	cc["ledger"] = kvLedgerView(kvTotals)
+	if s.EngineIPC != nil {
+		cc["parks"], cc["restores"] = kvTotals.Parks, kvTotals.Restores
+		if kvTotals.HasParked { // the engine's own count after its latest park or restore
+			cc["parked"], cc["bytes"] = int(kvTotals.Parked), int(kvTotals.ParkedBytes)
+		}
+		sum := 0 // the monitor records no reuse; the listed requests carry what the engine's restores gave back
+		for _, r := range requests {
+			sum += asInt(r["reused"])
+		}
+		if sum > asInt(cc["reused_tokens"]) {
+			cc["reused_tokens"] = sum
+		}
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"conversation_cache": conversationCacheView(engInfo, requests, totals),
+		"conversation_cache": cc,
 		"engine":             engineMap,
 		"live":               liveMap,
 		"hardware":           nowMap,
@@ -892,10 +985,13 @@ func (s *StrataServer) handleSetupConfigure(w http.ResponseWriter, r *http.Reque
 	}
 
 	var req struct {
-		ModelName    string `json:"model_name"`
-		ModelPath    string `json:"model_path"`
-		MaxContext   int    `json:"max_context"`
-		VirtualLimit int    `json:"virtual_limit"`
+		ModelName    string   `json:"model_name"`
+		ModelPath    string   `json:"model_path"`
+		MaxContext   int      `json:"max_context"`
+		VirtualLimit int      `json:"virtual_limit"`
+		PoolWorkers  int      `json:"pool_workers"`
+		PcieFrac     *float64 `json:"pcie_frac"`
+		GPUs         string   `json:"gpus"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":{"message":"Invalid JSON payload"}}`, http.StatusBadRequest)
@@ -922,6 +1018,15 @@ func (s *StrataServer) handleSetupConfigure(w http.ResponseWriter, r *http.Reque
 		cfg.ModelPath = s.Config.ModelPath
 		cfg.MaxContext = s.Config.MaxContext
 		cfg.VirtualLimit = s.Config.VirtualLimit
+		if req.PoolWorkers > 0 {
+			cfg.PoolWorkers = req.PoolWorkers
+		}
+		if req.PcieFrac != nil {
+			cfg.PcieFrac = *req.PcieFrac
+		}
+		if req.GPUs != "" {
+			cfg.GPUs = req.GPUs
+		}
 		s.ConfigManager.Update(cfg)
 		_ = s.ConfigManager.SaveToFile("")
 	}
@@ -933,8 +1038,37 @@ func (s *StrataServer) handleSetupConfigure(w http.ResponseWriter, r *http.Reque
 			"model_path":    s.Config.ModelPath,
 			"max_context":   s.Config.MaxContext,
 			"virtual_limit": s.Config.VirtualLimit,
+			"pool_workers":  req.PoolWorkers,
+			"pcie_frac":     req.PcieFrac,
+			"gpus":          req.GPUs,
 		},
 	})
+}
+
+func (s *StrataServer) handleSetupResolve(w http.ResponseWriter, r *http.Request) {
+	input := r.URL.Query().Get("q")
+	if input == "" && r.Method == http.MethodPost {
+		var req struct {
+			Input string `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			input = req.Input
+		}
+	}
+	if strings.TrimSpace(input) == "" {
+		http.Error(w, `{"error":{"message":"input query or JSON body is required"}}`, http.StatusBadRequest)
+		return
+	}
+
+	opt, err := installer.ResolveHuggingFaceInput(input)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, opt)
 }
 
 func mustAbs(p string) string {
@@ -948,10 +1082,10 @@ func (s *StrataServer) handleSetupDownload(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Only models of the built-in catalog can be downloaded: the client chooses a name, never a URL or a path.
+	// Only models of the built-in catalog or valid Hugging Face repos/URLs can be downloaded.
 	var req struct {
 		ModelName   string `json:"model_name"`
-		DownloadURL string `json:"-"` // never read from the client
+		DownloadURL string `json:"-"` // never read directly from client body for untrusted paths
 		DestPath    string `json:"-"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -967,8 +1101,12 @@ func (s *StrataServer) handleSetupDownload(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	if choice == nil {
-		http.Error(w, `{"error":{"message":"unknown model: choose one from /api/setup/models"}}`, http.StatusBadRequest)
-		return
+		if res, err := installer.ResolveHuggingFaceInput(req.ModelName); err == nil {
+			choice = res
+		} else {
+			http.Error(w, `{"error":{"message":"unknown model: choose one from /api/setup/models or provide a valid Hugging Face URL/repo"}}`, http.StatusBadRequest)
+			return
+		}
 	}
 	req.DownloadURL = choice.DownloadURL
 	if choice.DownloadURL == "" { // a model already on this machine (catalog entry with a local path)

@@ -3,6 +3,7 @@ package telemetry
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -151,4 +152,112 @@ func parseNvidiaSmiLine(line string) (nvSample, bool) {
 	s.pcieGenMax, _ = strconv.Atoi(f(6))
 	s.pcieWidth, _ = strconv.Atoi(f(7))
 	return s, true
+}
+
+func parseGtToGen(gtStr string) int {
+	gtStr = strings.ToLower(strings.TrimSpace(gtStr))
+	if strings.Contains(gtStr, "64.0") {
+		return 6
+	} else if strings.Contains(gtStr, "32.0") {
+		return 5
+	} else if strings.Contains(gtStr, "16.0") {
+		return 4
+	} else if strings.Contains(gtStr, "8.0") {
+		return 3
+	} else if strings.Contains(gtStr, "5.0") {
+		return 2
+	} else if strings.Contains(gtStr, "2.5") {
+		return 1
+	}
+	if n, err := strconv.Atoi(gtStr); err == nil && n >= 1 && n <= 6 {
+		return n
+	}
+	return 0
+}
+
+func discoverDrmPCIe(root string) (gen, maxGen, width, maxWidth int) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return 0, 0, 0, 0
+	}
+	bestVRAM := uint64(0)
+	for _, e := range entries {
+		if !cardDir.MatchString(e.Name()) {
+			continue
+		}
+		dir := filepath.Join(root, e.Name(), "device")
+		vram, _ := readUint(filepath.Join(dir, "mem_info_vram_total"))
+
+		curSpeed, _ := os.ReadFile(filepath.Join(dir, "current_link_speed"))
+		maxSpeed, _ := os.ReadFile(filepath.Join(dir, "max_link_speed"))
+		curWidth, _ := readUint(filepath.Join(dir, "current_link_width"))
+		maxW, _ := readUint(filepath.Join(dir, "max_link_width"))
+
+		g := parseGtToGen(string(curSpeed))
+		mg := parseGtToGen(string(maxSpeed))
+		w := int(curWidth)
+		mw := int(maxW)
+
+		if g > 0 || mg > 0 || w > 0 {
+			if vram >= bestVRAM || gen == 0 {
+				bestVRAM = vram
+				gen = g
+				maxGen = mg
+				width = w
+				maxWidth = mw
+			}
+		}
+	}
+	return
+}
+
+func PcieBandwidthGBps(gen, width int) float64 {
+	var perLaneGBps float64
+	switch gen {
+	case 1:
+		perLaneGBps = 0.250
+	case 2:
+		perLaneGBps = 0.500
+	case 3:
+		perLaneGBps = 0.985
+	case 4:
+		perLaneGBps = 1.969
+	case 5:
+		perLaneGBps = 3.938
+	case 6:
+		perLaneGBps = 7.877
+	default:
+		perLaneGBps = 1.969
+	}
+	if width <= 0 {
+		width = 16
+	}
+	return perLaneGBps * float64(width)
+}
+
+// readPcieThroughput probes live PCIe RX and TX transfer rates in MB/s via nvidia-smi dmon.
+func (tc *TelemetryCollector) readPcieThroughput() (rxMB, txMB float64, ok bool) {
+	out, err := exec.Command("nvidia-smi", "dmon", "-s", "t", "-c", "1").Output()
+	if err != nil {
+		return 0, 0, false
+	}
+	lines := strings.Split(string(out), "\n")
+	found := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") || trimmed == "" {
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) >= 3 {
+			rx, errRx := strconv.ParseFloat(fields[1], 64)
+			tx, errTx := strconv.ParseFloat(fields[2], 64)
+			if errRx == nil && errTx == nil {
+				rxMB += rx
+				txMB += tx
+				found = true
+			}
+		}
+	}
+	return rxMB, txMB, found
 }

@@ -324,9 +324,21 @@ func TestSetupEndpoints(t *testing.T) {
 		t.Errorf("expected active model updated, got %v", statusRes["active_model"])
 	}
 
-	// 5. POST /api/setup/cancel
-	resp5, err := http.Post(ts.URL+"/api/setup/cancel", "application/json", strings.NewReader("{}"))
+	// 5. POST /api/setup/resolve
+	resolvePayload := `{"input": "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF"}`
+	resp5, err := http.Post(ts.URL+"/api/setup/resolve", "application/json", strings.NewReader(resolvePayload))
 	if err != nil || resp5.StatusCode != http.StatusOK {
+		t.Fatalf("failed POST /api/setup/resolve: %v", err)
+	}
+	var resolveRes map[string]interface{}
+	json.NewDecoder(resp5.Body).Decode(&resolveRes)
+	if resolveRes["repo_id"] != "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF" {
+		t.Errorf("expected repo_id in resolve response, got %v", resolveRes["repo_id"])
+	}
+
+	// 6. POST /api/setup/cancel
+	resp6, err := http.Post(ts.URL+"/api/setup/cancel", "application/json", strings.NewReader("{}"))
+	if err != nil || resp6.StatusCode != http.StatusOK {
 		t.Fatalf("failed POST /api/setup/cancel: %v", err)
 	}
 }

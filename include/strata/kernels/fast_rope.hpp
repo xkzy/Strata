@@ -117,7 +117,33 @@ public:
     static void apply_interleaved(float* __restrict__ vec, const float* __restrict__ cos_tab,
                                   const float* __restrict__ sin_tab, int64_t rot_dim) {
         const int64_t n_pairs = rot_dim / 2;
-        for (int64_t i = 0; i < n_pairs; ++i) {
+        int64_t i = 0;
+
+#if defined(__AVX2__) && defined(__FMA__)
+        const __m256 sign_mask = _mm256_setr_ps(-1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f);
+        for (; i <= n_pairs - 4; i += 4) {
+            __m256 v = _mm256_loadu_ps(vec + 2 * i);
+            // Load 4 cos and sin floats and duplicate each: [c0, c0, c1, c1, c2, c2, c3, c3]
+            __m128 c128 = _mm_loadu_ps(cos_tab + i);
+            __m128 s128 = _mm_loadu_ps(sin_tab + i);
+
+            __m128 c_lo = _mm_unpacklo_ps(c128, c128); // c0, c0, c1, c1
+            __m128 c_hi = _mm_unpackhi_ps(c128, c128); // c2, c2, c3, c3
+            __m256 c_dup = _mm256_set_m128(c_hi, c_lo);
+
+            __m128 s_lo = _mm_unpacklo_ps(s128, s128); // s0, s0, s1, s1
+            __m128 s_hi = _mm_unpackhi_ps(s128, s128); // s2, s2, s3, s3
+            __m256 s_dup = _mm256_set_m128(s_hi, s_lo);
+
+            __m256 s_signed = _mm256_mul_ps(s_dup, sign_mask);
+            __m256 v_swap = _mm256_shuffle_ps(v, v, _MM_SHUFFLE(2, 3, 0, 1));
+
+            __m256 out = _mm256_fmadd_ps(v_swap, s_signed, _mm256_mul_ps(v, c_dup));
+            _mm256_storeu_ps(vec + 2 * i, out);
+        }
+#endif
+
+        for (; i < n_pairs; ++i) {
             float v0 = vec[2 * i + 0];
             float v1 = vec[2 * i + 1];
             float c = cos_tab[i];

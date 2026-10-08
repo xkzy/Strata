@@ -6492,6 +6492,10 @@ int main(int argc, char** argv) {
                              stored ? "parked" : "skipped", live.size(),
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes(), conversations.evictions(), snapshot_bytes, reused_bytes);
+                if (stored)   // the server's KV ledger reads this line (pkg/engineipc/kvledger.go)
+                    std::fprintf(stderr, "KVEV v1 park tier=parked tokens=0-%zu bytes=%zu ms=%.1f parked=%zu parked_bytes=%zu\n", live.size(),
+                                 snapshot_bytes, std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
+                                 conversations.size(), conversations.bytes());
             } catch (const std::bad_alloc&) {
                 // The active state has not been touched. Continue with normal
                 // prompt processing rather than killing a serving process.
@@ -6559,7 +6563,10 @@ int main(int argc, char** argv) {
                 c.block_pos = std::move((*parts)[0].block_pos);
                 for (size_t i = 1; i < parts->size(); ++i) c.stage_parts.push_back(std::move((*parts)[i]));
             } else {
+                const Clock::time_point ck0 = Clock::now();
                 if (!gpu_sync_ok() || !checkpoint_save(c, ss, g)) return false;
+                std::fprintf(stderr, "KVEV v1 checkpoint tier=checkpoint tokens=0-%zu bytes=%zu ms=%.1f\n", c.ids.size(), c.bytes(),
+                             std::chrono::duration<double, std::milli>(Clock::now() - ck0).count());
                 for (auto& st : stages) {   // a layer split's later stages: their sessions' part
                     const strata::core::OnDevice on(st->dev);
                     ConvCheckpoint part;
@@ -8018,7 +8025,7 @@ int main(int argc, char** argv) {
                 continue;
             }
             char* endp = nullptr;
-            const long long max_new = std::strtoll(line.c_str() + (geni ? 5 : 4), &endp, 10);
+            long long max_new = std::strtoll(line.c_str() + (geni ? 5 : 4), &endp, 10);
             // optional sampling keys between max_new and the ids: temperature=F, top_p=F, top_k=N, min_p=F,
             // penalty_last_n=N, penalty_repeat=F, penalty_freq=F, penalty_present=F, seed=N (text requests
             // only).  Absent keys keep today's behavior: greedy, no penalties.
@@ -8169,10 +8176,13 @@ int main(int argc, char** argv) {
                 mrope_identity = !geni;
             }
             sp.embd_rows = geni ? row_ptr.data() : nullptr;
-            if (n + max_new + 8 > o.max_context) {
-                std::printf("ERR prompt (%lld tokens) + max_new (%lld) exceeds the context (%lld)\n", (long long) n,
-                            (long long) max_new, (long long) o.max_context);
+            if (n + 8 >= o.max_context) {
+                std::printf("ERR prompt (%lld tokens) exceeds the context (%lld)\n", (long long) n,
+                            (long long) o.max_context);
                 continue;
+            }
+            if (n + max_new + 8 > o.max_context) {
+                max_new = std::max<int64_t>(1, o.max_context - n - 8);
             }
             bool bad = false;
             for (int64_t t : ids) bad = bad || t < 0 || t >= n_vocab;
@@ -8329,6 +8339,7 @@ int main(int argc, char** argv) {
             }
             if (incoming) {
                 const auto t0 = Clock::now();
+                const size_t restored_bytes = incoming->bytes();   // before the K/V is moved on to retain()
                 if (strata::core::conversation_snapshot_restore(*incoming, ss, g,
                         use_mtp && stages.empty() ? &mtp.kv_state() : nullptr, err) !=
                     strata::core::ConversationRestore::restored) {
@@ -8383,6 +8394,10 @@ int main(int argc, char** argv) {
                 incoming.reset(); // Running-state/checkpoint copies are no longer needed.
                 std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens (%s) in %.1f ms; parked=%zu bytes=%zu\n",
                              (long long) resume, from_live ? "live" : "checkpoint",
+                             std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
+                             conversations.size(), conversations.bytes());
+                std::fprintf(stderr, "KVEV v1 restore tier=%s tokens=0-%lld bytes=%zu ms=%.1f parked=%zu parked_bytes=%zu\n",
+                             from_live ? "live" : "checkpoint", (long long) resume, restored_bytes,
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes());
             }

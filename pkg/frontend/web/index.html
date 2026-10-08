@@ -44,36 +44,82 @@
 <main>
   <!-- ============================ Chat ============================ -->
   <section class="view view--chat" id="view-chat" role="tabpanel" aria-labelledby="tab-btn-chat">
-    <div class="chat-scroll" id="chat-scroll">
-      <div class="chat" id="chat">
-        <div class="chat-empty" id="chat-empty">
-          <div class="chat-empty__title">Ask anything</div>
-          <div class="chat-empty__sub" id="chat-empty-sub">The model runs on this PC. Nothing leaves it.</div>
+    <div class="chat-layout">
+      <!-- ChatGPT-style Collapsible Sessions Sidebar -->
+      <aside class="chat-sidebar" id="chat-sidebar">
+        <div class="chat-sidebar__top">
+          <button type="button" class="sidebar-new-btn" id="sidebar-new-btn">
+            <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-new-chat"/></svg>New chat
+          </button>
+          <button type="button" class="st-btn st-btn--icon st-btn--sm" id="sidebar-close-btn" title="Collapse sidebar" aria-label="Collapse sidebar">
+            <svg class="st-icon st-icon--sm" style="transform: rotate(90deg);"><use href="web/sprite.svg#i-chevron"/></svg>
+          </button>
+        </div>
+        <div class="chat-sidebar__search">
+          <input class="st-input st-input--sm" id="session-search-input" type="text" placeholder="Search chats...">
+        </div>
+        <div class="session-list" id="session-list" role="list">
+          <!-- Populated by renderSessionList() -->
+        </div>
+        <div class="chat-sidebar__footer">
+          <span class="muted small" id="session-count-label">0 chats</span>
+          <button type="button" class="st-btn st-btn--icon st-btn--sm" id="clear-all-sessions-btn" title="Clear all chat history" aria-label="Clear all chats">
+            <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-trash"/></svg>
+          </button>
+        </div>
+      </aside>
+
+      <!-- Main Chat Area -->
+      <div class="chat-main" id="chat-main">
+        <div class="chat-topbar" id="chat-topbar">
+          <button type="button" class="st-btn st-btn--icon st-btn--sm sidebar-toggle-btn" id="sidebar-open-btn" title="Open chat history" aria-label="Open chat history">
+            <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-chat"/></svg>
+          </button>
+          <div class="active-session-info">
+            <span class="active-session-title" id="active-session-title" title="Click to rename">New Chat</span>
+            <button type="button" class="st-btn st-btn--icon st-btn--sm" id="rename-session-btn" title="Rename session" aria-label="Rename session">
+              <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-settings"/></svg>
+            </button>
+          </div>
+          <span class="spacer"></span>
+          <button type="button" class="st-btn st-btn--icon st-btn--sm" id="fork-session-btn" title="Fork chat (duplicate branch)" aria-label="Fork chat">
+            <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-refresh"/></svg>
+          </button>
+        </div>
+
+        <div class="chat-scroll" id="chat-scroll">
+          <div class="chat" id="chat">
+            <div class="chat-empty" id="chat-empty">
+              <div class="chat-empty__title">Ask anything</div>
+              <div class="chat-empty__sub" id="chat-empty-sub">The model runs on this PC. Nothing leaves it.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="composer-wrap">
+          <form class="st-composer" id="composer">
+            <div class="attachments" id="attachments" hidden></div>
+            <textarea id="input" rows="2" placeholder="Ask anything&hellip;" aria-label="Message"></textarea>
+            <div class="st-composer__bar">
+              <button type="button" class="st-btn st-btn--icon" id="attach-btn" title="Attach a text file (or drop it here)" aria-label="Attach a file">
+                <svg class="st-icon"><use href="web/sprite.svg#i-attach"/></svg></button>
+              <input type="file" id="file" multiple hidden>
+              <button type="button" class="st-btn st-btn--icon" id="new-btn" title="New chat" aria-label="New chat">
+                <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
+              <button type="button" class="st-btn st-btn--icon" id="export-btn" title="Save this chat as Markdown" aria-label="Save this chat">
+                <svg class="st-icon"><use href="web/sprite.svg#i-download"/></svg></button>
+              <button type="button" class="st-btn st-btn--icon" id="sampling-btn" title="Sampling and thinking" aria-label="Sampling and thinking">
+                <svg class="st-icon"><use href="web/sprite.svg#i-settings"/></svg></button>
+              <span class="spacer"></span>
+              <span class="composer-hint" id="composer-hint"></span>
+              <button type="button" class="st-btn st-btn--secondary" id="stop-btn" hidden>
+                <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-stop"/></svg>Stop</button>
+              <button type="submit" class="st-btn st-btn--primary st-btn--send" id="send-btn" aria-label="Send">
+                <svg class="st-icon"><use href="web/sprite.svg#i-send"/></svg></button>
+            </div>
+          </form>
         </div>
       </div>
-    </div>
-    <div class="composer-wrap">
-      <form class="st-composer" id="composer">
-        <div class="attachments" id="attachments" hidden></div>
-        <textarea id="input" rows="2" placeholder="Ask anything&hellip;" aria-label="Message"></textarea>
-        <div class="st-composer__bar">
-          <button type="button" class="st-btn st-btn--icon" id="attach-btn" title="Attach a text file (or drop it here)" aria-label="Attach a file">
-            <svg class="st-icon"><use href="web/sprite.svg#i-attach"/></svg></button>
-          <input type="file" id="file" multiple hidden>
-          <button type="button" class="st-btn st-btn--icon" id="new-btn" title="New chat" aria-label="New chat">
-            <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
-          <button type="button" class="st-btn st-btn--icon" id="export-btn" title="Save this chat as Markdown" aria-label="Save this chat">
-            <svg class="st-icon"><use href="web/sprite.svg#i-download"/></svg></button>
-          <button type="button" class="st-btn st-btn--icon" id="sampling-btn" title="Sampling and thinking" aria-label="Sampling and thinking">
-            <svg class="st-icon"><use href="web/sprite.svg#i-settings"/></svg></button>
-          <span class="spacer"></span>
-          <span class="composer-hint" id="composer-hint"></span>
-          <button type="button" class="st-btn st-btn--secondary" id="stop-btn" hidden>
-            <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-stop"/></svg>Stop</button>
-          <button type="submit" class="st-btn st-btn--primary st-btn--send" id="send-btn" aria-label="Send">
-            <svg class="st-icon"><use href="web/sprite.svg#i-send"/></svg></button>
-        </div>
-      </form>
     </div>
   </section>
 
@@ -141,6 +187,52 @@
             </table>
           </div>
           <p class="muted req-totals" id="req-totals"></p>
+
+          <!-- Request Inspector Drawer (Merged from /monitor) -->
+          <div class="mon-detail-card" id="mon-detail-card" hidden>
+            <div class="req-head">
+              <div>
+                <span class="card-title" id="mon-detail-title">Request Detail</span>
+                <div class="muted small" id="mon-detail-time"></div>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;">
+                <span id="mon-detail-status" class="st-badge"></span>
+                <button type="button" class="st-btn st-btn--icon" id="mon-detail-close" title="Close inspector" aria-label="Close">
+                  <svg class="st-icon"><use href="web/sprite.svg#i-close"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="hw-grid" style="grid-template-columns:repeat(4,1fr);margin:8px 0;">
+              <div class="hw-stat">
+                <span class="hw-stat__label">Wall-clock</span>
+                <span class="hw-stat__val" id="mon-fact-wall">–</span>
+              </div>
+              <div class="hw-stat">
+                <span class="hw-stat__label">First Token</span>
+                <span class="hw-stat__val" id="mon-fact-first">–</span>
+              </div>
+              <div class="hw-stat">
+                <span class="hw-stat__label">Prompt / Output</span>
+                <span class="hw-stat__val" id="mon-fact-tokens">–</span>
+              </div>
+              <div class="hw-stat">
+                <span class="hw-stat__label">Decode Speed</span>
+                <span class="hw-stat__val" id="mon-fact-speed">–</span>
+              </div>
+            </div>
+            <div class="mon-tabs" role="tablist" aria-label="Request content">
+              <button type="button" role="tab" data-mon-pane="input" aria-selected="true">Input</button>
+              <button type="button" role="tab" data-mon-pane="output" aria-selected="false">Output</button>
+              <button type="button" role="tab" data-mon-pane="reasoning" aria-selected="false">Reasoning</button>
+              <button type="button" role="tab" data-mon-pane="vctx" aria-selected="false">Virtual KV & RAG</button>
+              <button type="button" role="tab" data-mon-pane="tool" aria-selected="false">Tool & CAS</button>
+              <button type="button" role="tab" data-mon-pane="scope" aria-selected="false">Tenant Scope</button>
+              <button type="button" role="tab" data-mon-pane="response" aria-selected="false">API Response</button>
+              <button type="button" class="st-btn st-btn--secondary" id="mon-copy-btn" style="margin-left:auto;height:28px;padding:0 10px;font-size:12px;">Copy</button>
+            </div>
+            <div id="mon-content-note" class="muted small" style="margin-top:6px;"></div>
+            <pre id="mon-content" style="margin-top:6px;max-height:280px;overflow:auto;background:var(--st-bg);padding:10px 12px;border:1px solid var(--st-line-soft);border-radius:8px;font:12px/1.5 var(--st-font-mono);white-space:pre-wrap;"></pre>
+          </div>
         </div>
       </div>
 
@@ -194,10 +286,34 @@
       <div class="st-card model-config-card">
         <div class="req-head">
           <div>
-            <span class="card-title">Model Quantization & Memory Recommendation</span>
-            <div class="muted small">Select the model variant optimal for your available RAM & VRAM</div>
+            <span class="card-title">Model Catalog & Auto-Detection</span>
+            <div class="muted small">Select from Hugging Face models, local Ollama repositories, or custom GGUF links</div>
           </div>
         </div>
+
+        <div class="setup-filter-row">
+          <div class="setup-filter-pills" id="setup-cat-filters">
+            <button class="st-pill active" data-cat="all" type="button">All Models</button>
+            <button class="st-pill" data-cat="recommended" type="button">⭐ Recommended</button>
+            <button class="st-pill" data-cat="huggingface" type="button">🤗 Hugging Face</button>
+            <button class="st-pill" data-cat="ollama" type="button">🦙 Ollama</button>
+            <button class="st-pill" data-cat="local" type="button">⚡ Local Packs</button>
+            <button class="st-pill" data-cat="coder" type="button">💻 Coding</button>
+            <button class="st-pill" data-cat="reasoning" type="button">🧠 Reasoning</button>
+            <button class="st-pill" data-cat="lightweight" type="button">⚡ Lightweight</button>
+          </div>
+          <div class="setup-search-wrap">
+            <input class="st-input st-input--sm" id="setup-search-input" type="text" placeholder="Search models (e.g. Qwen, DeepSeek, 8B, Q4)...">
+          </div>
+        </div>
+
+        <div class="setup-import-bar">
+          <input class="st-input st-input--sm" id="setup-import-input" type="text" placeholder="Custom Hugging Face repo (e.g. bartowski/Qwen2.5-Coder-7B-Instruct-GGUF) or direct .gguf URL">
+          <button class="st-btn st-btn--secondary st-btn--sm" id="setup-import-btn" type="button">
+            <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-check"/></svg>Import & Select
+          </button>
+        </div>
+
         <div class="models-grid" id="models-grid">
           <!-- Dynamically populated from /api/setup/models -->
         </div>
@@ -219,6 +335,30 @@
             <option value="524288">524,288 (512K)</option>
             <option value="1048576">1,048,576 (1M)</option>
             <option value="2097152" selected>2,097,152 (2M - Default)</option>
+          </select>
+
+          <label for="setup-pool-workers">CPU Worker Threads<code>--pool-workers</code></label>
+          <select class="st-input" id="setup-pool-workers">
+            <option value="0">Auto / Default</option>
+            <option value="4">4 Threads</option>
+            <option value="8">8 Threads</option>
+            <option value="16" selected>16 Threads (Recommended for 16-Core Ryzen)</option>
+            <option value="32">32 Threads (All Cores / SMT)</option>
+          </select>
+
+          <label for="setup-pcie-frac">Offload Strategy<code>--pcie-frac</code></label>
+          <select class="st-input" id="setup-pcie-frac">
+            <option value="0.0">100% CPU Worker Pool (0.0 - Full CPU Compute)</option>
+            <option value="0.25">25% PCIe DMA / 75% CPU Pool (0.25)</option>
+            <option value="0.5" selected>Balanced Hybrid (0.50 - Default)</option>
+            <option value="0.75">75% PCIe DMA / 25% CPU Pool (0.75)</option>
+            <option value="1.0">100% GPU DMA (1.00 - Bypass CPU)</option>
+          </select>
+
+          <label for="setup-gpus">GPU / iGPU Target<code>--gpus</code></label>
+          <select class="st-input" id="setup-gpus">
+            <option value="" selected>Discrete GPU Only (Device 0: RTX 4060)</option>
+            <option value="0,1">Hybrid Multi-GPU (Device 0 + 1: RTX 4060 + Radeon iGPU)</option>
           </select>
 
           <label for="setup-custom-url">Model Weight URL<code>HuggingFace / Direct Link</code></label>

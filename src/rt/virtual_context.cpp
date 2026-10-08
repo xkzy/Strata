@@ -197,6 +197,9 @@ struct VirtualContext::Impl {
     mutable VirtualContextStats st;
     KvIdentity kv_id;
     std::vector<int32_t> kv_tokens;
+    std::shared_ptr<VirtualKVPageTable> kv_table;
+    ContextPrefetchPredictor prefetch_predictor;
+    uint64_t current_tick = 0;
     context::SecurityScope owner;
     bool dirty = false;
     std::set<std::string> persisted;   // hashes already written to the backend
@@ -320,6 +323,23 @@ struct VirtualContext::Impl {
             if (!resident.count(p.content_hash) && !spilled.count(p.content_hash)) { resident[p.content_hash] = ch; resident_bytes += ch.size(); content_bytes += ch.size(); }
             index_page(pg(p.page_id), ch);
             add_dependencies(pg(p.page_id), ch);
+
+            if (kv_table) {
+                auto kv_page = std::make_shared<KVPageDescriptor>();
+                kv_page->page_id = p.page_id;
+                uint64_t content_h = 0;
+                if (p.content_hash.size() >= 16) {
+                    content_h = std::strtoull(p.content_hash.substr(0, 16).c_str(), nullptr, 16);
+                }
+                kv_page->key = KVBlockKey{0, 0, content_h, static_cast<uint32_t>(p.token_begin), static_cast<uint32_t>(p.token_end), 0, 32, KVFormat::kFP16, 1};
+                kv_page->residency = p.pinned ? KVResidency::kGPU_VRAM : KVResidency::kHost_RAM;
+                kv_page->byte_size = p.tokens * 4096;
+                kv_page->token_count = p.tokens;
+                kv_page->prefill_cost_ms = static_cast<float>(p.tokens) * 0.05f;
+                kv_page->pinned = p.pinned;
+                kv_page->dependent_pages = pg(p.page_id).dependency;
+                kv_table->register_page(kv_page);
+            }
         }
         msg_index[it.key].push_back(it.id);
         items.push_back(std::move(it));
@@ -389,6 +409,10 @@ VirtualContext::VirtualContext(std::string context_id, context::SecurityScope ow
     impl_->index = std::make_unique<HybridIndex>(impl_->cfg.retrieval, nullptr, std::move(embeddings));
     impl_->backend = std::move(backend);
     impl_->owner = owner_;
+    KVTierBudgets budgets;
+    budgets.host_ram_bytes = impl_->cfg.resident_bytes * 4;
+    budgets.nvme_bytes = impl_->cfg.storage_budget_bytes;
+    impl_->kv_table = std::make_shared<VirtualKVPageTable>(budgets);
 }
 VirtualContext::~VirtualContext() = default;
 
@@ -667,6 +691,18 @@ WorkingSet VirtualContext::select(const SelectionRequest& req) {
     for (uint64_t pid : now_hot) if (!m.prev_hot.count(pid)) ++ws.paged_in;
     for (uint64_t pid : m.prev_hot) if (!now_hot.count(pid)) { ++ws.paged_out; m.pg(pid).tier = m.spilled.count(m.pg(pid).content_hash) && !m.resident.count(m.pg(pid).content_hash) ? ContextTier::kArchive : ContextTier::kWarm; }
     m.st.page_ins += ws.paged_in; m.st.page_outs += ws.paged_out;
+    if (m.kv_table) {
+        m.current_tick++;
+        for (uint64_t pid : ws.page_ids) {
+            m.kv_table->record_access(pid, m.current_tick);
+            m.kv_table->update_residency(pid, KVResidency::kGPU_VRAM);
+        }
+        for (uint64_t pid : m.prev_hot) {
+            if (!now_hot.count(pid)) {
+                m.kv_table->update_residency(pid, KVResidency::kHost_RAM);
+            }
+        }
+    }
     m.prev_hot = std::move(now_hot);
     m.last_resident_tokens = tokens;
     ws.trace.push_back("working set: " + std::to_string(ws.page_ids.size()) + " pages, " + std::to_string(tokens) + " tokens; in " + std::to_string(ws.paged_in) +
@@ -719,6 +755,39 @@ KvReusePlan VirtualContext::plan_kv(const KvIdentity& id, const std::vector<int3
     KvReusePlan plan = plan_kv_reuse(impl_->kv_id, impl_->kv_tokens, id, prompt_ids);
     impl_->kv_id = id;
     impl_->kv_tokens = prompt_ids;   // the physical KV now holds exactly this working set, nothing else
+    return plan;
+}
+
+std::shared_ptr<IKVPageTable> VirtualContext::kv_page_table() const {
+    std::lock_guard<std::mutex> lock(impl_->mu);
+    return impl_->kv_table;
+}
+
+VirtualKVPagingPlan VirtualContext::plan_virtual_kv_paging(const SelectionRequest& req) {
+    VirtualKVPagingPlan plan;
+    auto ws = select(req);
+
+    std::lock_guard<std::mutex> lock(impl_->mu);
+    if (!impl_->kv_table) return plan;
+
+    for (uint64_t pid : ws.page_ids) {
+        auto page = impl_->kv_table->get_page(pid);
+        if (page) {
+            if (page->residency == KVResidency::kGPU_VRAM) {
+                plan.hot_vram_pages.push_back(pid);
+            } else if (page->residency == KVResidency::kHost_RAM) {
+                plan.warm_ram_pages.push_back(pid);
+                plan.estimated_dma_bytes += page->byte_size;
+            } else {
+                plan.recompute_pages.push_back(pid);
+            }
+        }
+    }
+
+    if (!ws.page_ids.empty()) {
+        uint64_t active_pid = ws.page_ids.back();
+        plan.prefetch_queue = impl_->prefetch_predictor.predict(active_pid, impl_->kv_table, ws.page_ids, 8);
+    }
     return plan;
 }
 
@@ -879,6 +948,28 @@ RetrievalMetrics VirtualContextStore::retrieval_metrics() const {
         t.embedding_hits += m.embedding_hits; t.embedding_misses += m.embedding_misses;
         t.retrieval_ms += m.retrieval_ms; t.rerank_ms += m.rerank_ms; t.embedding_ms += m.embedding_ms;
         for (int i = 0; i < 10; ++i) t.class_counts[i] += m.class_counts[i];
+    }
+    return t;
+}
+KVTableStats VirtualContextStore::kv_stats() const {
+    std::vector<std::shared_ptr<VirtualContext>> open;
+    { std::lock_guard<std::mutex> lock(mu_); for (auto& kv : contexts_) open.push_back(kv.second); }
+    KVTableStats t;
+    for (auto& vc : open) {
+        if (vc->kv_page_table()) {
+            const KVTableStats s = vc->kv_page_table()->stats();
+            t.total_pages += s.total_pages;
+            t.lookups += s.lookups;
+            t.promotions += s.promotions;
+            t.demotions += s.demotions;
+            t.evictions += s.evictions;
+            t.page_faults += s.page_faults;
+            for (int i = 0; i < 5; ++i) {
+                t.tier_pages[i] += s.tier_pages[i];
+                t.tier_bytes[i] += s.tier_bytes[i];
+                t.hits[i] += s.hits[i];
+            }
+        }
     }
     return t;
 }

@@ -135,3 +135,36 @@ func TestCollectorReportsDiskAndKeepsItsHistory(t *testing.T) {
 		t.Errorf("history.disk_read_mb missing: %v", hist["disk_read_mb"])
 	}
 }
+
+func TestDiscoverDrmPCIe(t *testing.T) {
+	root := t.TempDir()
+	cardDir := filepath.Join(root, "card0", "device")
+	writeFile(t, filepath.Join(cardDir, "mem_info_vram_total"), "8589934592\n")
+	writeFile(t, filepath.Join(cardDir, "current_link_speed"), "16.0 GT/s PCIe\n")
+	writeFile(t, filepath.Join(cardDir, "max_link_speed"), "16.0 GT/s PCIe\n")
+	writeFile(t, filepath.Join(cardDir, "current_link_width"), "16\n")
+	writeFile(t, filepath.Join(cardDir, "max_link_width"), "16\n")
+
+	gen, maxGen, width, maxW := discoverDrmPCIe(root)
+	if gen != 4 || maxGen != 4 || width != 16 || maxW != 16 {
+		t.Errorf("discoverDrmPCIe = (%d, %d, %d, %d), want (4, 4, 16, 16)", gen, maxGen, width, maxW)
+	}
+}
+
+func TestPcieBandwidthGBps(t *testing.T) {
+	bw4_16 := PcieBandwidthGBps(4, 16)
+	if bw4_16 < 31.0 || bw4_16 > 32.0 {
+		t.Errorf("Gen4 x16 bandwidth = %v, want ~31.5 GB/s", bw4_16)
+	}
+
+	bw5_16 := PcieBandwidthGBps(5, 16)
+	if bw5_16 < 62.0 || bw5_16 > 64.0 {
+		t.Errorf("Gen5 x16 bandwidth = %v, want ~63.0 GB/s", bw5_16)
+	}
+
+	bw3_16 := PcieBandwidthGBps(3, 16)
+	if bw3_16 < 15.0 || bw3_16 > 16.0 {
+		t.Errorf("Gen3 x16 bandwidth = %v, want ~15.75 GB/s", bw3_16)
+	}
+}
+

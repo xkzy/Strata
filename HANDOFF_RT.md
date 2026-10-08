@@ -112,6 +112,17 @@ one `HybridIndex` per context. Not a tool, no new endpoint.
   vector index (rebuilt per process), real embedding model, resource-aware parallel retrieval (retrievers run sequentially), per-tenant quotas, graph
   retrieval beyond definitions/callers/imports, concurrency stress tests, term-level invalidation of ranked results (only negative entries have it).
 
+## Virtual KV Memory Subsystem (`include/strata/rt/kv_page_table.hpp`, `src/rt/kv_page_table.cpp`)
+Decouples logical context retrieval from physical KV residency, turning long-context switching into a memory-hierarchy and DMA transfer problem rather than repeated prompt reconstruction and prefill:
+- **`KVBlockKey`**: 64-byte aligned composite key ensuring mathematical & RoPE invariance (model hash, tokenizer schema, token content hash, absolute start/end sequence positions, layer range, and quantization format).
+- **Hierarchical Residency Tiers**: `L1 GPU_VRAM`, `L2 Host_RAM`, `L3 Compressed_RAM`, `L4 NVMe_Disk`, and `L5 Recompute`.
+- **Cost-Aware Retention & Eviction**: Prefill-cost-weighted retention scoring with recency decay and structural dependency preservation. High prefill pages and pinned system anchors survive memory pressure while cheap metadata is demoted first.
+- **Predictive Prefetching (`ContextPrefetchPredictor`)**: Prioritizes AST callers, callees, definitions, and sequential strides to overlap Host->Device PCIe transfers with GPU compute.
+- **Integration**: `VirtualContext::select()` dynamically tracks access ticks, promotes working sets to VRAM, demotes evicted pages to Host RAM, and provides `plan_virtual_kv_paging()`.
+- **Telemetry**: Exposes `virtual_kv` residency and hit rate metrics over `GET /v1/strata/runtime/metrics`.
+- **Tests**: `build/test_kv_page_table` (7/7 suites PASS), `build/test_virtual_window` (Test 12 PASS), `go test -v ./pkg/server -run TestRuntimeMetricsReportsVirtualKV` (PASS).
+- **Benchmark** (`build/bench_virtual_kv [pages]`): 100,000 pages (single thread): registration 40.0 ms (400 ns/page); exact key lookups 13.8 ms for 100k lookups (138.5 ns/lookup, ~7.2M lookups/s); working set estimation across 100k pages 9.6 ms; cost-aware eviction of 64 MB 9.3 ms; prefetch prediction 0.57 ms for 10k queries (57 ns/prediction, ~17.5M predictions/s).
+
 ## Math Engine additions (CAS, verification, units, provenance, scheduling)
 - **IR:** `strata::math::cas::Expr` is the Strata Math IR (backend-neutral: no Sage/Mathics objects exist anywhere; the Mathics-syntax names and the
   Sage-syntax front end `SageBackend` translate to it at the boundary). Sage and Mathics are not installed or linked: they are behaviour references.

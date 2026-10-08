@@ -13,6 +13,7 @@
 #pragma once
 
 #include "strata/rt/generator.hpp"
+#include "strata/rt/kv_page_table.hpp"
 #include "strata/rt/retrieval.hpp"
 #include "strata/rt/types.hpp"
 
@@ -139,6 +140,14 @@ struct WorkingSet {
     std::vector<std::string> trace;
 };
 
+struct VirtualKVPagingPlan {
+    std::vector<uint64_t> hot_vram_pages;
+    std::vector<uint64_t> warm_ram_pages;
+    std::vector<PrefetchCandidate> prefetch_queue;
+    std::vector<uint64_t> recompute_pages;
+    size_t estimated_dma_bytes = 0;
+};
+
 struct VirtualContextStats {
     uint64_t pages = 0, items = 0, logical_tokens = 0, content_bytes = 0, resident_bytes = 0, spilled_pages = 0;
     uint64_t tier_pages[4] = {0, 0, 0, 0};
@@ -218,6 +227,9 @@ public:
     std::vector<uint64_t> item_pages(uint64_t item_id) const;
     // KV: how much of the previous physical prompt can be kept for this new prompt (exact-prefix, identity checked).
     KvReusePlan plan_kv(const KvIdentity& id, const std::vector<int32_t>& prompt_ids);
+    // Virtual KV page table and prefetch planner
+    std::shared_ptr<IKVPageTable> kv_page_table() const;
+    VirtualKVPagingPlan plan_virtual_kv_paging(const SelectionRequest& req);
 
 private:
     struct Impl;
@@ -242,6 +254,7 @@ public:
     void erase(const context::SecurityScope& scope);
     size_t size() const;
     RetrievalMetrics retrieval_metrics() const;   // summed over the open contexts
+    KVTableStats kv_stats() const;                // summed over the open contexts
     uint64_t embedding_cache_hits() const { return embeddings_->hits(); }
     const VirtualContextConfig& config() const { return cfg_; }
 

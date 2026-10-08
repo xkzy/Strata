@@ -184,11 +184,12 @@ func (b *rtBackend) BuildPrompt(ctx context.Context, msgs []rtclient.Message, pr
 		text += prefix
 	}
 	ids := tok.EncodeWithPlain(text, true, spans)
-	if len(ids) >= b.s.Config.MaxContext-1 {
-		ae := &apiError{Status: 400, Type: "context_length_exceeded",
-			Msg: fmt.Sprintf("the prompt is %d tokens, which does not fit the model's context of %d tokens", len(ids), b.s.Config.MaxContext)}
-		b.signal(ae)
-		return nil, ae
+	limit := b.s.Config.MaxContext - 16
+	if limit <= 0 {
+		limit = 32768
+	}
+	if len(ids) > limit {
+		ids = ids[len(ids)-limit:]
 	}
 	if os.Getenv("STRATA_DEBUG_PROMPT") != "" {
 		fmt.Fprintf(os.Stderr, "strata: runtime prompt (%d tokens):\n%s\n", len(ids), text)
@@ -199,7 +200,10 @@ func (b *rtBackend) BuildPrompt(ctx context.Context, msgs []rtclient.Message, pr
 func (b *rtBackend) Generate(ctx context.Context, ids []int, sp rtclient.Sampling, maxTokens int) <-chan rtclient.GenToken {
 	b.signal(nil)
 	out := make(chan rtclient.GenToken, 64)
-	avail := b.s.Config.MaxContext - len(ids)
+	avail := b.s.Config.MaxContext - len(ids) - 8
+	if avail < 1 {
+		avail = 1
+	}
 	if maxTokens <= 0 || maxTokens > avail {
 		maxTokens = avail
 	}
