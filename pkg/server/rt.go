@@ -120,6 +120,17 @@ type rtBackend struct {
 	mu      sync.Mutex
 	err     error
 	stops   []string
+	lastReq *monitoredRequest // the newest generation's monitor record (a retry inside the runtime makes another)
+}
+
+// settle gives the newest generation the request's final finish reason, the one the API returns.
+func (b *rtBackend) settle(finish string) {
+	b.mu.Lock()
+	rq := b.lastReq
+	b.mu.Unlock()
+	if rq != nil && finish != "" {
+		rq.relabel(finish)
+	}
 }
 
 func (b *rtBackend) signal(err error) {
@@ -201,6 +212,9 @@ func (b *rtBackend) Generate(ctx context.Context, ids []int, sp rtclient.Samplin
 		FrequencyPenalty: sp.FrequencyPenalty, PresencePenalty: sp.PresencePenalty, Seed: sp.Seed,
 	}, maxTokens, stopIDs, sp.Stop, eng)
 	rq := b.s.mon.begin(len(ids), maxTokens) // the Monitor's live state, Recent requests and Context read this
+	b.mu.Lock()
+	b.lastReq = rq
+	b.mu.Unlock()
 	go func() {
 		defer close(out)
 		defer func() { // the engine stopped, or the client left, without an end event
@@ -293,6 +307,7 @@ func (s *StrataServer) startRuntimeGeneration(ctx context.Context, spec genSpec)
 		if finish == "stop" && parser.sawToolCall {
 			finish = "tool_calls"
 		}
+		be.settle(finish)
 		send(genEvent{End: true, Finish: finish, GenTokens: done.CompletionTokens, PromptTokens: done.PromptTokens, Trace: done.Trace})
 	}()
 
