@@ -36,6 +36,12 @@ type TelemetryCollector struct {
 	prevCPUTotal uint64
 	prevCPUIdle  uint64
 
+	haveDisk                    bool
+	prevDiskRead, prevDiskWrite uint64
+	prevDiskAt                  time.Time
+	igpu                        *drmGPU
+	pcie                        [3]int // gen, max gen, width of the NVIDIA card (0: unknown)
+
 	// Static hardware facts
 	static map[string]interface{}
 
@@ -50,6 +56,8 @@ type TelemetryCollector struct {
 	historyTokS     []float64
 	historyRAMUtil  []float64
 	historyCPUUtil  []float64
+	historyIGPUUtil []float64
+	historyDiskRead []float64
 
 	tokSource func() float64 // decode speed of the running request (nil or 0: idle)
 }
@@ -66,6 +74,9 @@ func NewTelemetryCollector() *TelemetryCollector {
 		historyTokS:     make([]float64, 0, HistoryCapacity),
 		historyRAMUtil:  make([]float64, 0, HistoryCapacity),
 		historyCPUUtil:  make([]float64, 0, HistoryCapacity),
+	}
+	if runtime.GOOS == "linux" {
+		tc.igpu = discoverIGPU("/sys/class/drm")
 	}
 	tc.detectStaticHardware()
 	return tc
@@ -163,6 +174,9 @@ func (tc *TelemetryCollector) detectStaticHardware() {
 		"psutil":          true,
 	}
 
+	if tc.igpu != nil {
+		tc.static["igpu_name"] = tc.igpu.name()
+	}
 	if vramTotalBytes > 0 {
 		tc.now["gpu_mem_total"] = vramTotalBytes
 	}
@@ -216,6 +230,7 @@ func (tc *TelemetryCollector) sampleOnce() {
 	cpuPct := tc.readCPU()
 	ramUsedBytes, ramTotalBytes, ramPct := tc.readRAM()
 	vramUsedBytes, vramTotalBytes, gpuUtil, gpuTemp, gpuPower := tc.readGPU()
+	diskRead, diskWrite, diskOK := tc.readDisk()
 
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
@@ -234,6 +249,30 @@ func (tc *TelemetryCollector) sampleOnce() {
 		tc.now["gpu_util"] = gpuUtil
 		tc.now["gpu_temp"] = gpuTemp
 		tc.now["gpu_power"] = gpuPower
+	}
+
+	if tc.pcie[0] > 0 || tc.pcie[1] > 0 {
+		tc.now["gpu_pcie_gen"] = tc.pcie[0]
+		tc.now["gpu_pcie_gen_max"] = tc.pcie[1]
+		tc.now["gpu_pcie_width"] = tc.pcie[2]
+	}
+	if diskOK {
+		tc.now["disk_read_mb"] = mathRound(diskRead, 1)
+		tc.now["disk_write_mb"] = mathRound(diskWrite, 1)
+		tc.pushHistory(&tc.historyDiskRead, diskRead)
+	}
+	if tc.igpu != nil {
+		r := tc.igpu.read()
+		util, hasUtil := r["util"].(float64)
+		if hasUtil {
+			tc.now["igpu_util"] = util
+		}
+		for _, k := range []string{"mem_used", "gtt_used", "gtt_total"} {
+			if v, ok := r[k]; ok {
+				tc.now["igpu_"+k] = v
+			}
+		}
+		tc.pushHistory(&tc.historyIGPUUtil, util)
 	}
 
 	tc.pushHistory(&tc.historyCPUUtil, cpuPct)
@@ -341,23 +380,15 @@ func (tc *TelemetryCollector) readRAM() (usedBytes, totalBytes uint64, pct float
 
 func (tc *TelemetryCollector) readGPU() (vramUsedBytes, vramTotalBytes uint64, gpuUtil, gpuTemp, gpuPower float64) {
 	// 1. Try nvidia-smi query
-	out, err := exec.Command("nvidia-smi", "--query-gpu=memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw", "--format=csv,noheader,nounits").Output()
+	out, err := exec.Command("nvidia-smi", "--query-gpu="+nvidiaSmiQuery, "--format=csv,noheader,nounits").Output()
 	if err == nil {
 		line := strings.TrimSpace(string(out))
 		if idx := strings.Index(line, "\n"); idx != -1 {
 			line = line[:idx]
 		}
-		parts := strings.Split(line, ",")
-		if len(parts) >= 4 {
-			usedMiB, _ := strconv.ParseUint(strings.TrimSpace(parts[0]), 10, 64)
-			totalMiB, _ := strconv.ParseUint(strings.TrimSpace(parts[1]), 10, 64)
-			util, _ := strconv.ParseFloat(strings.TrimSpace(parts[2]), 64)
-			temp, _ := strconv.ParseFloat(strings.TrimSpace(parts[3]), 64)
-			power := 0.0
-			if len(parts) >= 5 && !strings.Contains(parts[4], "N/A") {
-				power, _ = strconv.ParseFloat(strings.TrimSpace(parts[4]), 64)
-			}
-			return usedMiB * 1024 * 1024, totalMiB * 1024 * 1024, util, temp, power
+		if smp, ok := parseNvidiaSmiLine(line); ok {
+			tc.pcie = [3]int{smp.pcieGen, smp.pcieGenMax, smp.pcieWidth}
+			return smp.usedBytes, smp.totalBytes, smp.util, smp.temp, smp.power
 		}
 	}
 
@@ -401,6 +432,8 @@ func (tc *TelemetryCollector) Snapshot() map[string]interface{} {
 		"ram_util":     copySlice(tc.historyRAMUtil),
 		"cpu_util":     copySlice(tc.historyCPUUtil),
 		"cpu":          copySlice(tc.historyCPUUtil),
+		"igpu_util":    copySlice(tc.historyIGPUUtil),
+		"disk_read_mb": copySlice(tc.historyDiskRead),
 	}
 
 	return map[string]interface{}{
