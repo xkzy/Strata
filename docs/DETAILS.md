@@ -974,13 +974,24 @@ calls nothing; what a check finds is added to the prompt.
   `X-Session-ID`, or `user`/`session_id` in the body) and, when your message shares words with an earlier turn that is no
   longer in the prompt, puts up to 3 of them in front of your message, quoted, as `[Recalled from earlier in this
   conversation ...]`. They stay at your level and are never put in the system message. Requests without a session id
-  share the default session and are never remembered or recalled. The memory is bounded: 256 turns per session and
-  4,096 in all, oldest first, and it is gone when the server stops.
+  share the default session and are never remembered or recalled, and callers that present different API keys never
+  share a session's memory. The memory is bounded: 256 turns per session and 4,096 in all, oldest first; a turn is
+  forgotten after 12 hours, and everything is gone when the server stops. `DELETE /v1/strata/memory` (with the same
+  `X-Session-ID` and key) forgets your session's turns at once.
 - **Status questions are answered** (`system_status`): a short message about the server's status, uptime, memory or GPU
   gets the live figures (`Live server status: uptime ...; RAM ...; GPU ...`).
 
 `X-Strata-Tool-Intercept: off` on a request, or `STRATA_TOOL_INTERCEPTION=off` in the server's environment, switches all
 three off (the math engine has its own switch, `X-Strata-Math-Engine: off`). Each interception runs once per request.
+
+**The verification audit store** (`GET /v1/strata/context` for its figures, `POST /v1/strata/context/query` with
+`{"query": "...", "top_k": 5}` to search it) keeps a record of each decided `/v1/strata/verify` claim. It is bounded by the
+two context limits: the newest records that fit the physical window count as active, older ones are compressed (still
+searchable), and past the virtual limit the oldest are dropped. A search ranks by shared words, weighting rare words,
+and a query that appears as a phrase scores 1; a search returns only the records made under the caller's own
+`X-Tenant-ID` / `X-User-ID` / `X-Session-ID` and key. Measured on 20,000 small records (this PC, Go test): 200
+searches took 5.7 ms against 139 ms for the earlier full scan, which also found none of the multi-word questions the
+index answers; the index uses about 4x the memory of the bare records (10.8 MB against 2.4 MB there).
 
 The earlier `/v1/mcp`, `/v1/mcp/tools` and `/mcp` endpoints, the `strata mcp` command and the Monitor's MCP card are
 gone; these checks replace them. To manage Strata from an AI assistant over MCP, see the section below.

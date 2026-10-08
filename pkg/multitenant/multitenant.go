@@ -1,6 +1,8 @@
 package multitenant
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"sync"
 )
@@ -11,6 +13,22 @@ type SecurityScope struct {
 	WorkspaceID string `json:"workspace_id"`
 	AgentID     string `json:"agent_id"`
 	SessionID   string `json:"session_id"`
+	// Credential tells callers that present different API keys apart, so a session id they happen to share does not
+	// join their data. It is a short hash of the key, never the key, and it is not serialized.
+	Credential string `json:"-"`
+}
+
+// credentialTag is a short hash of the credential a request presents ("" when it presents none).
+func credentialTag(h http.Header) string {
+	cred := h.Get("Authorization")
+	if cred == "" {
+		cred = h.Get("X-Api-Key")
+	}
+	if cred == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(cred))
+	return hex.EncodeToString(sum[:6])
 }
 
 func DefaultSecurityScope() SecurityScope {
@@ -52,6 +70,7 @@ func FromHeaders(headers http.Header, bodyScope *SecurityScope) SecurityScope {
 	if s := headers.Get("X-Session-ID"); s != "" {
 		scope.SessionID = s
 	}
+	scope.Credential = credentialTag(headers)
 	return scope
 }
 
