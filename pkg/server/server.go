@@ -481,21 +481,27 @@ func (s *StrataServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		liveMap["detail"], _ = engStatus["error"].(string)
 	}
 	requests, kept, totals := s.mon.view(r.URL.Query().Get("requests") == "all")
+	var engInfo map[string]string
+	if s.EngineIPC != nil {
+		engInfo = s.EngineIPC.Info()
+	}
+	mergeEngineInfo(engineMap, engInfo)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"engine":          engineMap,
-		"live":            liveMap,
-		"hardware":        nowMap,
-		"hardware_static": staticMap,
-		"history":         histMap,
-		"requests":        requests,
-		"requests_kept":   kept,
-		"totals":          totals,
-		"resource":        s.ResourceManager.Metrics(),
-		"anti_loop":       s.AntiLoop.Stats(),
-		"context":         s.VirtualContext.Stats(),
-		"math":            s.MathRuntime.GetStats(),
-		"time":            time.Now().Unix(),
+		"conversation_cache": conversationCacheView(engInfo, requests, totals),
+		"engine":             engineMap,
+		"live":               liveMap,
+		"hardware":           nowMap,
+		"hardware_static":    staticMap,
+		"history":            histMap,
+		"requests":           requests,
+		"requests_kept":      kept,
+		"totals":             totals,
+		"resource":           s.ResourceManager.Metrics(),
+		"anti_loop":          s.AntiLoop.Stats(),
+		"context":            s.VirtualContext.Stats(),
+		"math":               s.MathRuntime.GetStats(),
+		"time":               time.Now().Unix(),
 	})
 }
 
