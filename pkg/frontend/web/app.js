@@ -318,6 +318,14 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     delete prog.dataset.tone;
     pct = live.max_tokens ? Math.min(100, (100 * live.generated) / live.max_tokens) : 0;
     detail = `${fmt(live.generated)} tokens · ${fmt(live.tok_s, 1)} tok/s`;
+  } else if (live.state === "loading") {
+    label = "Loading the model";
+    prog.dataset.tone = "info";
+    detail = "the engine is starting; requests wait until it is ready";
+  } else if (live.state === "error") {
+    label = "The model failed to load";
+    prog.dataset.tone = "danger";
+    detail = live.detail || "see the server log";
   } else if (live.state === "unloaded") {
     label = "No model loaded";
     delete prog.dataset.tone;

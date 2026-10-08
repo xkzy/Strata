@@ -154,6 +154,20 @@ func (m *requestMonitor) live(loaded bool) map[string]interface{} {
 	return out
 }
 
+// overlayEngineState refines an "unloaded" live state with what the engine is doing: loading while it starts,
+// error after a failed start. A running request keeps its own state.
+func overlayEngineState(live map[string]interface{}, engine string) {
+	if live["state"] != "unloaded" {
+		return
+	}
+	switch engine {
+	case "starting":
+		live["state"] = "loading"
+	case "failed":
+		live["state"] = "error"
+	}
+}
+
 // windowRate is the tokens per second over the last few seconds.
 func windowRate(stamps []time.Time, now time.Time) float64 {
 	var in []time.Time

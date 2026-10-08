@@ -472,8 +472,14 @@ func (s *StrataServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		"images":                  false,
 	}
 
-	loaded, _ := s.engineStatus()["loaded"].(bool)
+	engStatus := s.engineStatus()
+	loaded, _ := engStatus["loaded"].(bool)
 	liveMap := s.mon.live(loaded)
+	engState, _ := engStatus["engine"].(string)
+	overlayEngineState(liveMap, engState)
+	if liveMap["state"] == "error" {
+		liveMap["detail"], _ = engStatus["error"].(string)
+	}
 	requests, kept, totals := s.mon.view(r.URL.Query().Get("requests") == "all")
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
