@@ -39,6 +39,7 @@ type TelemetryCollector struct {
 	haveDisk                    bool
 	prevDiskRead, prevDiskWrite uint64
 	prevDiskAt                  time.Time
+	noPower                     bool // the NVIDIA card answers power.draw with [N/A]
 	igpu                        *drmGPU
 	pcie                        [3]int // gen, max gen, width of the NVIDIA card (0: unknown)
 
@@ -248,7 +249,11 @@ func (tc *TelemetryCollector) sampleOnce() {
 		tc.now["gpu_mem_used"] = vramUsedBytes
 		tc.now["gpu_util"] = gpuUtil
 		tc.now["gpu_temp"] = gpuTemp
-		tc.now["gpu_power"] = gpuPower
+		if tc.noPower {
+			delete(tc.now, "gpu_power") // the card does not report it: the Monitor shows "–", not 0 W
+		} else {
+			tc.now["gpu_power"] = gpuPower
+		}
 	}
 
 	if tc.pcie[0] > 0 || tc.pcie[1] > 0 {
@@ -388,6 +393,7 @@ func (tc *TelemetryCollector) readGPU() (vramUsedBytes, vramTotalBytes uint64, g
 		}
 		if smp, ok := parseNvidiaSmiLine(line); ok {
 			tc.pcie = [3]int{smp.pcieGen, smp.pcieGenMax, smp.pcieWidth}
+			tc.noPower = !smp.hasPower
 			return smp.usedBytes, smp.totalBytes, smp.util, smp.temp, smp.power
 		}
 	}

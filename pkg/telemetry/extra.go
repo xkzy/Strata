@@ -120,6 +120,7 @@ func (g *drmGPU) read() map[string]interface{} {
 type nvSample struct {
 	usedBytes, totalBytes          uint64
 	util, temp, power              float64
+	hasPower                       bool
 	pcieGen, pcieGenMax, pcieWidth int
 }
 
@@ -144,7 +145,8 @@ func parseNvidiaSmiLine(line string) (nvSample, bool) {
 	s := nvSample{usedBytes: used << 20, totalBytes: total << 20}
 	s.util, _ = strconv.ParseFloat(f(2), 64)
 	s.temp, _ = strconv.ParseFloat(f(3), 64)
-	s.power, _ = strconv.ParseFloat(f(4), 64) // "[N/A]" fails to parse and stays 0
+	p, err := strconv.ParseFloat(f(4), 64) // "[N/A]": the card does not report power
+	s.power, s.hasPower = p, err == nil
 	s.pcieGen, _ = strconv.Atoi(f(5))
 	s.pcieGenMax, _ = strconv.Atoi(f(6))
 	s.pcieWidth, _ = strconv.Atoi(f(7))

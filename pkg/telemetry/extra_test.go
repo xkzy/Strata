@@ -96,13 +96,13 @@ func TestDiscoverIGPUFindsTheApuNotTheDiscreteCard(t *testing.T) {
 
 func TestParseNvidiaSmiLine(t *testing.T) {
 	s, ok := parseNvidiaSmiLine("8032, 8188, 12, 41, 23.50, 4, 4, 16")
-	if !ok || s.usedBytes != 8032<<20 || s.totalBytes != 8188<<20 || s.util != 12 || s.temp != 41 || s.power != 23.5 ||
+	if !ok || s.usedBytes != 8032<<20 || s.totalBytes != 8188<<20 || s.util != 12 || s.temp != 41 || s.power != 23.5 || !s.hasPower ||
 		s.pcieGen != 4 || s.pcieGenMax != 4 || s.pcieWidth != 16 {
 		t.Errorf("parsed %+v ok=%v", s, ok)
 	}
 	// power and PCIe fields not supported by the card or the driver
 	s, ok = parseNvidiaSmiLine("100, 200, 3, 40, [N/A], [N/A], [N/A], [N/A]")
-	if !ok || s.power != 0 || s.pcieGen != 0 || s.pcieWidth != 0 || s.totalBytes != 200<<20 {
+	if !ok || s.power != 0 || s.hasPower || s.pcieGen != 0 || s.pcieWidth != 0 || s.totalBytes != 200<<20 {
 		t.Errorf("N/A fields: %+v ok=%v", s, ok)
 	}
 	// the five-field line an older query gave
