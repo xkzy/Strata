@@ -30,6 +30,7 @@ type monitoredRequest struct {
 	generated    int
 	stamps       []time.Time // the last few seconds' tokens, for the current rate
 	done         bool
+	rec          map[string]interface{} // the history record finish wrote
 }
 
 func (m *requestMonitor) init() {
@@ -108,6 +109,7 @@ func (r *monitoredRequest) finish(finish string, tokens int, engineTokS float64)
 			rec["decode_tok_s"] = round1(float64(n-1) / (decodeMS / 1000)) // the first token starts the clock
 		}
 	}
+	r.rec = rec
 	m.history = append(m.history, rec)
 	if len(m.history) > monitorKeep {
 		m.history = m.history[len(m.history)-monitorKeep:]
@@ -118,6 +120,20 @@ func (r *monitoredRequest) finish(finish string, tokens int, engineTokS float64)
 	t["output_tokens"] = t["output_tokens"].(int) + n
 	t["prompt_ms"] = t["prompt_ms"].(float64) + promptMS
 	t["decode_ms"] = t["decode_ms"].(float64) + decodeMS
+}
+
+// relabel replaces the finish reason of a request that has ended: the runtime stops reading a reply that hit
+// max_tokens, so the engine's own reason is a cancel, while the API answered "length".
+func (r *monitoredRequest) relabel(finish string) {
+	r.m.mu.Lock()
+	defer r.m.mu.Unlock()
+	if r.rec == nil {
+		return
+	}
+	if finish == "tool_calls" {
+		finish = "stop"
+	}
+	r.rec["finish"] = finish
 }
 
 func round1(v float64) float64 { return float64(int(v*10+0.5)) / 10 }
