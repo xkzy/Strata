@@ -15,9 +15,8 @@ The assistant calls the server's tools. The tools run Strata's own setup and sta
 scripts do. It is one Python file that uses only the standard library, so it works before setup has created
 `.venv`. It needs Python 3.10 or newer, 64-bit on Windows.
 
-It is not the same thing as [Tools from MCP servers](DETAILS.md#tools-from-mcp-servers). That feature
-(`serve/mcp.py`) lets the *Strata model* call tools from your MCP servers in its chat page. This page is the other
-direction: *your assistant* manages Strata.
+Strata's own server no longer has an MCP hub: its checks run as [automatic tools](DETAILS.md#automatic-tools-interception).
+This page is about the opposite direction: *your assistant* manages Strata.
 
 ## Add it
 

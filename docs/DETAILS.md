@@ -6,7 +6,7 @@ New here? Start with the [README](../README.md); installing step by step is in [
 
 > **On this page:** [Speed](#speed-measured) · [Other GPUs](#other-gpus-estimated) · [Which model?](#which-model) ·
 > [Requirements](#before-you-start) · [Windows](#windows) · [Linux](#linux) · [API](#using-it) ·
-> [MCP tools](#tools-from-mcp-servers) · [MCP server](#manage-strata-from-your-ai-assistant-mcp-server) ·
+> [Automatic tools](#automatic-tools-interception) · [MCP server](#manage-strata-from-your-ai-assistant-mcp-server) ·
 > [Images](#images-vision) ·
 > [Troubleshooting](#troubleshooting) · [How it works](#how-it-works)
 
@@ -536,7 +536,6 @@ The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or
 | What the model is doing right now | `GET /status`, `GET /slots` (single slot, busy or idle) |
 | Save / restore the conversation to a file (session files, below) | `POST /slots/0?action=save\|restore` |
 | Everything the Monitor tab shows (engine, live state, last requests, hardware) | `GET /metrics` |
-| The MCP servers, their state and tools ([below](#tools-from-mcp-servers)) | `GET /mcp` |
 
 `/models` and `/v1/models` list only the loaded model, with its context limit and input modalities. `/props` exposes the original chat template, context limit, configured generation defaults (shared settings take precedence), model path and engine version when available. Context means the full engine context, not the resident KV window. `n_predict: -1` means no fixed output cap. Unconfigured sampling fields are omitted. `autoload` has no effect; an unknown `model` returns 404. These metadata endpoints and `/slots` require the API key when one is configured. They do not load, unload or restart models.
 
@@ -667,7 +666,7 @@ print(r.choices[0].message.content)
   `--vram-reserve-mib`. The adaptive controller behind `power_policy` and `resource_adapt` is described in
   [ADAPTIVE.md](ADAPTIVE.md). An empty field removes the key (its default). Every other key of the file stays as it is, the earlier file is kept as
   `strata-<model>.json.bak`, and the model uses the change from its next start. Only Strata's own page can save
-  (JSON, the API key when one is set, as for the Chat settings); the network, key, MCP and program keys are not
+  (JSON, the API key when one is set, as for the Chat settings); the network, key and program keys are not
   editable there.
 - **From other devices on your network.** The server listens on every interface (`0.0.0.0`) by default: the
   server window prints this PC's addresses (`from other devices: http://192.168.x.x:8080/`); open that on the
@@ -681,12 +680,12 @@ print(r.choices[0].message.content)
   `cloudflared tunnel --url http://127.0.0.1:8080`. **Set a key first**, or anyone with the link can use your PC:
   add `"api_key": "some-long-secret"` to `strata-<model>.json` (or set the `STRATA_API_KEY` environment variable);
   clients then send it as their API key. Streamed answers carry `X-Accel-Buffering: no`, so nginx-style proxies pass
-  each token on at once. The web app's settings and MCP tools only answer Strata's own page: when you open it through
+  each token on at once. The web app's settings only answer Strata's own page: when you open it through
   a proxy or tunnel whose address differs, add that address, e.g. `"trusted_origins": ["https://strata.example.com"]`.
   With the key set, any `Host` name reaches the server (see Host names below).
 - **From web apps in a browser (CORS).** Off by default. `"cors_origins": ["https://chat.example.com"]` lets pages of
   those origins call `/v1/*` from the browser (Open WebUI's direct connections, browser extensions); `["*"]` lets any
-  page do it - only sensible with an API key. It never opens `/settings`, `/unload` or the MCP tools.
+  page do it - only sensible with an API key. It never opens `/settings` or `/unload`.
 - **Host names (DNS rebinding).** A web page of another site can point its own name at `127.0.0.1` and then reach
   this server as if it were its own, so without an API key the server answers only requests whose `Host` is a name
   it knows (with a key the check is off: such a page cannot send the key, and tunnels and proxies that pass their
@@ -963,45 +962,28 @@ tool descriptions) was 9,443 tokens, read in 10 s; in a tool loop, each later tu
 the cache and read only the new part in 1-2 s. On Windows, Codex's sandbox rejected every shell command in that test
 until it was started with `-c 'windows.sandbox="unelevated"'` (a Codex setting, not Strata's).
 
-## Tools from MCP servers
+## Automatic tools (interception)
 
-The chat page can give the model tools from [MCP](https://modelcontextprotocol.io) servers, as LM Studio and Claude
-Desktop do: reading your files, fetching web pages, searching, anything an MCP server offers. List the servers in
-`strata-<model>.json` under `"mcp_servers"` - the same shape as Claude Desktop's `mcpServers` block, which you can
-also paste as it is (key `"mcpServers"`):
+Strata runs three checks on the server, before the model sees your message, the way the math engine works. The model
+calls nothing; what a check finds is added to the prompt.
 
-```json
-"mcp_servers": {
-  "files": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Users\\me\\Documents\\notes"]},
-  "search": {"url": "http://127.0.0.1:3000/mcp", "headers": {"Authorization": "Bearer ..."}}
-},
-"mcp": {"timeout_s": 60, "max_result_chars": 20000, "max_rounds": 8}
-```
+- **Claims are checked** (`logic_verify`): arithmetic (`12 * 12 = 150`), propositions, interval constraints and units
+  in your newest message are verified deterministically. A decided result (pass or fail, with the expected value)
+  goes into the system message as `Verified check for this answer: ...`. Undecidable claims add nothing.
+- **Earlier turns are recalled** (`context_query`): the server keeps the turns of each *named* session (send
+  `X-Session-ID`, or `user`/`session_id` in the body) and, when your message shares words with an earlier turn that is no
+  longer in the prompt, puts up to 3 of them in front of your message, quoted, as `[Recalled from earlier in this
+  conversation ...]`. They stay at your level and are never put in the system message. Requests without a session id
+  share the default session and are never remembered or recalled. The memory is bounded: 256 turns per session and
+  4,096 in all, oldest first, and it is gone when the server stops.
+- **Status questions are answered** (`system_status`): a short message about the server's status, uptime, memory or GPU
+  gets the live figures (`Live server status: uptime ...; RAM ...; GPU ...`).
 
-Or keep them in their own file and start the server with `--mcp-config path\to\claude_desktop_config.json` (a file
-with an `mcpServers` block; add it to the `serve/server.py` line of your run script). Restart Strata after a change.
+`X-Strata-Tool-Intercept: off` on a request, or `STRATA_TOOL_INTERCEPTION=off` in the server's environment, switches all
+three off (the math engine has its own switch, `X-Strata-Math-Engine: off`). Each interception runs once per request.
 
-- **A program** (`command`, `args`, optional `env` and `cwd`) is started by Strata and spoken to over its
-  stdin/stdout; `npx`, `uvx`, `python` and friends are found on `PATH` as usual (Node.js is needed for `npx`
-  servers). **An address** (`url`, optional `headers`) uses MCP's Streamable HTTP transport (the older SSE-only
-  transport is not supported). `"disabled": true` leaves an entry out.
-- The servers start with Strata, in the background; the server window says what each one offers
-  (`MCP server 'files': 14 tools (...)`), or why it did not start - its tools are then left out and the chat works
-  without them. The Monitor tab lists them, and the Sampling drawer has **Use tools from MCP servers** (on by
-  default). A server that stops later is started again at its next call.
-- In the chat each call shows as a small block (tool, arguments, result); the model reads the result and goes on,
-  up to `max_rounds` calls in a row per answer. A tool that fails or takes longer than `timeout_s` (default 60 s)
-  gives the model an `error: ...` result instead of ending the chat. Results longer than `max_result_chars`
-  (default 20,000 characters) are cut, with a note, before the model reads them. Stop stops a running tool too.
-- Only the chat page uses them. API clients (omp, Claude Code, OpenAI and Anthropic SDKs) see the API exactly as
-  before and keep their own tools; a request to `/v1/chat/completions` opts in with `"strata_mcp": true` (it then
-  gets `strata_mcp` tool events in the stream).
-
-**Security.** MCP tools run on your PC with your user's rights, and **the model decides when to call them** - also
-because of what it reads (a web page or a file can contain instructions). Give a filesystem server only the folders
-it needs, prefer read-only tools, and don't add servers you don't trust. The tools can only be used from the chat
-page itself (a request with another site's Origin or without a JSON content type is refused); if Strata is reachable
-from other devices, set an API key.
+The earlier `/v1/mcp`, `/v1/mcp/tools` and `/mcp` endpoints, the `strata mcp` command and the Monitor's MCP card are
+gone; these checks replace them. To manage Strata from an AI assistant over MCP, see the section below.
 
 **Context extension past 262K (rope scaling, EXPERIMENTAL, off unless you pick it).** The model was trained on
 262,144 positions (rotary base 1e7). Rope scaling rescales the rotation angles so that longer contexts stay usable,
@@ -1060,8 +1042,8 @@ for your OK. Start and stop work like the run scripts and the server's own unloa
 processes it started itself. It uses only Python's standard library, so it works before `.venv` exists.
 
 The config snippets for every client, the tool arguments and the safety rules are in
-[docs/MCP_SERVER.md](MCP_SERVER.md). This is the opposite direction from
-[Tools from MCP servers](#tools-from-mcp-servers) above, where the Strata model calls *your* MCP tools.
+[docs/MCP_SERVER.md](MCP_SERVER.md). This is separate from the
+[automatic tools](#automatic-tools-interception) above, which the server runs itself.
 
 ---
 
