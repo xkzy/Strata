@@ -3460,6 +3460,54 @@ def upgrade_config(cfg_path: Path, cfg: dict) -> dict:
     return cfg
 
 
+def build_go_server() -> bool:
+    """Builds the Go strata-server binary (pkg/server -> bin/strata-server) if Go is present."""
+    if not (ROOT / "go.mod").exists():
+        return False
+    go_cmd = shutil.which("go")
+    if not go_cmd:
+        return False
+    out_dir = ROOT / "bin"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_bin = out_dir / ("strata-server.exe" if WIN else "strata-server")
+    say("  Compiling the Go server (pkg/server -> bin/strata-server) ...")
+    try:
+        res = subprocess.run([go_cmd, "build", "-o", str(out_bin), "./cmd/strata-server"],
+                             cwd=str(ROOT), capture_output=True, text=True)
+        if res.returncode == 0:
+            ok(f"Go server: {out_bin}")
+            return True
+        else:
+            say(f"  Go server build note: {res.stderr.strip() or res.stdout.strip()}")
+            return False
+    except Exception as e:
+        say(f"  Could not build Go server: {e}")
+        return False
+
+
+def build_cmake_if_present() -> bool:
+    """Rebuilds CMake targets if a build directory is present."""
+    build_dir = ROOT / "build"
+    if not (build_dir / "CMakeCache.txt").exists():
+        return False
+    cmake_cmd = shutil.which("cmake")
+    if not cmake_cmd:
+        return False
+    say("  Compiling C++ engine / math modules (cmake --build build) ...")
+    try:
+        res = subprocess.run([cmake_cmd, "--build", str(build_dir), "-j"],
+                             cwd=str(ROOT), capture_output=True, text=True)
+        if res.returncode == 0:
+            ok("C++ engine / math targets: up to date")
+            return True
+        else:
+            say(f"  CMake build note: {res.stderr.strip() or res.stdout.strip()}")
+            return False
+    except Exception as e:
+        say(f"  Could not run cmake --build: {e}")
+        return False
+
+
 def update_install(have: list, a) -> int:
     """#475: `setup.py --update` (UPDATE.bat / update.sh, after their git pull): what a plain START-HERE.bat does to
     an install before it starts the model, without starting it - the Python packages, the ready-made engine when this
@@ -3473,6 +3521,8 @@ def update_install(have: list, a) -> int:
         return 0
     pip_install(requirement_lines() if REQUIREMENTS.exists() else PY_PACKAGES,
                 "numpy, jinja2, regex, pyyaml, tqdm, requests, cmake, ninja, pillow, psutil")
+    build_cmake_if_present()
+    build_go_server()
     if not a.build:
         update_installed_engine(a.prebuilt)
     for cfg_path in have:
@@ -3502,7 +3552,7 @@ def settings_summary(cfg: dict, port=None) -> str:
         if val is not None and ("/" in val or "\\" in val or val.lower().endswith((".gguf", ".bin"))):
             continue                                   # a path: --native, --mtp, --profile ...
         out.append(flag if val is None else f"{flag} {val}")
-    srv = [f"{cfg.get('host', '0.0.0.0')}:{port or cfg.get('port', 8080)}"]
+    srv = [f"{cfg.get('host', '127.0.0.1')}:{port or cfg.get('port', 8080)}"]
     if cfg.get("api_key"):
         srv.append("api key set")
     if cfg.get("open_browser") is False:               # #609
@@ -3541,8 +3591,14 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
     cfg_path.touch()                                     # the most recently used model
     if "--mtp" in cfg["args"][:-1]:
         refresh_draft_vocab(Path(cfg["args"][cfg["args"].index("--mtp") + 1]), cfg.get("draft_vocab", "cjk"))
-    cmd = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
-           "--port", str(port or cfg.get("port", 8080))]
+    srv_bin = ROOT / "bin" / ("strata-server.exe" if WIN else "strata-server")
+    use_go = cfg.get("server") == "go" or os.environ.get("STRATA_SERVER") == "go"
+    if use_go and srv_bin.exists():
+        cmd = [str(srv_bin), "--engine", "strata", "--config", str(cfg_path),
+               "--port", str(port or cfg.get("port", 8080))]
+    else:
+        cmd = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
+               "--port", str(port or cfg.get("port", 8080))]
     if cfg.get("backend") == "hip":                    # AMD, numbered as HIP numbers them (setup's KFD order)
         if WIN:
             hip_runtime_beside_exe(Path(cfg["exe"]).parent)   # #468 #461: also fixes a 0.1.34 install
@@ -3947,10 +4003,15 @@ def use_cuda12(cards, cfg_path: Path, cfg: dict, yes: bool) -> dict:
     return cfg
 
 
-def write_run_script(model, cfg_path, port, open_browser=True):
+def write_run_script(model, cfg_path, port, open_browser=True, server_kind=None):
     """run-<model>.bat / .sh: the server with this config; `open_browser` False (#609: --no-browser) leaves --open out."""
-    serve = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
-             "--port", str(port)] + (["--open"] if open_browser else [])
+    srv_bin = ROOT / "bin" / ("strata-server.exe" if WIN else "strata-server")
+    if server_kind == "go" and srv_bin.exists():
+        serve = [str(srv_bin), "--engine", "strata", "--config", str(cfg_path),
+                 "--port", str(port)] + (["--open"] if open_browser else [])
+    else:
+        serve = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
+                 "--port", str(port)] + (["--open"] if open_browser else [])
     if WIN:
         script = ROOT / f"run-{model.lower()}.bat"
         script.write_text("@echo off\r\ntitle Strata " + model + "\r\ncd /d \"" + str(ROOT) + "\"\r\n" +
@@ -4119,6 +4180,8 @@ def main() -> int:
                     help="cuda = NVIDIA (default), hip = AMD RX 7900 / 7800 / 7700 XT, RX 9060 XT / 9070 / AI PRO R9700 on "
                          "Linux or Windows (chosen by itself when the PC has no NVIDIA card Strata can use), "
                          "sycl = Intel Arc, EXPERIMENTAL: Linux, built from source (docs/INTEL_ARC.md)")
+    ap.add_argument("--server", choices=["python", "go", "auto"], default=os.environ.get("STRATA_SERVER", "auto"),
+                    help="server implementation: python (default), go (pure Go server), or auto")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
     if a.backend == "sycl":                            # Intel Arc: the SYCL port's own setup (sycl/setup_intel.py)
@@ -4930,8 +4993,10 @@ def main() -> int:
             say("  " + line)
     for line in bench_tips(cfg["args"], cfg.get("env"), ram, MODELS[model]["ram_gb"], gpu.get("vram_gb", 0.0), vision, WIN):
         say("  " + line)
+    if getattr(a, "server", None) and a.server != "auto":
+        cfg["server"] = a.server
     write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None)
-    script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)
+    script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False, cfg.get("server"))
     # offered only when someone answers: --yes installs and adopted earlier installs are not held up by it
     if cal is None and not hip and not a.no_start and not a.yes and ask(
             "Tune Strata for this PC now? It measures a few engine settings (about 5-10 minutes; the PC is busy "

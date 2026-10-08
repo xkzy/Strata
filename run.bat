@@ -1,9 +1,7 @@
 @echo off
-rem Strata: Native AI Engine, Mathematical Runtime & Web Server in Go & C++
+rem Strata native runner: runs standalone Go binary if available, else builds it or falls back to START-HERE.bat
 setlocal
-title Strata
 cd /d "%~dp0"
-
 if exist "bin\strata.exe" (
     bin\strata.exe %*
     exit /b %errorlevel%
@@ -12,19 +10,14 @@ if exist "bin\strata" (
     bin\strata %*
     exit /b %errorlevel%
 )
-
 where go >nul 2>nul
 if not errorlevel 1 (
     echo Building native Strata binary...
     if not exist "bin" mkdir "bin"
     go build -o bin\strata.exe .\cmd\strata
-    go build -o bin\strata-server.exe .\cmd\strata-server
     if exist "bin\strata.exe" (
         bin\strata.exe %*
         exit /b %errorlevel%
     )
 )
-
-echo Strata binary not found. Please install Go to build bin\strata.exe.
-pause
-exit /b 1
+call START-HERE.bat %*

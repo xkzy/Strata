@@ -29,6 +29,7 @@ Strata, and installs nothing except Python and the `.venv` it needs to run (step
 ```
 Windows:  START-HERE.bat --check
 Linux:    ./setup.sh --check
+Go/Web:   ./bin/strata serve (then open http://127.0.0.1:8080#setup for browser-based setup)
 ```
 
 To check by hand:
