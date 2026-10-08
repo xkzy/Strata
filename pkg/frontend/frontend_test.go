@@ -130,3 +130,23 @@ func TestMonitorShowsLoadingAndErrorStates(t *testing.T) {
 		}
 	}
 }
+
+// MCP is gone: the server runs those tools itself (interception), so the page has no MCP card, switch or request flag.
+func TestPageHasNoMcpUI(t *testing.T) {
+	html, _ := embeddedWeb.ReadFile("web/index.html")
+	js, _ := embeddedWeb.ReadFile("web/app.js")
+	css, _ := embeddedWeb.ReadFile("web/app.css")
+	for _, s := range []string{`id="mcp-card"`, `id="mcp-row"`, `id="s-mcp"`, `id="mcp-list"`} {
+		if strings.Contains(string(html), s) {
+			t.Errorf("index.html still has %s", s)
+		}
+	}
+	for _, s := range []string{"loadMcp", "renderMcp", "strata_mcp", `fetch("mcp"`, "s-mcp", "mcpInfo"} {
+		if strings.Contains(string(js), s) {
+			t.Errorf("app.js still has %s", s)
+		}
+	}
+	if strings.Contains(string(css), ".mcp-") {
+		t.Error("app.css still styles the MCP card")
+	}
+}

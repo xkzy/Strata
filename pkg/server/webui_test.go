@@ -28,21 +28,6 @@ func getJSON(t *testing.T, url string) (int, map[string]interface{}) {
 	return resp.StatusCode, out
 }
 
-func TestWebUIMcpStatus(t *testing.T) {
-	ts := httptest.NewServer(setupTestServer().Router())
-	defer ts.Close()
-	code, got := getJSON(t, ts.URL+"/mcp")
-	if code != 200 {
-		t.Fatalf("GET /mcp = %d", code)
-	}
-	if _, ok := got["servers"].([]interface{}); !ok {
-		t.Errorf("servers must be a list: %v", got)
-	}
-	if _, ok := got["tools"].(float64); !ok {
-		t.Errorf("tools must be a number: %v", got)
-	}
-}
-
 func TestWebUISettingsRoundTrip(t *testing.T) {
 	ts := httptest.NewServer(setupTestServer().Router())
 	defer ts.Close()

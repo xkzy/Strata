@@ -55,7 +55,7 @@ main { flex: 1; min-height: 0; display: flex; }
 @keyframes blink { 50% { opacity: 0; } }
 .msg-error { color: var(--st-danger-text); background: var(--st-danger-tint); border-radius: var(--st-r-md); padding: 10px 14px;
              font-size: var(--st-fs-md); }
-/* MCP tool calls inside an answer: one compact collapsible block per call */
+/* tool calls inside an answer: one compact collapsible block per call */
 .st-bubble .tool-call { margin: var(--st-s-3) 0; }
 .tool-call > summary { min-width: 0; padding: 8px 12px; }
 .tool-call__name { font: 500 var(--st-fs-sm)/1.2 var(--st-font-mono); color: var(--st-ink); white-space: nowrap; }
@@ -124,19 +124,12 @@ main { flex: 1; min-height: 0; display: flex; }
 .cc-bars[hidden] { display: none; }
 .cc-note { margin: 0; }
 .cc-note:empty { display: none; }
-.mcp-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
 .cfg-form { display: grid; grid-template-columns: minmax(180px, max-content) minmax(0, 1fr); gap: var(--st-s-3) var(--st-s-4);
             align-items: center; }
 .cfg-form label { font-size: var(--st-fs-sm); font-weight: var(--st-fw-medium); }
 .cfg-form label code { font: 400 12px var(--st-font-mono); color: var(--st-ink-muted); display: block; }
 .cfg-form .st-input { height: 38px; width: 100%; max-width: 360px; }
 .cfg-actions { display: flex; align-items: center; gap: var(--st-s-3); }
-.mcp-server { display: flex; flex-direction: column; gap: var(--st-s-2); padding-top: var(--st-s-3); border-top: 1px solid var(--st-line-soft); }
-.mcp-server:first-child { padding-top: 0; border-top: 0; }
-.mcp-server__head { display: flex; align-items: center; gap: var(--st-s-2); flex-wrap: wrap; font-size: var(--st-fs-sm); }
-.mcp-server__tools { display: flex; flex-wrap: wrap; gap: 6px; }
-.mcp-server__tools .chip { height: 26px; padding: 0 10px; font-family: var(--st-font-mono); }
-.mcp-note { margin: 0; }
 
 /* ---------------------------------------------------------------- about */
 .about { max-width: 860px; }

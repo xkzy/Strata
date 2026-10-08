@@ -1,5 +1,5 @@
 // pkg/server/webui.go - the endpoints the web app (pkg/frontend/web) reads besides the model APIs: /config (the Settings
-// view of the run config), /settings (the Chat settings other apps share) and /mcp (the MCP card).
+// view of the run config), /settings (the Chat settings other apps share).
 package server
 
 import (
@@ -254,13 +254,4 @@ func (s *StrataServer) handleRunConfig(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
-}
-
-// handleMcpStatus is GET /mcp: the MCP servers and their tools (the web app's switch and Monitor card).
-func (s *StrataServer) handleMcpStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	writeJSON(w, http.StatusOK, s.McpHub.Status(r.Context()))
 }

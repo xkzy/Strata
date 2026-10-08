@@ -314,6 +314,7 @@ func (s *StrataServer) startRuntimeGeneration(ctx context.Context, spec genSpec)
 func (s *StrataServer) startChat(ctx context.Context, spec genSpec) (<-chan genEvent, int, error) {
 	if !spec.Raw {
 		s.interceptMathIntent(&spec)
+		s.interceptToolIntent(&spec)
 	}
 	if !spec.Raw && s.rtActive() {
 		return s.startRuntimeGeneration(ctx, spec)

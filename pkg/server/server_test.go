@@ -204,41 +204,34 @@ func TestLogicVerifyEndpoints(t *testing.T) {
 	}
 }
 
-func TestMcpEndpoints(t *testing.T) {
+// The MCP hub is gone: its tools run as interceptions now (intercept_tools_test.go). The old paths must not
+// answer as MCP, and the server must not list "tools" for them.
+func TestMcpEndpointsAreGone(t *testing.T) {
 	srv := setupTestServer()
 	ts := httptest.NewServer(srv.Router())
 	defer ts.Close()
 
-	// 1. GET /v1/mcp/tools
-	resp, err := http.Get(ts.URL + "/v1/mcp/tools")
-	if err != nil || resp.StatusCode != http.StatusOK {
-		t.Fatalf("failed /v1/mcp/tools: %v", err)
-	}
-	var toolsResp map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&toolsResp)
-	tools := toolsResp["tools"].([]interface{})
-	if len(tools) != 3 {
-		t.Fatalf("expected 3 tools, got %d", len(tools))
-	}
-	for _, toolItem := range tools {
-		tmap := toolItem.(map[string]interface{})
-		tname := tmap["name"].(string)
-		if tname == "math_evaluate" || tname == "sage" || tname == "mathics" {
-			t.Fatalf("Math engine tool %q should not be exposed via MCP", tname)
+	for _, path := range []string{"/v1/mcp/tools", "/mcp"} {
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]interface{}
+		json.NewDecoder(resp.Body).Decode(&body)
+		resp.Body.Close()
+		if _, ok := body["tools"]; ok || body["servers"] != nil {
+			t.Errorf("GET %s still answers as MCP: %v", path, body)
 		}
 	}
-
-	// 2. POST /v1/mcp (initialize)
-	initJSON := `{"jsonrpc":"2.0","id":1,"method":"initialize"}`
-	resp2, err2 := http.Post(ts.URL+"/v1/mcp", "application/json", strings.NewReader(initJSON))
-	if err2 != nil || resp2.StatusCode != http.StatusOK {
-		t.Fatalf("failed /v1/mcp initialize: %v", err2)
+	resp, err := http.Post(ts.URL+"/v1/mcp", "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	var mcpResp map[string]interface{}
-	json.NewDecoder(resp2.Body).Decode(&mcpResp)
-	if mcpResp["jsonrpc"] != "2.0" {
-		t.Errorf("expected jsonrpc 2.0")
+	var rpc map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&rpc)
+	resp.Body.Close()
+	if rpc["jsonrpc"] == "2.0" {
+		t.Errorf("POST /v1/mcp still answers JSON-RPC: %v", rpc)
 	}
 }
 

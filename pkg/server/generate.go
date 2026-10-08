@@ -18,17 +18,19 @@ import (
 
 // genSpec is one generation request after the API layer has normalised it.
 type genSpec struct {
-	Messages  []chattemplate.Message
-	Tools     []json.RawMessage
-	Opt       chattemplate.Options
-	RawPrompt string // /v1/completions: the prompt is used as given, no template
-	Raw       bool
-	Sampling  engineipc.SamplingParams
-	MaxTokens int // 0 = not given
-	Stops     []string
-	Scope       multitenant.SecurityScope // tenant / user / session of the caller (headers + body)
-	Debug       bool                      // return the runtime's decision trace (X-Strata-Debug: 1)
-	DisableMath bool                      // disable math interception (X-Strata-Math-Engine: off)
+	Messages            []chattemplate.Message
+	Tools               []json.RawMessage
+	Opt                 chattemplate.Options
+	RawPrompt           string // /v1/completions: the prompt is used as given, no template
+	Raw                 bool
+	Sampling            engineipc.SamplingParams
+	MaxTokens           int // 0 = not given
+	Stops               []string
+	Scope               multitenant.SecurityScope // tenant / user / session of the caller (headers + body)
+	Debug               bool                      // return the runtime's decision trace (X-Strata-Debug: 1)
+	DisableMath         bool                      // disable math interception (X-Strata-Math-Engine: off)
+	DisableTools        bool                      // disable tool interception (X-Strata-Tool-Intercept: off)
+	mathDone, toolsDone bool                      // the interceptions ran: they run once per request, however many paths it takes
 }
 
 // requestScope derives the caller's scope: X-Tenant-ID / X-User-ID / X-Session-ID headers win over the body's
@@ -83,6 +85,7 @@ func (s *StrataServer) startGeneration(ctx context.Context, spec genSpec) (<-cha
 		ids = tok.Encode(spec.RawPrompt, false)
 	} else {
 		s.interceptMathIntent(&spec)
+		s.interceptToolIntent(&spec)
 		text, plain, err := chattemplate.RenderSpans(spec.Messages, spec.Opt)
 		if err != nil {
 			var re *chattemplate.RequestError
@@ -200,6 +203,10 @@ func endFinish(reason string) string {
 }
 
 func (s *StrataServer) interceptMathIntent(spec *genSpec) {
+	if spec.mathDone {
+		return
+	}
+	spec.mathDone = true
 	if s.MathRuntime == nil || spec.DisableMath || os.Getenv("STRATA_MATH_INTERCEPTION") == "off" {
 		return
 	}
@@ -266,4 +273,3 @@ func (s *StrataServer) interceptMathIntent(spec *genSpec) {
 		}
 	}
 }
-

@@ -23,7 +23,6 @@ import (
 	"strata/pkg/installer"
 	"strata/pkg/logicverifier"
 	"strata/pkg/mathruntime"
-	"strata/pkg/mcp"
 	"strata/pkg/multitenant"
 	"strata/pkg/processjob"
 	"strata/pkg/resourcemanager"
@@ -54,7 +53,6 @@ type StrataServer struct {
 	Config          ServerConfig
 	MathRuntime     *mathruntime.MathRuntime
 	LogicVerifier   *logicverifier.LogicVerifier
-	McpHub          *mcp.McpHub
 	Structured      *structured.StructuredValidator
 	EngineIPC       *engineipc.EngineOrchestrator
 	Telemetry       *telemetry.TelemetryCollector
@@ -64,6 +62,8 @@ type StrataServer struct {
 	Frontend        *frontend.FrontendHandler
 	MultiTenant     *multitenant.MultiTenantManager
 	VirtualContext  *virtualcontext.VirtualContextManager
+	Memory          *virtualcontext.ConversationMemory // per-session recall for the tool interception
+	started         time.Time
 	AntiLoop        *antiloop.AntiLoopManager
 	ResourceManager *resourcemanager.ResourceManager
 	GenLoopDetector *generationloop.GenerationLoopDetector
@@ -97,8 +97,6 @@ func NewStrataServer(cfg ServerConfig) *StrataServer {
 	mr := mathruntime.NewMathRuntime(nil)
 	lv := logicverifier.NewLogicVerifier()
 	vc := virtualcontext.NewVirtualContextManager(cfg.MaxContext, cfg.VirtualLimit)
-	nativeTools := mcp.NewNativeToolsProvider(mr, lv, vc)
-	hub := mcp.NewMcpHub(nativeTools, 60*time.Second, 20000)
 
 	engineCfg := engineipc.EngineConfig{
 		BinaryPath:  cfg.BinaryPath,
@@ -116,7 +114,6 @@ func NewStrataServer(cfg ServerConfig) *StrataServer {
 		Config:          cfg,
 		MathRuntime:     mr,
 		LogicVerifier:   lv,
-		McpHub:          hub,
 		Structured:      structured.NewStructuredValidator(),
 		EngineIPC:       orchestrator,
 		Telemetry:       tc,
@@ -126,6 +123,8 @@ func NewStrataServer(cfg ServerConfig) *StrataServer {
 		Frontend:        frontend.NewFrontendHandler(),
 		MultiTenant:     multitenant.NewMultiTenantManager(),
 		VirtualContext:  vc,
+		Memory:          virtualcontext.NewConversationMemory(0, 0),
+		started:         time.Now(),
 		AntiLoop:        antiloop.Instance(),
 		ResourceManager: resourcemanager.NewResourceManager(),
 		GenLoopDetector: generationloop.NewGenerationLoopDetector(nil),
@@ -177,7 +176,6 @@ func (s *StrataServer) Router() http.Handler {
 	// Config Settings (#564)
 	mux.HandleFunc("/config", s.handleRunConfig)
 	mux.HandleFunc("/settings", s.handleSettings)
-	mux.HandleFunc("/mcp", s.handleMcpStatus)
 
 	// The standalone Monitor page
 	mux.HandleFunc("/api/requests", s.handleAPIRequests)
@@ -224,10 +222,6 @@ func (s *StrataServer) Router() http.Handler {
 	mux.HandleFunc("/v1/strata/guard", s.handleGuardStats)
 	mux.HandleFunc("/v1/strata/guard/check", s.handleGuardCheck)
 	mux.HandleFunc("/v1/strata/guard/outcome", s.handleGuardOutcome)
-
-	// Model Context Protocol (MCP) Endpoints
-	mux.HandleFunc("/v1/mcp", s.handleMcp)
-	mux.HandleFunc("/v1/mcp/tools", s.handleMcpTools)
 
 	// Root Web UI
 	mux.HandleFunc("/", s.handleRoot)
@@ -356,8 +350,6 @@ func bodyLimit(path string) int64 {
 	case path == "/v1/chat/completions", path == "/v1/completions", path == "/v1/messages",
 		path == "/v1/messages/count_tokens", strings.HasPrefix(path, "/v1/responses"):
 		return 0
-	case path == "/v1/mcp":
-		return 4 << 20 // tool arguments can carry a document
 	}
 	return 1 << 20
 }
@@ -772,40 +764,6 @@ func (s *StrataServer) handleGuardCheck(w http.ResponseWriter, r *http.Request) 
 func (s *StrataServer) handleGuardOutcome(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "recorded",
-	})
-}
-
-// ---------------------------------------------------------------------------
-// Model Context Protocol (MCP) Handlers
-// ---------------------------------------------------------------------------
-
-func (s *StrataServer) handleMcp(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, `{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"}}`, http.StatusBadRequest)
-		return
-	}
-
-	respBytes, err := s.McpHub.HandleJSONRPC(r.Context(), bodyBytes)
-	if err != nil {
-		http.Error(w, string(respBytes), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write(respBytes)
-}
-
-func (s *StrataServer) handleMcpTools(w http.ResponseWriter, r *http.Request) {
-	tools := s.McpHub.GetAllTools(r.Context())
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"tools": tools,
 	})
 }
 
