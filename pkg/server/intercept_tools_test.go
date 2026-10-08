@@ -90,9 +90,24 @@ func TestEarlierTurnsAreRecalledInTheSameSessionOnly(t *testing.T) {
 	if p := promptOf(t, promptFile); !strings.Contains(p, recallMarker) || !strings.Contains(p, "Biscuit") {
 		t.Errorf("the earlier turn must be recalled:\n%s", p)
 	}
+	// earlier turns come back at the user's level, never inside the system message
+	p := promptOf(t, promptFile)
+	if sysEnd := strings.Index(p, "<|im_end|>"); sysEnd < 0 || strings.Contains(p[:sysEnd], "Biscuit") {
+		t.Errorf("a recalled turn was put into the system message:\n%s", p)
+	}
 	chatAs(t, ts.URL, "s2", "Remind me, what was the name of my brown labrador dog?")
 	if p := promptOf(t, promptFile); strings.Contains(p, "Biscuit") {
 		t.Errorf("another session must never see it:\n%s", p)
+	}
+}
+
+// Callers that send no session id all share the default session; they must never see each other's turns.
+func TestAnonymousCallersAreNeverRecalled(t *testing.T) {
+	ts, promptFile := startChatServer(t, "ok")
+	chatAs(t, ts.URL, "", "My dog is called Biscuit and he is a brown labrador.")
+	chatAs(t, ts.URL, "", "Remind me, what was the name of my brown labrador dog?")
+	if p := promptOf(t, promptFile); strings.Contains(p, "Biscuit") || strings.Contains(p, recallMarker) {
+		t.Errorf("an anonymous caller recalled another one's turn:\n%s", p)
 	}
 }
 

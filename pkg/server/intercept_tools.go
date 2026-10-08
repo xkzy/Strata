@@ -95,16 +95,33 @@ func (s *StrataServer) interceptToolIntent(spec *genSpec) {
 		return
 	}
 	text := clipText(spec.Messages[idx].Content, maxInterceptText)
-	key := scopeKey(spec.Scope)
 
 	var facts []string
 	facts = append(facts, s.logicFacts(text, spec.Scope)...)
-	facts = append(facts, s.recallFacts(key, text, spec.Messages)...)
 	if f := s.statusFact(text); f != "" {
 		facts = append(facts, f)
 	}
-	s.rememberTurns(key, spec.Messages) // after the recall: the newest message must not be recalled to itself
+
+	// Recall is for named sessions only: callers that send no session id share the default one, and one of them
+	// must never see another's turns (requestSession treats them as isolated for the same reason).
+	var recall string
+	if spec.Scope.SessionID != multitenant.DefaultSecurityScope().SessionID {
+		key := scopeKey(spec.Scope)
+		recall = s.recallBlock(key, text, spec.Messages)
+		s.rememberTurns(key, spec.Messages) // after the recall: the newest message must not be recalled to itself
+	}
+
 	injectSystemFacts(spec, facts)
+	if recall != "" {
+		// Earlier turns were written by the user or the model, not by the server: they go back in at the user's own
+		// level, quoted, never into the system message.
+		for i := range spec.Messages {
+			if i >= idx && spec.Messages[i].Role == "user" && spec.Messages[i].Content == spec.Messages[idx].Content {
+				spec.Messages[i].Content = recall + "\n\n" + spec.Messages[i].Content
+				break
+			}
+		}
+	}
 }
 
 // logicFacts: the claims in the message (arithmetic, propositions, constraints, units) the verifier could decide.
@@ -118,9 +135,6 @@ func (s *StrataServer) logicFacts(text string, sc multitenant.SecurityScope) []s
 			continue
 		}
 		fact := fmt.Sprintf("%s: %s", logicFactLabel, r.CompactObservation)
-		if raw := strings.TrimSpace(r.RawStatement); raw != "" {
-			fact += fmt.Sprintf(" (claim: %s)", clipText(raw, 120))
-		}
 		facts = append(facts, fact)
 		if len(facts) >= maxLogicFacts {
 			break
@@ -129,11 +143,11 @@ func (s *StrataServer) logicFacts(text string, sc multitenant.SecurityScope) []s
 	return facts
 }
 
-// recallFacts: notes from earlier requests of this caller's session that share words with the message and are not
-// already in the prompt.
-func (s *StrataServer) recallFacts(key, text string, msgs []chattemplate.Message) []string {
+// recallBlock: notes from earlier requests of this session that share words with the message and are not already in
+// the prompt, as quoted text.
+func (s *StrataServer) recallBlock(key, text string, msgs []chattemplate.Message) string {
 	if s.Memory == nil {
-		return nil
+		return ""
 	}
 	inPrompt := make(map[string]struct{}, len(msgs))
 	for _, m := range msgs {
@@ -145,13 +159,13 @@ func (s *StrataServer) recallFacts(key, text string, msgs []chattemplate.Message
 	}
 	hits := s.Memory.Recall(key, text, maxRecallNotes, skip)
 	if len(hits) == 0 {
-		return nil
+		return ""
 	}
-	lines := []string{recallFactLabel + ":"}
+	lines := []string{"[" + recallFactLabel + ":"}
 	for _, h := range hits {
 		lines = append(lines, fmt.Sprintf("- %s: %q", h.Role, strings.Join(strings.Fields(h.Text), " ")))
 	}
-	return []string{strings.Join(lines, "\n")}
+	return strings.Join(lines, "\n") + "]"
 }
 
 func (s *StrataServer) rememberTurns(key string, msgs []chattemplate.Message) {
