@@ -98,3 +98,22 @@ func TestAppJSSessionIDsUseTheCSPRNG(t *testing.T) {
 		t.Error("app.js must make its session ids with randomId() (128 bits from crypto.getRandomValues)")
 	}
 }
+
+// The server reports live.state "unloaded" when no model is loaded; the Monitor's model-state card must show it
+// instead of lighting no badge and saying "Waiting for a request".
+func TestMonitorShowsTheUnloadedState(t *testing.T) {
+	html, err := embeddedWeb.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js, err := embeddedWeb.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(html), `data-s="unloaded"`) {
+		t.Error(`index.html needs a state badge with data-s="unloaded"`)
+	}
+	if !strings.Contains(string(js), `live.state === "unloaded"`) {
+		t.Error("app.js must label the unloaded state")
+	}
+}
