@@ -34,7 +34,7 @@ var statusIntent = regexp.MustCompile(`(?i)\b(server|runtime|system|strata|engin
 func toolsOff(h string) bool { return h == "off" || h == "false" || h == "0" }
 
 func scopeKey(sc multitenant.SecurityScope) string {
-	return strings.Join([]string{sc.TenantID, sc.UserID, sc.WorkspaceID, sc.AgentID, sc.SessionID}, "|")
+	return strings.Join([]string{sc.TenantID, sc.UserID, sc.WorkspaceID, sc.AgentID, sc.SessionID, sc.Credential}, "|")
 }
 
 func intOf(v interface{}) int {

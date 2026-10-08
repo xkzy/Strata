@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 )
 
@@ -24,12 +25,18 @@ type ConversationMemory struct {
 	notes    []note // oldest first
 	count    map[string]int
 	seen     map[string]map[uint64]struct{}
+	ttl      time.Duration    // a note older than this is dropped
+	now      func() time.Time // the clock (tests set it)
 }
+
+// DefaultNoteTTL is how long a note is kept: what a person said is not stored indefinitely.
+const DefaultNoteTTL = 12 * time.Hour
 
 type note struct {
 	scope, role, text string
 	hash              uint64
 	words             map[string]struct{}
+	at                time.Time
 }
 
 // Recalled is one note found for a query.
@@ -46,8 +53,41 @@ func NewConversationMemory(maxTotal, perScope int) *ConversationMemory {
 	if perScope <= 0 {
 		perScope = 256
 	}
-	return &ConversationMemory{maxTotal: maxTotal, perScope: perScope,
+	return &ConversationMemory{maxTotal: maxTotal, perScope: perScope, ttl: DefaultNoteTTL, now: time.Now,
 		count: map[string]int{}, seen: map[string]map[uint64]struct{}{}}
+}
+
+// expire drops the notes older than the ttl (they are in time order, so they are a prefix). Callers hold m.mu.
+func (m *ConversationMemory) expire() {
+	if m.ttl <= 0 {
+		return
+	}
+	cutoff := m.now().Add(-m.ttl)
+	for len(m.notes) > 0 && m.notes[0].at.Before(cutoff) {
+		m.dropOldest(func(note) bool { return true })
+	}
+}
+
+// Forget removes every note of a scope and reports how many there were.
+func (m *ConversationMemory) Forget(scope string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	kept := m.notes[:0]
+	n := 0
+	for _, x := range m.notes {
+		if x.scope == scope {
+			n++
+			continue
+		}
+		kept = append(kept, x)
+	}
+	for i := len(kept); i < len(m.notes); i++ {
+		m.notes[i] = note{} // let the dropped texts be collected
+	}
+	m.notes = kept
+	delete(m.count, scope)
+	delete(m.seen, scope)
+	return n
 }
 
 var stopwords = map[string]struct{}{}
@@ -99,6 +139,7 @@ func (m *ConversationMemory) Remember(scope, role, text string) bool {
 	h := hashOf(text)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.expire()
 	if _, dup := m.seen[scope][h]; dup {
 		return false
 	}
@@ -107,7 +148,7 @@ func (m *ConversationMemory) Remember(scope, role, text string) bool {
 	}
 	m.seen[scope][h] = struct{}{}
 	m.count[scope]++
-	m.notes = append(m.notes, note{scope: scope, role: role, text: text, hash: h, words: contentWords(text)})
+	m.notes = append(m.notes, note{scope: scope, role: role, text: text, hash: h, words: contentWords(text), at: m.now()})
 	for m.count[scope] > m.perScope {
 		m.dropOldest(func(n note) bool { return n.scope == scope })
 	}
@@ -145,6 +186,7 @@ func (m *ConversationMemory) Recall(scope, query string, topK int, skip func(tex
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.expire()
 	type scored struct {
 		Recalled
 		order int

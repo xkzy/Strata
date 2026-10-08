@@ -215,6 +215,7 @@ func (s *StrataServer) Router() http.Handler {
 	// Context & Tool Stores
 	mux.HandleFunc("/v1/strata/context", s.handleContextStats)
 	mux.HandleFunc("/v1/strata/context/query", s.handleContextQuery)
+	mux.HandleFunc("/v1/strata/memory", s.handleMemory)
 	mux.HandleFunc("/v1/strata/tools/retrieve", s.handleToolsRetrieve)
 
 	// Anti-Loop Guard
@@ -644,6 +645,7 @@ func (s *StrataServer) handleLogicVerify(w http.ResponseWriter, r *http.Request)
 			virtualcontext.CategoryVerificationAudit,
 			fmt.Sprintf("Verification [%s] %s: %s | %s", result.Status, result.Type, result.Evidence, result.FailureReason),
 			map[string]string{
+				"scope":      scopeKey(scope), // QueryScoped shows a record only to the scope that made it
 				"claim_id":   result.ClaimID,
 				"tenant_id":  claim.TenantID,
 				"session_id": claim.SessionID,
@@ -742,11 +744,33 @@ func (s *StrataServer) handleContextQuery(w http.ResponseWriter, r *http.Request
 	if body.TopK <= 0 {
 		body.TopK = 5
 	}
-	hits := s.VirtualContext.Query(body.Query, body.TopK)
+	if body.TopK > 50 {
+		body.TopK = 50
+	}
+	// only the caller's own records (the scope from the headers; callers that send none share the default scope)
+	hits := s.VirtualContext.QueryScoped(scopeKey(multitenant.FromHeaders(r.Header, nil)), body.Query, body.TopK)
+	if hits == nil {
+		hits = []map[string]interface{}{}
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"query": body.Query,
 		"hits":  hits,
 	})
+}
+
+// handleMemory is DELETE /v1/strata/memory: forget what the automatic recall kept of the caller's session
+// (the scope of the X-Tenant-ID / X-User-ID / X-Session-ID headers and the credential).
+func (s *StrataServer) handleMemory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		w.Header().Set("Allow", "DELETE")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	n := 0
+	if s.Memory != nil {
+		n = s.Memory.Forget(scopeKey(multitenant.FromHeaders(r.Header, nil)))
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"forgotten": n})
 }
 
 func (s *StrataServer) handleToolsRetrieve(w http.ResponseWriter, r *http.Request) {
