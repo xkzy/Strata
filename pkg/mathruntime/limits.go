@@ -8,7 +8,7 @@ import (
 )
 
 // Limits on the work one request can ask for. The runtime is reachable over HTTP (/v1/strata/cas/solve, /math/evaluate,
-// /math/theorems/verify, the MCP tools) by callers who are not trusted, and nothing here is cancelled once it started,
+// /math/theorems/verify, the math interception of every chat request) by callers who are not trusted, and nothing here is cancelled once it started,
 // so each operation is refused up front when its cost or its result would not be small. The numbers are generous for
 // real use (a 4096-bit RSA key, a 20,000-digit exact result, 10,000 terms of a binomial expansion), and each one at
 // its limit takes at most 74 ms (fib(100000); the others 60 ms or less), measured on a Ryzen 9 9950X3D.

@@ -86,7 +86,6 @@ function showTab(name) {
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
   if (tab === "setup") loadSetup();
-  if (tab === "monitor") loadMcp();
   if (tab === "about") loadConfig();
   if (lastMetrics) render(lastMetrics);
 }
@@ -210,7 +209,7 @@ function setMetric(key, value, unit, sub) {
   $(`ms-${key}`).textContent = sub || "";
 }
 
-let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
+let lastMetrics = null, metricsFailures = 0, keyWarned = false;
 let reqShowAll = false;   // the Monitor's request table: the last 12, or every one the server keeps (issue #35)
 async function poll() {
   try {
@@ -228,7 +227,6 @@ async function poll() {
   } catch (e) {
     if (++metricsFailures === 3) setPill("error", "Server not reachable");
   }
-  if (tab === "monitor" && ++mcpTick % 10 === 0) loadMcp();       // server states change rarely: every 10 s
   setTimeout(poll, 1000);
 }
 
@@ -538,41 +536,6 @@ document.addEventListener("click", (e) => {
 });
 $("req-all").addEventListener("click", () => { reqShowAll = !reqShowAll; if (lastMetrics) render(lastMetrics); });
 
-// ------------------------------------------------------------------ MCP servers (GET /mcp)
-// Tools from the MCP servers in the run config: the chat offers them to the model (opt-in per request,
-// "strata_mcp": true, which only this page sends); the Monitor lists the servers and what they offer.
-let mcpInfo = {servers: [], tools: 0}, mcpRetry = null;
-async function loadMcp() {
-  try {
-    const r = await fetch("mcp", {headers: headers()});
-    if (!r.ok) return;
-    mcpInfo = await r.json();
-  } catch (e) { return; /* an older server: no MCP */ }
-  renderMcp();
-  clearTimeout(mcpRetry);                          // right after the start, servers may still be starting (npx downloads)
-  if ((mcpInfo.servers || []).some((s) => s.status === "starting")) mcpRetry = setTimeout(loadMcp, 3000);
-}
-const MCP_STATE = {ready: ["st-badge--generating", "Connected"], starting: ["st-badge--reading", "Starting"],
-                   failed: ["st-badge--error", "Failed"], stopped: ["st-badge--queued", "Stopped"], idle: ["", "Waiting"]};
-function renderMcp() {
-  const servers = mcpInfo.servers || [];
-  $("mcp-card").hidden = !servers.length;
-  $("mcp-row").hidden = !servers.length;
-  const ready = servers.filter((s) => s.status === "ready" || s.status === "stopped");
-  $("mcp-sum").textContent = servers.length ? `${fmt(mcpInfo.tools)} tools · ${ready.length} of ${servers.length} servers connected` : "";
-  $("mcp-row-sub").textContent = mcpInfo.tools ? `${fmt(mcpInfo.tools)} tools from ${ready.map((s) => s.name).join(", ")}; the model calls them when it decides to`
-                                               : "no server is connected yet (see the Monitor)";
-  $("mcp-list").innerHTML = servers.map((s) => {
-    const [cls, text] = MCP_STATE[s.status] || ["", s.status];
-    const info = s.info && s.info.name ? ` · ${s.info.name}${s.info.version ? ` ${s.info.version}` : ""}` : "";
-    return `<div class="mcp-server"><div class="mcp-server__head"><span class="st-badge ${cls}">${esc(text)}</span>` +
-      `<strong>${esc(s.name)}</strong><span class="muted small">${esc(s.transport)} · ${fmt(s.tools.length)} tools${esc(info)}</span></div>` +
-      (s.error ? `<div class="msg-error">${esc(s.error)}</div>` : "") +
-      (s.tools.length ? `<div class="mcp-server__tools">${s.tools.map((t) => `<span class="chip" title="${esc(t.description || "")}">${esc(t.tool)}</span>`).join("")}</div>` : "") +
-      `</div>`;
-  }).join("");
-}
-
 // ------------------------------------------------------------------ Model settings (GET / POST /config, #564)
 // A few documented keys of the run config (strata-<model>.json), for every client, from the next start on.  The
 // server lists them, checks every value and keeps every other key of the file as it is.
@@ -696,7 +659,7 @@ function markdown(text) {
 }
 
 // ------------------------------------------------------------------ Chat
-const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true};
+const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true};
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
 let messages = store.get("chat", []);
 let attachments = [];                 // {name, url}
@@ -751,7 +714,7 @@ function msgEl(m, i) {
   }
   return el;
 }
-// One MCP tool call in the answer: a compact block (name, state, a one-line preview) that opens to the arguments and
+// One tool call in the answer: a compact block (name, state, a one-line preview) that opens to the arguments and
 // the result as the model read it.  Its body is built only while open: a result can be 20,000 characters.
 const TOOL_STATE = {writing: ["st-badge--reading", "Writing"], running: ["st-badge--generating", "Running"], done: ["", "Done"],
                     error: ["st-badge--error", "Error"], skipped: ["st-badge--queued", "Not run"]};
@@ -785,19 +748,6 @@ function answerHtml(m) {
     html += toolHtml(t, k);
   });
   return html + markdown(m.text.slice(pos));
-}
-// a tool event from the stream (the `strata_mcp` field of a chunk)
-function onTool(m, x) {
-  if (x.event === "limit") { m.limit = x.max_rounds; return; }
-  m.tools = m.tools || [];
-  let t = m.tools.find((y) => y.id === x.id);
-  if (!t) { t = {id: x.id, name: x.name, at: m.text.length, rat: m.reasoning.length, state: "writing"}; m.tools.push(t); }
-  if (x.event === "call") {
-    Object.assign(t, {name: x.name, server: x.server, tool: x.tool, arguments: x.arguments, round: x.round, state: "running"});
-  } else if (x.event === "result") {
-    Object.assign(t, {result: x.text, ok: x.ok, chars: x.chars, truncated: x.truncated, ms: x.ms,
-                      state: x.skipped ? "skipped" : x.ok ? "done" : "error"});
-  }
 }
 function updateAssistant(el, m, streaming) {
   const det = el.querySelector("details.think");
@@ -874,7 +824,7 @@ function apiMessages() {
   }
   return out;
 }
-// An answer that used MCP tools goes back as the model wrote it: per round the text before the calls, the calls and
+// An answer that used tools goes back as the model wrote it: per round the text before the calls, the calls and
 // their results (as the model read them), then the rest - so the next question can build on what the tools found.
 function assistantMessages(m) {
   const ran = (m.tools || []).filter((t) => t.round != null && t.result != null && t.state !== "skipped");
@@ -927,7 +877,6 @@ async function send() {
   if (settings.seed) body.seed = +settings.seed;
   if (settings.max) body.max_tokens = +settings.max;
   if (projectionLoaded()) body.experimental_speed_projection = !!settings.esp;
-  if (settings.mcp !== false && mcpInfo.tools > 0) body.strata_mcp = true;   // this server may run MCP tools for it
 
   let firstAt = null, thinkStart = null, usage = null, frame = 0;
   const paint = () => { frame = 0; updateAssistant(el, m, true); scrollDown(); };
@@ -957,7 +906,6 @@ async function send() {
         try { j = JSON.parse(data); } catch (e) { continue; }
         if (j.error) throw new Error(j.error.message || "the engine reported an error");
         if (j.usage) usage = j.usage;
-        if (j.strata_mcp) onTool(m, j.strata_mcp);
         const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
         const lastTool = m.tools && m.tools.length ? m.tools[m.tools.length - 1] : null;   // a new round after a tool
         if (d.reasoning_content) {
@@ -991,7 +939,6 @@ async function send() {
   for (const t of m.tools || []) if (t.state === "writing" || t.state === "running") { t.state = "skipped"; t.ms = null; }
   const ran = (m.tools || []).filter((t) => t.state === "done" || t.state === "error").length;
   if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${ran} tool call${ran > 1 ? "s" : ""}`;
-  if (m.limit) m.meta = `${m.meta || ""} · stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds)`;
   busy = null;
   setBusy(false);
   if (frame) cancelAnimationFrame(frame);
@@ -1120,7 +1067,7 @@ function openDrawer(open) {
   $("drawer").dataset.open = String(open);
   $("drawer").setAttribute("aria-hidden", String(!open));
   $("scrim").hidden = !open;
-  if (open) { loadDrawer(); loadShared(); loadMcp(); }
+  if (open) { loadDrawer(); loadShared(); }
 }
 function loadDrawer(s = settings) {
   for (const b of $("s-thinking").children) b.setAttribute("aria-checked", String(b.dataset.v === s.thinking));
@@ -1129,7 +1076,6 @@ function loadDrawer(s = settings) {
   $("s-show").setAttribute("aria-checked", String(!!s.show));
   $("s-esp").setAttribute("aria-checked", String(s.esp !== false));
   $("esp-row").hidden = !projectionLoaded();
-  $("s-mcp").setAttribute("aria-checked", String(s.mcp !== false));
   $("s-share").setAttribute("aria-checked", String(sharedOn));
   outputs();
 }
@@ -1178,7 +1124,6 @@ for (const b of $("s-thinking").children) b.onclick = () => { for (const x of $(
 for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = outputs;
 $("s-show").onclick = () => $("s-show").setAttribute("aria-checked", String($("s-show").getAttribute("aria-checked") !== "true"));
 $("s-esp").onclick = () => $("s-esp").setAttribute("aria-checked", String($("s-esp").getAttribute("aria-checked") !== "true"));
-$("s-mcp").onclick = () => $("s-mcp").setAttribute("aria-checked", String($("s-mcp").getAttribute("aria-checked") !== "true"));
 $("s-share").onclick = () => $("s-share").setAttribute("aria-checked", String($("s-share").getAttribute("aria-checked") !== "true"));
 $("s-reset").onclick = () => loadDrawer(DEFAULTS);
 $("s-apply").onclick = async () => {
@@ -1186,8 +1131,7 @@ $("s-apply").onclick = async () => {
   settings = {thinking: sel ? sel.dataset.v : "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
               top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
               show: $("s-show").getAttribute("aria-checked") === "true",
-              esp: $("s-esp").getAttribute("aria-checked") === "true",
-              mcp: $("s-mcp").getAttribute("aria-checked") === "true"};
+              esp: $("s-esp").getAttribute("aria-checked") === "true"};
   store.set("sampling", settings);
   const share = $("s-share").getAttribute("aria-checked") === "true";
   openDrawer(false);
@@ -1431,6 +1375,6 @@ setBusy(false);
 renderChat();
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
-loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
+loadHealth().then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
 showTab(location.hash.slice(1) || "chat");
 poll();

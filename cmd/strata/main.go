@@ -2,7 +2,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
@@ -19,10 +18,8 @@ import (
 	"strata/pkg/installer"
 	"strata/pkg/logicverifier"
 	"strata/pkg/mathruntime"
-	"strata/pkg/mcp"
 	"strata/pkg/server"
 	"strata/pkg/telemetry"
-	"strata/pkg/virtualcontext"
 )
 
 const version = "1.0.0"
@@ -46,8 +43,6 @@ func main() {
 		runVerify(os.Args[2:])
 	case "check-hallucination", "hallucination":
 		runCheckHallucination(os.Args[2:])
-	case "mcp":
-		runMCP(os.Args[2:])
 	case "telemetry", "status":
 		runTelemetry(os.Args[2:])
 	case "version", "--version", "-v":
@@ -77,7 +72,6 @@ func printUsage() {
 	fmt.Println("  math                Evaluate a mathematical expression deterministically")
 	fmt.Println("  verify              Verify logical deductions, constraints, SI units, schemas")
 	fmt.Println("  check-hallucination Detect and verify factual claims against ground truth")
-	fmt.Println("  mcp                 Start Model Context Protocol (MCP) server on stdio for IDEs")
 	fmt.Println("  telemetry           Print current CPU, RAM, GPU/VRAM hardware telemetry")
 	fmt.Println("  version             Print version information")
 	fmt.Println()
@@ -142,7 +136,6 @@ func runServer(args []string) {
 	fmt.Printf(" Virtual Context:   %d tokens\n", *virtualLimit)
 	fmt.Printf(" Math Runtime:      Active (Mathics CAS + FastNumeric Exact Rational)\n")
 	fmt.Printf(" Logic Verifier:    Active (Tri-State Modus Ponens, SI Units, Bounds)\n")
-	fmt.Printf(" MCP Server Hub:    Active (/v1/mcp)\n")
 	fmt.Println("======================================================================")
 
 	go func() {
@@ -189,25 +182,6 @@ func runVerify(args []string) {
 	results := lv.VerifyText(text, "cli", "session-cli")
 	out, _ := json.MarshalIndent(results, "", "  ")
 	fmt.Println(string(out))
-}
-
-func runMCP(args []string) {
-	mr := mathruntime.NewMathRuntime(nil)
-	lv := logicverifier.NewLogicVerifier()
-	vc := virtualcontext.NewVirtualContextManager(32768, 2000000)
-	nativeTools := mcp.NewNativeToolsProvider(mr, lv, vc)
-	hub := mcp.NewMcpHub(nativeTools, 60*time.Second, 20000)
-
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		respBytes, _ := hub.HandleJSONRPC(context.Background(), line)
-		os.Stdout.Write(respBytes)
-		os.Stdout.Write([]byte("\n"))
-	}
 }
 
 func runTelemetry(args []string) {

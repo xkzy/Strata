@@ -200,15 +200,26 @@ func (b *rtBackend) Generate(ctx context.Context, ids []int, sp rtclient.Samplin
 		Temperature: sp.Temperature, TopP: sp.TopP, TopK: sp.TopK, MinP: sp.MinP, RepetitionPenalty: sp.RepetitionPenalty,
 		FrequencyPenalty: sp.FrequencyPenalty, PresencePenalty: sp.PresencePenalty, Seed: sp.Seed,
 	}, maxTokens, stopIDs, sp.Stop, eng)
+	rq := b.s.mon.begin(len(ids), maxTokens) // the Monitor's live state, Recent requests and Context read this
 	go func() {
 		defer close(out)
+		defer func() { // the engine stopped, or the client left, without an end event
+			if ctx.Err() != nil {
+				rq.finish("disconnect", 0, 0)
+			} else {
+				rq.finish("error", 0, 0)
+			}
+		}()
 		for ev := range eng {
 			switch {
 			case ev.Error != nil:
+				rq.finish("error", ev.GenTokens, 0)
 				out <- rtclient.GenToken{End: true, Err: ev.Error}
 			case ev.IsEnd:
+				rq.finish(endFinish(ev.FinishReason), ev.GenTokens, ev.TokPerSec)
 				out <- rtclient.GenToken{End: true, Finish: ev.FinishReason}
 			default:
+				rq.token()
 				out <- rtclient.GenToken{ID: ev.TokenID, Text: ev.Text}
 			}
 		}
@@ -314,6 +325,7 @@ func (s *StrataServer) startRuntimeGeneration(ctx context.Context, spec genSpec)
 func (s *StrataServer) startChat(ctx context.Context, spec genSpec) (<-chan genEvent, int, error) {
 	if !spec.Raw {
 		s.interceptMathIntent(&spec)
+		s.interceptToolIntent(&spec)
 	}
 	if !spec.Raw && s.rtActive() {
 		return s.startRuntimeGeneration(ctx, spec)
