@@ -73,11 +73,12 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
 
 let tab = "chat";
 function showTab(name) {
-  tab = ["chat", "monitor", "about"].includes(name) ? name : "chat";
+  tab = ["chat", "setup", "monitor", "about"].includes(name) ? name : "chat";
   for (const b of document.querySelectorAll(".st-tab")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
-  for (const v of ["chat", "monitor", "about"]) $(`view-${v}`).hidden = v !== tab;
+  for (const v of ["chat", "setup", "monitor", "about"]) $(`view-${v}`).hidden = v !== tab;
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
+  if (tab === "setup") loadSetup();
   if (tab === "monitor") loadMcp();
   if (tab === "about") loadConfig();
   if (lastMetrics) render(lastMetrics);
@@ -86,10 +87,20 @@ for (const b of document.querySelectorAll(".st-tab")) b.onclick = () => showTab(
 window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
 
 // ------------------------------------------------------------------ server access
+function getSessionId() {
+  let sid = store.get("session_id", "");
+  if (!sid) {
+    sid = "sess-" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    store.set("session_id", sid);
+  }
+  return sid;
+}
+
 function headers(json = false) {
   const h = {};
   const key = store.get("apikey", "");
   if (key) h.Authorization = "Bearer " + key;
+  h["X-Session-ID"] = getSessionId();
   if (json) h["Content-Type"] = "application/json";
   return h;
 }
@@ -978,10 +989,13 @@ $("new-btn").onclick = () => {
   if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
   if (!messages.length) return;
   const backup = messages;
+  const backupSid = store.get("session_id", "");
   messages = [];
+  const newSid = "sess-" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  store.set("session_id", newSid);
   saveChat();
   renderChat();
-  toast("info", "New chat", "The last one was cleared.", 6000, {label: "Undo", run: () => { messages = backup; saveChat(); renderChat(); }});
+  toast("info", "New chat", "The last one was cleared.", 6000, {label: "Undo", run: () => { messages = backup; store.set("session_id", backupSid); saveChat(); renderChat(); }});
 };
 $("export-btn").onclick = () => {
   if (!messages.length) { toast("info", "Nothing to save yet"); return; }
@@ -1169,6 +1183,224 @@ $("s-apply").onclick = async () => {
 $("sampling-btn").onclick = () => openDrawer(true);
 $("drawer-close").onclick = () => openDrawer(false);
 $("scrim").onclick = () => openDrawer(false);
+// ------------------------------------------------------------------ Setup & Hardware Configuration
+let selectedModelOpt = null;
+let setupDlPolling = false;
+
+async function loadSetup() {
+  try {
+    const r = await fetch("api/setup/models", { headers: headers() });
+    if (r.ok) {
+      const data = await r.json();
+      renderSetupHardware(data.hardware);
+      renderSetupModels(data.models || [], data.recommended);
+    }
+  } catch (e) {
+    console.error("Failed to load setup models:", e);
+  }
+  checkSetupStatus();
+}
+
+function renderSetupHardware(hw) {
+  if (!hw) return;
+  if ($("hw-cpu")) $("hw-cpu").textContent = hw.cpu_cores ? `${hw.cpu_cores} Cores` : "–";
+  if ($("hw-ram")) $("hw-ram").textContent = hw.ram_total_gb ? `${fmt(hw.ram_total_gb, 1)} GB` : "–";
+  if ($("hw-gpu")) $("hw-gpu").textContent = hw.gpu_name || hw.gpu_vendor || "CPU Only";
+  if ($("hw-vram")) $("hw-vram").textContent = hw.vram_gb ? `${fmt(hw.vram_gb, 1)} GB` : (hw.gpu_vendor === "CPU" ? "Shared RAM" : "–");
+}
+
+function renderSetupModels(models, recommended) {
+  const container = $("models-grid");
+  if (!container) return;
+  container.innerHTML = "";
+
+  models.forEach((m) => {
+    const isRec = recommended && (m.name === recommended.name || m.recommended);
+    const card = document.createElement("div");
+    card.className = `model-card-item ${isRec ? "recommended" : ""}`;
+    card.id = `mcard-${m.name}`;
+    
+    card.innerHTML = `
+      ${isRec ? `<span class="model-rec-badge">★ Recommended</span>` : ""}
+      <div class="model-card-name">${esc(m.name)}</div>
+      <div class="model-card-desc">${esc(m.description || "")}</div>
+      <div class="model-card-meta">
+        <span>Min RAM: ${fmt(m.min_ram_gb, 0)} GB</span>
+        <span>Size: ${fmt(m.size_gb, 1)} GB</span>
+      </div>
+    `;
+
+    card.onclick = () => selectSetupModel(m);
+    container.appendChild(card);
+  });
+
+  const defaultPick = recommended || models[0];
+  if (defaultPick) {
+    selectSetupModel(defaultPick);
+  }
+}
+
+function selectSetupModel(m) {
+  selectedModelOpt = m;
+  for (const el of document.querySelectorAll(".model-card-item")) {
+    el.classList.remove("selected");
+  }
+  const chosen = $(`mcard-${m.name}`);
+  if (chosen) chosen.classList.add("selected");
+
+  if ($("setup-custom-url")) $("setup-custom-url").value = m.download_url || "";
+  if ($("setup-dest-path")) $("setup-dest-path").value = `models/${m.filename || (m.name.toLowerCase() + ".gguf")}`;
+}
+
+async function startSetupDownload() {
+  if (!selectedModelOpt) {
+    toast("warn", "Select a model", "Please choose a model option first.");
+    return;
+  }
+
+  // If selecting an existing local pack, activate it directly without downloading
+  if (selectedModelOpt.download_url === "" || (selectedModelOpt.name && selectedModelOpt.name.includes("Local"))) {
+    await saveSetupConfig();
+    toast("success", "Local Model Activated", `${selectedModelOpt.name} is now active.`);
+    return;
+  }
+
+  const payload = {
+    model_name: selectedModelOpt.name,
+    download_url: ($("setup-custom-url") && $("setup-custom-url").value.trim()) || selectedModelOpt.download_url,
+    dest_path: ($("setup-dest-path") && $("setup-dest-path").value.trim()) || `models/${selectedModelOpt.filename}`,
+  };
+
+  try {
+    const r = await fetch("api/setup/download", {
+      method: "POST",
+      headers: headers(true),
+      body: JSON.stringify(payload),
+    });
+
+    if (r.ok) {
+      toast("info", "Download Started", `Downloading ${selectedModelOpt.name}...`);
+      pollSetupDownload();
+    } else {
+      let errMsg = `HTTP ${r.status}`;
+      try {
+        const err = await r.json();
+        if (typeof err.error === "string") errMsg = err.error;
+        else if (err.error && err.error.message) errMsg = err.error.message;
+        else if (err.message) errMsg = err.message;
+      } catch (e) {}
+      toast("error", "Download failed to start", errMsg);
+    }
+  } catch (e) {
+    toast("error", "Connection error", e.message);
+  }
+}
+
+async function saveSetupConfig() {
+  const payload = {
+    model_name: selectedModelOpt ? selectedModelOpt.name : "",
+    model_path: ($("setup-dest-path") && $("setup-dest-path").value.trim()) || "",
+    max_context: +($("setup-ctx") ? $("setup-ctx").value : 32768),
+    virtual_limit: +($("setup-virt-ctx") ? $("setup-virt-ctx").value : 2097152),
+  };
+
+  try {
+    const r = await fetch("api/setup/configure", {
+      method: "POST",
+      headers: headers(true),
+      body: JSON.stringify(payload),
+    });
+    if (r.ok) {
+      toast("success", "Configuration Saved", "Settings updated for active server session.");
+      loadHealth();
+    } else {
+      toast("error", "Failed to save configuration");
+    }
+  } catch (e) {
+    toast("error", "Error saving config", e.message);
+  }
+}
+
+async function cancelSetupDownload() {
+  try {
+    await fetch("api/setup/cancel", { method: "POST", headers: headers(true) });
+    toast("info", "Download Cancelled");
+    if ($("setup-cancel-btn")) $("setup-cancel-btn").hidden = true;
+    if ($("setup-dl-card")) $("setup-dl-card").hidden = true;
+  } catch (e) {
+    toast("error", "Cancel failed", e.message);
+  }
+}
+
+async function pollSetupDownload() {
+  if (setupDlPolling) return;
+  setupDlPolling = true;
+
+  const check = async () => {
+    try {
+      const r = await fetch("api/setup/status", { headers: headers() });
+      if (r.ok) {
+        const st = await r.json();
+        const dl = st.download || {};
+        const card = $("setup-dl-card");
+        const cancelBtn = $("setup-cancel-btn");
+
+        if (dl.status === "downloading") {
+          if (card) card.hidden = false;
+          if (cancelBtn) cancelBtn.hidden = false;
+          if ($("setup-dl-label")) $("setup-dl-label").textContent = `Downloading ${dl.model_name || "Model"}...`;
+          if ($("setup-dl-pct")) $("setup-dl-pct").textContent = `${fmt(dl.percent, 1)}%`;
+          if ($("setup-dl-bar")) $("setup-dl-bar").style.width = `${dl.percent}%`;
+          if ($("setup-dl-speed")) $("setup-dl-speed").textContent = `Speed: ${fmt(dl.speed_mb_s, 2)} MB/s`;
+          if ($("setup-dl-bytes")) $("setup-dl-bytes").textContent = `${gb(dl.downloaded_bytes, 2)} / ${gb(dl.total_bytes, 2)} GB`;
+          if ($("setup-dl-err")) $("setup-dl-err").hidden = true;
+          setTimeout(check, 1000);
+          return;
+        } else if (dl.status === "completed") {
+          if (card) card.hidden = false;
+          if (cancelBtn) cancelBtn.hidden = true;
+          if ($("setup-dl-label")) $("setup-dl-label").textContent = `Download Complete (${dl.model_name})`;
+          if ($("setup-dl-pct")) $("setup-dl-pct").textContent = "100%";
+          if ($("setup-dl-bar")) $("setup-dl-bar").style.width = "100%";
+          if ($("setup-dl-err")) $("setup-dl-err").hidden = true;
+          toast("success", "Model Ready", `${dl.model_name} is downloaded and activated!`);
+          setupDlPolling = false;
+          loadHealth();
+          return;
+        } else if (dl.status === "failed") {
+          if (card) card.hidden = false;
+          if (cancelBtn) cancelBtn.hidden = true;
+          if ($("setup-dl-err")) {
+            $("setup-dl-err").hidden = false;
+            $("setup-dl-err").textContent = `Error: ${dl.error || "Unknown error"}`;
+          }
+          setupDlPolling = false;
+          return;
+        }
+      }
+    } catch (e) {}
+    setupDlPolling = false;
+  };
+  check();
+}
+
+async function checkSetupStatus() {
+  try {
+    const r = await fetch("api/setup/status", { headers: headers() });
+    if (r.ok) {
+      const st = await r.json();
+      if (st.download && st.download.status === "downloading") {
+        pollSetupDownload();
+      }
+    }
+  } catch (e) {}
+}
+
+if ($("hw-refresh-btn")) $("hw-refresh-btn").onclick = loadSetup;
+if ($("setup-download-btn")) $("setup-download-btn").onclick = startSetupDownload;
+if ($("setup-save-btn")) $("setup-save-btn").onclick = saveSetupConfig;
+if ($("setup-cancel-btn")) $("setup-cancel-btn").onclick = cancelSetupDownload;
+
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawer").dataset.open === "true") openDrawer(false); });
 
 // ------------------------------------------------------------------ start

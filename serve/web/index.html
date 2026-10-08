@@ -27,6 +27,8 @@
   <nav class="st-tabs" role="tablist" aria-label="Views">
     <button class="st-tab" role="tab" id="tab-btn-chat" aria-controls="view-chat" aria-selected="true" data-tab="chat">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-chat"/></svg>Chat</button>
+    <button class="st-tab" role="tab" id="tab-btn-setup" aria-controls="view-setup" aria-selected="false" data-tab="setup">
+      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-cpu"/></svg>Setup</button>
     <button class="st-tab" role="tab" id="tab-btn-monitor" aria-controls="view-monitor" aria-selected="false" data-tab="monitor">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-activity"/></svg>Monitor</button>
     <button class="st-tab" role="tab" id="tab-btn-about" aria-controls="view-about" aria-selected="false" data-tab="about">
@@ -161,6 +163,106 @@
     </div>
   </section>
 
+  <!-- ============================ Setup & Hardware ============================ -->
+  <section class="view view--setup" id="view-setup" role="tabpanel" aria-labelledby="tab-btn-setup" hidden>
+    <div class="setup-container">
+      <div class="st-card hw-detect-card">
+        <div class="req-head">
+          <div>
+            <span class="card-title">Host Hardware Detection</span>
+            <div class="muted small">Auto-detected hardware environment and acceleration backend</div>
+          </div>
+          <button class="st-btn st-btn--secondary" id="hw-refresh-btn" type="button">
+            <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-refresh"/></svg>Re-scan
+          </button>
+        </div>
+        <div class="hw-grid" id="hw-grid">
+          <div class="hw-stat">
+            <span class="hw-stat__label"><svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-cpu"/></svg>CPU Cores</span>
+            <span class="hw-stat__val" id="hw-cpu">–</span>
+          </div>
+          <div class="hw-stat">
+            <span class="hw-stat__label"><svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-memory"/></svg>System RAM</span>
+            <span class="hw-stat__val" id="hw-ram">–</span>
+          </div>
+          <div class="hw-stat">
+            <span class="hw-stat__label"><svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-gpu"/></svg>GPU Backend</span>
+            <span class="hw-stat__val" id="hw-gpu">–</span>
+          </div>
+          <div class="hw-stat">
+            <span class="hw-stat__label"><svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-layers"/></svg>VRAM</span>
+            <span class="hw-stat__val" id="hw-vram">–</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="st-card model-config-card">
+        <div class="req-head">
+          <div>
+            <span class="card-title">Model Quantization & Memory Recommendation</span>
+            <div class="muted small">Select the model variant optimal for your available RAM & VRAM</div>
+          </div>
+        </div>
+        <div class="models-grid" id="models-grid">
+          <!-- Dynamically populated from /api/setup/models -->
+        </div>
+      </div>
+
+      <div class="st-card runtime-config-card">
+        <span class="card-title">Runtime Configuration</span>
+        <form class="cfg-form" id="setup-form" onsubmit="return false;">
+          <label for="setup-ctx">Context Window<code>--max-context</code></label>
+          <select class="st-input" id="setup-ctx">
+            <option value="16384">16,384 (16K)</option>
+            <option value="32768" selected>32,768 (32K - Default)</option>
+            <option value="65536">65,536 (64K)</option>
+            <option value="131072">131,072 (128K)</option>
+          </select>
+
+          <label for="setup-virt-ctx">Virtual Extended Limit<code>--virtual-limit</code></label>
+          <select class="st-input" id="setup-virt-ctx">
+            <option value="524288">524,288 (512K)</option>
+            <option value="1048576">1,048,576 (1M)</option>
+            <option value="2097152" selected>2,097,152 (2M - Default)</option>
+          </select>
+
+          <label for="setup-custom-url">Model Weight URL<code>HuggingFace / Direct Link</code></label>
+          <input class="st-input" id="setup-custom-url" type="text" placeholder="Auto-filled from selection or enter custom URL">
+
+          <label for="setup-dest-path">Local Destination Path<code>Storage location</code></label>
+          <input class="st-input" id="setup-dest-path" type="text" placeholder="models/qwen3.8-flash-next-q8_0.gguf">
+        </form>
+
+        <div class="setup-actions">
+          <button class="st-btn st-btn--primary" id="setup-download-btn" type="button">
+            <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-download"/></svg>Download & Activate Model
+          </button>
+          <button class="st-btn st-btn--secondary" id="setup-save-btn" type="button">
+            <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-check"/></svg>Save Config Only
+          </button>
+          <button class="st-btn st-btn--secondary" id="setup-cancel-btn" type="button" hidden>
+            <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-stop"/></svg>Cancel Download
+          </button>
+        </div>
+
+        <div class="dl-card" id="setup-dl-card" hidden>
+          <div class="bar-row">
+            <span id="setup-dl-label">Downloading Model...</span>
+            <span class="muted" id="setup-dl-pct">0%</span>
+          </div>
+          <div class="st-progress" data-tone="info">
+            <div class="st-progress__bar" id="setup-dl-bar" style="width:0%"></div>
+          </div>
+          <div class="dl-meta">
+            <span id="setup-dl-speed">Speed: –</span>
+            <span id="setup-dl-bytes">0 MB / 0 MB</span>
+          </div>
+          <div class="msg-error" id="setup-dl-err" hidden></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- ============================ About ============================ -->
   <section class="view view--about" id="view-about" role="tabpanel" aria-labelledby="tab-btn-about" hidden>
     <div class="about">
@@ -186,7 +288,7 @@
         <div class="toggle-row"><span>Dark theme</span>
           <button class="st-toggle" id="dark-toggle" role="switch" aria-checked="false" aria-label="Dark theme"></button></div>
         <p class="muted small">Chats, settings and the key are kept in this browser only.
-          <a href="https://github.com/Niko1221/Strata" target="_blank" rel="noopener noreferrer">Strata on GitHub</a></p>
+          <a href="https://github.com/xkzy/Strata" target="_blank" rel="noopener noreferrer">Strata on GitHub</a></p>
       </div>
       <div class="st-card cfg-card" id="cfg-card" hidden>
         <div class="req-head"><span class="card-title">Model settings</span><span class="muted small" id="cfg-file"></span></div>

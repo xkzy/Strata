@@ -153,6 +153,26 @@ main { flex: 1; min-height: 0; display: flex; }
               font-weight: var(--st-fw-medium); color: var(--st-ink-soft); }
 .toggle-row .st-toggle { flex: none; }   /* a long label must not squeeze the switch */
 
+/* ---------------------------------------------------------------- setup */
+.view--setup { overflow-y: auto; }
+.setup-container { max-width: 960px; width: 100%; margin: 0 auto; padding: var(--st-s-6); display: flex; flex-direction: column; gap: var(--st-s-5); }
+.hw-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--st-s-4); margin-top: var(--st-s-3); }
+.hw-stat { background: var(--st-surface-2); border: 1px solid var(--st-line); border-radius: var(--st-r-md); padding: var(--st-s-3) var(--st-s-4); display: flex; flex-direction: column; gap: 4px; }
+.hw-stat__label { font-size: var(--st-fs-xs); color: var(--st-ink-muted); display: flex; align-items: center; gap: 6px; }
+.hw-stat__val { font-size: var(--st-fs-lg); font-weight: var(--st-fw-bold); color: var(--st-ink); }
+.models-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--st-s-4); margin-top: var(--st-s-3); }
+.model-card-item { background: var(--st-surface-2); border: 1.5px solid var(--st-line); border-radius: var(--st-r-lg); padding: var(--st-s-4); display: flex; flex-direction: column; gap: var(--st-s-2); cursor: pointer; transition: all var(--st-dur); position: relative; }
+.model-card-item:hover { border-color: var(--st-accent); }
+.model-card-item.selected { border-color: var(--st-accent); background: color-mix(in srgb, var(--st-accent) 8%, var(--st-surface-2)); }
+.model-card-item.recommended { border-color: var(--st-accent); }
+.model-rec-badge { position: absolute; top: -10px; right: 12px; background: var(--st-accent); color: white; font-size: 10px; font-weight: var(--st-fw-bold); padding: 2px 8px; border-radius: var(--st-r-pill); }
+.model-card-name { font-weight: var(--st-fw-bold); font-size: var(--st-fs-base); color: var(--st-ink); }
+.model-card-desc { font-size: var(--st-fs-xs); color: var(--st-ink-muted); flex: 1; }
+.model-card-meta { display: flex; justify-content: space-between; font-size: var(--st-fs-xs); font-weight: var(--st-fw-medium); color: var(--st-ink-soft); border-top: 1px solid var(--st-line-soft); padding-top: var(--st-s-2); }
+.setup-actions { display: flex; align-items: center; gap: var(--st-s-3); margin-top: var(--st-s-4); flex-wrap: wrap; }
+.dl-card { background: var(--st-surface-2); border: 1px solid var(--st-line); border-radius: var(--st-r-md); padding: var(--st-s-4); display: flex; flex-direction: column; gap: var(--st-s-3); margin-top: var(--st-s-3); }
+.dl-meta { display: flex; justify-content: space-between; font-size: var(--st-fs-xs); color: var(--st-ink-muted); }
+
 /* ---------------------------------------------------------------- drawer */
 .st-drawer { z-index: 40; }
 .scrim { position: fixed; inset: 0; background: rgba(15, 23, 42, .18); z-index: 39; }
