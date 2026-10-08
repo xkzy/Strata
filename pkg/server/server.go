@@ -338,8 +338,28 @@ func (s *StrataServer) corsMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
+		if r.Method == http.MethodPost || r.Method == http.MethodPut {
+			if limit := bodyLimit(r.URL.Path); limit > 0 {
+				r.Body = http.MaxBytesReader(w, r.Body, limit)
+			}
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// bodyLimit is how much request body an endpoint may read into memory (0: it applies its own limit). The model APIs
+// carry whole conversations and cap themselves at 64 MiB; everything else (math, theorems, CAS, verification, the guard,
+// sessions, setup, settings) takes small JSON, so a larger body is refused instead of read: without a limit, one
+// request could use as much memory as its sender cared to send.
+func bodyLimit(path string) int64 {
+	switch {
+	case path == "/v1/chat/completions", path == "/v1/completions", path == "/v1/messages",
+		path == "/v1/messages/count_tokens", strings.HasPrefix(path, "/v1/responses"):
+		return 0
+	case path == "/v1/mcp":
+		return 4 << 20 // tool arguments can carry a document
+	}
+	return 1 << 20
 }
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {

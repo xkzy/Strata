@@ -164,11 +164,14 @@ func (b *UnifiedCasBackend) Execute(req MathRequest) MathResult {
 		varName = "x"
 	}
 
-	// 1. Number Theory Operations
+	// 1. Number Theory Operations. refused: an operation whose cost or result is not small is not run (see limits.go)
+	refused := ""
 	if strings.HasPrefix(expr, "is_prime(") || strings.HasPrefix(expr, "isprime(") {
 		numStr := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(expr, "is_prime("), "isprime("), ")")
 		numStr = strings.TrimSpace(numStr)
-		if n, ok := new(big.Int).SetString(numStr, 10); ok {
+		if n, ok := new(big.Int).SetString(numStr, 10); ok && n.BitLen() > maxPrimalityBits {
+			refused = fmt.Sprintf("is_prime is limited to %d bits", maxPrimalityBits)
+		} else if ok {
 			if n.ProbablyPrime(20) {
 				res.ExactResult = "True"
 			} else {
@@ -180,7 +183,9 @@ func (b *UnifiedCasBackend) Execute(req MathRequest) MathResult {
 	} else if strings.HasPrefix(expr, "euler_phi(") || strings.HasPrefix(expr, "phi(") {
 		numStr := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(expr, "euler_phi("), "phi("), ")")
 		numStr = strings.TrimSpace(numStr)
-		if n, err := strconv.ParseInt(numStr, 10, 64); err == nil && n > 0 {
+		if n, err := strconv.ParseInt(numStr, 10, 64); err == nil && n > maxTrialDivisionN {
+			refused = fmt.Sprintf("euler_phi is limited to n <= %d (trial division)", maxTrialDivisionN)
+		} else if err == nil && n > 0 {
 			res.ExactResult = strconv.FormatInt(eulerPhi(n), 10)
 			res.RawResult = res.ExactResult
 			res.Status = StatusSuccess
@@ -188,7 +193,9 @@ func (b *UnifiedCasBackend) Execute(req MathRequest) MathResult {
 	} else if strings.HasPrefix(expr, "fibonacci(") || strings.HasPrefix(expr, "fib(") {
 		numStr := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(expr, "fibonacci("), "fib("), ")")
 		numStr = strings.TrimSpace(numStr)
-		if n, err := strconv.ParseInt(numStr, 10, 64); err == nil && n >= 0 {
+		if n, err := strconv.ParseInt(numStr, 10, 64); err == nil && n > maxFibonacciN {
+			refused = fmt.Sprintf("fib is limited to n <= %d", maxFibonacciN)
+		} else if err == nil && n >= 0 {
 			res.ExactResult = fibonacciBig(n).String()
 			res.RawResult = res.ExactResult
 			res.Status = StatusSuccess
@@ -200,11 +207,16 @@ func (b *UnifiedCasBackend) Execute(req MathRequest) MathResult {
 			base, ok1 := new(big.Int).SetString(strings.TrimSpace(parts[0]), 10)
 			exp, ok2 := new(big.Int).SetString(strings.TrimSpace(parts[1]), 10)
 			mod, ok3 := new(big.Int).SetString(strings.TrimSpace(parts[2]), 10)
-			if ok1 && ok2 && ok3 && mod.Sign() > 0 {
-				ans := new(big.Int).Exp(base, exp, mod)
-				res.ExactResult = ans.String()
-				res.RawResult = res.ExactResult
-				res.Status = StatusSuccess
+			if ok1 && ok2 && ok3 && (base.BitLen() > maxModExpBits || exp.BitLen() > maxModExpBits || mod.BitLen() > maxModExpBits) {
+				refused = fmt.Sprintf("power_mod is limited to %d-bit operands", maxModExpBits)
+			} else if ok1 && ok2 && ok3 && mod.Sign() > 0 {
+				if ans := new(big.Int).Exp(base, exp, mod); ans == nil { // a negative exponent of a base with no inverse
+					refused = "power_mod: the base has no inverse modulo the modulus"
+				} else {
+					res.ExactResult = ans.String()
+					res.RawResult = res.ExactResult
+					res.Status = StatusSuccess
+				}
 			}
 		}
 	} else if strings.HasPrefix(expr, "gcd(") {
@@ -222,8 +234,13 @@ func (b *UnifiedCasBackend) Execute(req MathRequest) MathResult {
 		}
 	}
 
+	if refused != "" {
+		res.Status = StatusExecutionError
+		res.ErrorMessage = refused
+	}
+
 	// 2. Symbolic & Algebraic Operations
-	if res.Status != StatusSuccess {
+	if res.Status != StatusSuccess && refused == "" {
 		switch req.Operation {
 		case OpDifferentiate:
 			if strings.Contains(expr, "sin(") {

@@ -159,10 +159,10 @@ func (r *TheoremRegistry) registerAllTheorems() {
 			if len(args) < 2 {
 				return MathVerificationResult{Matches: false, DiscrepancyDetails: "Requires (a, p) arguments"}
 			}
-			a, ok1 := new(big.Int).SetString(args[0], 10)
-			p, ok2 := new(big.Int).SetString(args[1], 10)
-			if !ok1 || !ok2 {
-				return MathVerificationResult{Matches: false, DiscrepancyDetails: "Invalid integer arguments"}
+			a, msgA := bigArg(args[0], maxPrimalityBits)
+			p, msgP := bigArg(args[1], maxPrimalityBits)
+			if msgA != "" || msgP != "" {
+				return MathVerificationResult{Matches: false, DiscrepancyDetails: msgA + msgP}
 			}
 			if !p.ProbablyPrime(20) {
 				return MathVerificationResult{Matches: false, DiscrepancyDetails: fmt.Sprintf("Modulus p=%s is composite", p.String())}
@@ -206,6 +206,9 @@ func (r *TheoremRegistry) registerAllTheorems() {
 			if err1 != nil || err2 != nil || n <= 0 {
 				return MathVerificationResult{Matches: false, DiscrepancyDetails: "Invalid positive integer arguments"}
 			}
+			if n > maxTrialDivisionN {
+				return MathVerificationResult{Matches: false, DiscrepancyDetails: fmt.Sprintf("n too large: phi(n) is found by trial division, limit %d", maxTrialDivisionN)}
+			}
 			if gcdInt(a, n) != 1 {
 				return MathVerificationResult{Matches: false, DiscrepancyDetails: "gcd(a, n) != 1"}
 			}
@@ -239,6 +242,9 @@ func (r *TheoremRegistry) registerAllTheorems() {
 			p, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil || p <= 1 {
 				return MathVerificationResult{Matches: false, DiscrepancyDetails: "p must be > 1"}
+			}
+			if p > maxWilsonP { // (p-1)! is built by p multiplications (and fact*i must not overflow)
+				return MathVerificationResult{Matches: false, DiscrepancyDetails: fmt.Sprintf("p too large to check exhaustively: limit %d", maxWilsonP)}
 			}
 			prime := isPrimeInt(p)
 			fact := int64(1)
@@ -402,6 +408,9 @@ func (r *TheoremRegistry) registerAllTheorems() {
 				n, _ := strconv.Atoi(args[2])
 				if n < 0 {
 					return MathVerificationResult{Matches: false, DiscrepancyDetails: "n must be non-negative"}
+				}
+				if n > maxBinomialTheoremN {
+					return MathVerificationResult{Matches: false, DiscrepancyDetails: fmt.Sprintf("n too large to expand term by term: limit %d", maxBinomialTheoremN)}
 				}
 				lhs := math.Pow(a+b, float64(n))
 				rhs := 0.0
@@ -1334,10 +1343,19 @@ func (r *TheoremRegistry) registerAllTheorems() {
 		LiteratureRef: "Rivest, Shamir, Adleman (1977)",
 		Verifier: func(args []string, assumptions string) MathVerificationResult {
 			if len(args) >= 4 {
-				m, _ := new(big.Int).SetString(args[0], 10)
-				e, _ := new(big.Int).SetString(args[1], 10)
-				d, _ := new(big.Int).SetString(args[2], 10)
-				N, _ := new(big.Int).SetString(args[3], 10)
+				var nums [4]*big.Int
+				for i := range nums {
+					n, msg := bigArg(args[i], maxModExpBits)
+					if msg != "" {
+						return MathVerificationResult{Matches: false, DiscrepancyDetails: msg}
+					}
+					nums[i] = n
+				}
+				m, e, d, N := nums[0], nums[1], nums[2], nums[3]
+				// Exp reads a zero modulus as "none" and would compute m^e in full; a negative exponent is no key
+				if N.Sign() <= 0 || m.Sign() < 0 || e.Sign() < 0 || d.Sign() < 0 {
+					return MathVerificationResult{Matches: false, DiscrepancyDetails: "N must be positive and m, e, d not negative"}
+				}
 				c := new(big.Int).Exp(m, e, N)
 				rec := new(big.Int).Exp(c, d, N)
 				expected := new(big.Int).Mod(m, N)
@@ -1400,6 +1418,14 @@ func (r *TheoremRegistry) VerifyTheorem(nameOrAlias string, args []string, assum
 		return MathVerificationResult{
 			Matches:            false,
 			DiscrepancyDetails: fmt.Sprintf("Theorem '%s' not recognized in Strata theorem database", nameOrAlias),
+		}
+	}
+	if len(args) > maxTheoremArgs || len(assumptions) > maxTheoremAssumption {
+		return MathVerificationResult{Matches: false, DiscrepancyDetails: "arguments too large"}
+	}
+	for _, a := range args {
+		if len(a) > maxTheoremArgLen {
+			return MathVerificationResult{Matches: false, DiscrepancyDetails: "argument too large"}
 		}
 	}
 	if thm.Verifier != nil {

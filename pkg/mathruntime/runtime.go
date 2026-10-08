@@ -72,6 +72,19 @@ func (r *MathRuntime) RouteBackend(req MathRequest, complexity int) bool {
 func (r *MathRuntime) ProcessRequest(req MathRequest) MathResult {
 	atomic.AddUint64(&r.stats.totalCalculations, 1)
 
+	// Before anything reads or rewrites the expression: the length limit applies to what the caller sent, not only to
+	// what is left after the variables are substituted
+	if limit := r.Validator.Limits.MaxExpressionLength; limit > 0 && len(req.Expression) > limit {
+		atomic.AddUint64(&r.stats.securityRejections, 1)
+		msg := fmt.Sprintf("expression length (%d) exceeds limit (%d)", len(req.Expression), limit)
+		return MathResult{
+			RequestID:          req.RequestID,
+			Status:             StatusInvalidExpression,
+			ErrorMessage:       msg,
+			CompactObservation: fmt.Sprintf("[MathError: Invalid expression: %s]", msg),
+		}
+	}
+
 	// Step 0: Check for Variable Assignment (e.g. x = 10)
 	assignParts := strings.Split(req.Expression, "=")
 	if len(assignParts) == 2 && !strings.ContainsAny(assignParts[0], "+-*/^()[]") {
@@ -116,10 +129,18 @@ func (r *MathRuntime) ProcessRequest(req MathRequest) MathResult {
 				ExecutionTimeMs:     0.01,
 			}
 		}
-		vars := r.Cache.GetSessionVars(req.SessionID)
-		for k, v := range vars {
-			req.Expression = strings.ReplaceAll(req.Expression, k, v)
+		expanded, ok := substituteSessionVars(req.Expression, r.Cache.GetSessionVars(req.SessionID), r.Validator.Limits.MaxExpressionLength)
+		if !ok {
+			atomic.AddUint64(&r.stats.securityRejections, 1)
+			msg := "expression is too long once the session's variables are substituted"
+			return MathResult{
+				RequestID:          req.RequestID,
+				Status:             StatusInvalidExpression,
+				ErrorMessage:       msg,
+				CompactObservation: fmt.Sprintf("[MathError: Invalid expression: %s]", msg),
+			}
 		}
+		req.Expression = expanded
 	}
 
 	// Step 1: Validation
