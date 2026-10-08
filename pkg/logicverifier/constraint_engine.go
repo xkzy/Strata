@@ -10,12 +10,12 @@ import (
 )
 
 type Interval struct {
-	Min           float64
-	Max           float64
-	MinInclusive  bool
-	MaxInclusive  bool
-	IsEmpty       bool
-	ExcludedVals  []float64
+	Min          float64
+	Max          float64
+	MinInclusive bool
+	MaxInclusive bool
+	IsEmpty      bool
+	ExcludedVals []float64
 }
 
 func NewUnboundedInterval() Interval {
@@ -89,9 +89,9 @@ func NewConstraintEngine() *ConstraintEngine {
 
 // Regex patterns for constraint extraction: e.g. "x > 5", "x <= 10", "x == 7", "x != 3", "5 < x <= 10"
 var (
-	singleConstraintRe = regexp.MustCompile(`^([a-zA-Z_][a-zA-Z0-9_]*)\s*(<=|>=|<|>|==|=|!=)\s*([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)$`)
+	singleConstraintRe   = regexp.MustCompile(`^([a-zA-Z_][a-zA-Z0-9_]*)\s*(<=|>=|<|>|==|=|!=)\s*([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)$`)
 	reversedConstraintRe = regexp.MustCompile(`^([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)\s*(<=|>=|<|>)\s*([a-zA-Z_][a-zA-Z0-9_]*)$`)
-	assignmentRe       = regexp.MustCompile(`^([a-zA-Z_][a-zA-Z0-9_]*)\s*(=|==)\s*([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)$`)
+	assignmentRe         = regexp.MustCompile(`^([a-zA-Z_][a-zA-Z0-9_]*)\s*(=|==)\s*([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)$`)
 )
 
 func (ce *ConstraintEngine) Verify(claim VerificationClaim) VerificationResult {

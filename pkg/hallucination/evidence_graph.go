@@ -19,9 +19,9 @@ const (
 
 // GraphEdge represents a directed, typed link in the evidence graph
 type GraphEdge struct {
-	FromID     string    `json:"from_id"`   // Claim ID or Child Claim ID
-	ToID       string    `json:"to_id"`     // Evidence ID or Parent Claim ID
-	Type       EdgeType  `json:"type"`      // SUPPORTED_BY, CONTRADICTED_BY, VERIFIED_BY, DERIVED_FROM
+	FromID     string    `json:"from_id"` // Claim ID or Child Claim ID
+	ToID       string    `json:"to_id"`   // Evidence ID or Parent Claim ID
+	Type       EdgeType  `json:"type"`    // SUPPORTED_BY, CONTRADICTED_BY, VERIFIED_BY, DERIVED_FROM
 	Confidence float64   `json:"confidence"`
 	CreatedAt  time.Time `json:"created_at"`
 	Reason     string    `json:"reason,omitempty"`

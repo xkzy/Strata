@@ -12,16 +12,16 @@ import (
 
 var (
 	// Regex patterns for deterministic extraction
-	mathEqRegex       = regexp.MustCompile(`(?i)(?:^|[\s(])([0-9\.\+\-\*\/\^\(\)\s]+=\s*[0-9\.\+\-\*\/\^\(\)\s]+)`)
-	unitEqRegex       = regexp.MustCompile(`(?i)([0-9\.]+\s*(?:m|s|kg|g|km|h|min|ms|hz|b|kb|mb|gb|v|a|w|c|k)(?:\/[a-z]+|\s*\*\s*[a-z]+)?\s*[\+\-\*\/]\s*[0-9\.]+\s*(?:m|s|kg|g|km|h|min|ms|hz|b|kb|mb|gb|v|a|w|c|k)(?:\/[a-z]+|\s*\*\s*[a-z]+)?\s*=\s*[0-9\.]+\s*(?:m|s|kg|g|km|h|min|ms|hz|b|kb|mb|gb|v|a|w|c|k)(?:\/[a-z]+|\s*\*\s*[a-z]+)?)`)
-	filePathRegex     = regexp.MustCompile(`(?i)(?:file|path|filepath|in|directory|file:)\s+([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9_]+)`)
-	standAlonePath    = regexp.MustCompile(`(?i)(?:^|\s)([\.\/]?[a-zA-Z0-9_\-]+(?:\/[a-zA-Z0-9_\-\.]+)+\.[a-zA-Z0-9]+)`)
-	funcSymbolRegex   = regexp.MustCompile(`(?i)(?:function|func|method|procedure|symbol)\s+([a-zA-Z_][a-zA-Z0-9_]*)(?:\(\))?`)
-	apiEndpointRegex  = regexp.MustCompile(`(?i)(?:(?:GET|POST|PUT|DELETE|PATCH|HEAD)\s+(\/[a-zA-Z0-9_\-\.\/]+)|(?:route|endpoint|url|path)\s+(\/[a-zA-Z0-9_\-\.\/]+))`)
-	configPortRegex   = regexp.MustCompile(`(?i)(?:port|listen on|host|binding)\s+(?:(?:127\.0\.0\.1|0\.0\.0\.0|localhost):)?([0-9]{2,5})`)
-	toolResultRegex   = regexp.MustCompile(`(?i)(?:tool\s+(?:result|output|call)|tool_result|execution result)[:\s]+(.+)`)
-	logicalImpRegex   = regexp.MustCompile(`(?i)if\s+(.+?)\s+then\s+(.+)`)
-	opinionMarker     = regexp.MustCompile(`(?i)\b(i think|in my opinion|it seems|probably|perhaps|i believe|suppose that|if we were to|hypothetically)\b`)
+	mathEqRegex      = regexp.MustCompile(`(?i)(?:^|[\s(])([0-9\.\+\-\*\/\^\(\)\s]+=\s*[0-9\.\+\-\*\/\^\(\)\s]+)`)
+	unitEqRegex      = regexp.MustCompile(`(?i)([0-9\.]+\s*(?:m|s|kg|g|km|h|min|ms|hz|b|kb|mb|gb|v|a|w|c|k)(?:\/[a-z]+|\s*\*\s*[a-z]+)?\s*[\+\-\*\/]\s*[0-9\.]+\s*(?:m|s|kg|g|km|h|min|ms|hz|b|kb|mb|gb|v|a|w|c|k)(?:\/[a-z]+|\s*\*\s*[a-z]+)?\s*=\s*[0-9\.]+\s*(?:m|s|kg|g|km|h|min|ms|hz|b|kb|mb|gb|v|a|w|c|k)(?:\/[a-z]+|\s*\*\s*[a-z]+)?)`)
+	filePathRegex    = regexp.MustCompile(`(?i)(?:file|path|filepath|in|directory|file:)\s+([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9_]+)`)
+	standAlonePath   = regexp.MustCompile(`(?i)(?:^|\s)([\.\/]?[a-zA-Z0-9_\-]+(?:\/[a-zA-Z0-9_\-\.]+)+\.[a-zA-Z0-9]+)`)
+	funcSymbolRegex  = regexp.MustCompile(`(?i)(?:function|func|method|procedure|symbol)\s+([a-zA-Z_][a-zA-Z0-9_]*)(?:\(\))?`)
+	apiEndpointRegex = regexp.MustCompile(`(?i)(?:(?:GET|POST|PUT|DELETE|PATCH|HEAD)\s+(\/[a-zA-Z0-9_\-\.\/]+)|(?:route|endpoint|url|path)\s+(\/[a-zA-Z0-9_\-\.\/]+))`)
+	configPortRegex  = regexp.MustCompile(`(?i)(?:port|listen on|host|binding)\s+(?:(?:127\.0\.0\.1|0\.0\.0\.0|localhost):)?([0-9]{2,5})`)
+	toolResultRegex  = regexp.MustCompile(`(?i)(?:tool\s+(?:result|output|call)|tool_result|execution result)[:\s]+(.+)`)
+	logicalImpRegex  = regexp.MustCompile(`(?i)if\s+(.+?)\s+then\s+(.+)`)
+	opinionMarker    = regexp.MustCompile(`(?i)\b(i think|in my opinion|it seems|probably|perhaps|i believe|suppose that|if we were to|hypothetically)\b`)
 )
 
 var claimSeq uint64
@@ -49,19 +49,19 @@ func (ce *ClaimExtractor) ExtractClaims(text, sessionID, requestID string) []Cla
 		if opinionMarker.MatchString(trimmed) {
 			claimID := fmt.Sprintf("claim-%d-%d", time.Now().UnixNano(), atomic.AddUint64(&claimSeq, 1))
 			claims = append(claims, Claim{
-				ID:          claimID,
-				SessionID:   sessionID,
-				RequestID:   requestID,
-				SourceSpan:  trimmed,
-				TokenRange:  [2]int{lineIdx, lineIdx + 1},
-				Type:        TypeOpinion,
-				Status:      StatusUnknown,
-				Subject:     "speaker",
-				Predicate:   "expresses_opinion",
-				Object:      trimmed,
-				Confidence:  1.0,
-				Provenance:  "OpinionMarkerFilter",
-				CreatedAt:   time.Now(),
+				ID:         claimID,
+				SessionID:  sessionID,
+				RequestID:  requestID,
+				SourceSpan: trimmed,
+				TokenRange: [2]int{lineIdx, lineIdx + 1},
+				Type:       TypeOpinion,
+				Status:     StatusUnknown,
+				Subject:    "speaker",
+				Predicate:  "expresses_opinion",
+				Object:     trimmed,
+				Confidence: 1.0,
+				Provenance: "OpinionMarkerFilter",
+				CreatedAt:  time.Now(),
 			})
 			continue
 		}

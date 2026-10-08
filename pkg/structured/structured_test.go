@@ -44,7 +44,7 @@ func TestStructuredValidator_JSONSchema(t *testing.T) {
 		JSONSchema: &JSONSchemaSpec{
 			Name: "user_profile",
 			Schema: map[string]interface{}{
-				"type": "object",
+				"type":     "object",
 				"required": []interface{}{"user_id", "email"},
 				"properties": map[string]interface{}{
 					"user_id": map[string]interface{}{"type": "string"},

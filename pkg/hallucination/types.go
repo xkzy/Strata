@@ -49,61 +49,61 @@ const (
 
 // Claim represents a normalized factual or verifiable claim extracted from LLM generation
 type Claim struct {
-	ID               string      `json:"id"`
-	SessionID        string      `json:"session_id"`
-	RequestID        string      `json:"request_id"`
-	SourceSpan       string      `json:"source_span"`
-	TokenRange       [2]int      `json:"token_range"`
-	Type             ClaimType   `json:"claim_type"`
-	Subject          string      `json:"subject"`
-	Predicate        string      `json:"predicate"`
-	Object           string      `json:"object"`
-	Qualifiers       []string    `json:"qualifiers,omitempty"`
-	Conditions       []string    `json:"conditions,omitempty"`
-	Assumptions      []string    `json:"assumptions,omitempty"`
-	TemporalScope    string      `json:"temporal_scope,omitempty"`
-	SpatialScope     string      `json:"spatial_scope,omitempty"`
-	Confidence       float64     `json:"confidence"`
-	EvidenceRefs     []string    `json:"evidence_refs,omitempty"`
-	Status           ClaimStatus `json:"verification_state"`
-	ContradictionRefs []string   `json:"contradiction_refs,omitempty"`
-	Provenance       string      `json:"provenance,omitempty"`
-	CreatedAt        time.Time   `json:"created_at"`
+	ID                string      `json:"id"`
+	SessionID         string      `json:"session_id"`
+	RequestID         string      `json:"request_id"`
+	SourceSpan        string      `json:"source_span"`
+	TokenRange        [2]int      `json:"token_range"`
+	Type              ClaimType   `json:"claim_type"`
+	Subject           string      `json:"subject"`
+	Predicate         string      `json:"predicate"`
+	Object            string      `json:"object"`
+	Qualifiers        []string    `json:"qualifiers,omitempty"`
+	Conditions        []string    `json:"conditions,omitempty"`
+	Assumptions       []string    `json:"assumptions,omitempty"`
+	TemporalScope     string      `json:"temporal_scope,omitempty"`
+	SpatialScope      string      `json:"spatial_scope,omitempty"`
+	Confidence        float64     `json:"confidence"`
+	EvidenceRefs      []string    `json:"evidence_refs,omitempty"`
+	Status            ClaimStatus `json:"verification_state"`
+	ContradictionRefs []string    `json:"contradiction_refs,omitempty"`
+	Provenance        string      `json:"provenance,omitempty"`
+	CreatedAt         time.Time   `json:"created_at"`
 }
 
 // EvidenceSourceType denotes the origin and format of verification evidence
 type EvidenceSourceType string
 
 const (
-	SourceRAGDocument            EvidenceSourceType = "rag_document"
-	SourceCode                   EvidenceSourceType = "source_code"
-	SourceDecompiledCode         EvidenceSourceType = "decompiled_code"
-	SourceToolResult             EvidenceSourceType = "tool_result"
-	SourceDatabaseRecord         EvidenceSourceType = "database_record"
-	SourceAPIResponse            EvidenceSourceType = "api_response"
-	SourceConfiguration          EvidenceSourceType = "configuration"
-	SourceLogs                   EvidenceSourceType = "logs"
-	SourceFilesystem             EvidenceSourceType = "filesystem"
-	SourceCompilerOutput         EvidenceSourceType = "compiler_output"
-	SourceTestResult             EvidenceSourceType = "test_result"
-	SourceMathicsResult          EvidenceSourceType = "mathics_result"
-	SourceSymbolTable            EvidenceSourceType = "symbol_table"
-	SourceSchema                 EvidenceSourceType = "schema"
-	SourcePreviousVerifiedState  EvidenceSourceType = "previous_verified_state"
-	SourceUserFact               EvidenceSourceType = "user_provided_fact"
-	SourceSystemState            EvidenceSourceType = "system_state"
+	SourceRAGDocument           EvidenceSourceType = "rag_document"
+	SourceCode                  EvidenceSourceType = "source_code"
+	SourceDecompiledCode        EvidenceSourceType = "decompiled_code"
+	SourceToolResult            EvidenceSourceType = "tool_result"
+	SourceDatabaseRecord        EvidenceSourceType = "database_record"
+	SourceAPIResponse           EvidenceSourceType = "api_response"
+	SourceConfiguration         EvidenceSourceType = "configuration"
+	SourceLogs                  EvidenceSourceType = "logs"
+	SourceFilesystem            EvidenceSourceType = "filesystem"
+	SourceCompilerOutput        EvidenceSourceType = "compiler_output"
+	SourceTestResult            EvidenceSourceType = "test_result"
+	SourceMathicsResult         EvidenceSourceType = "mathics_result"
+	SourceSymbolTable           EvidenceSourceType = "symbol_table"
+	SourceSchema                EvidenceSourceType = "schema"
+	SourcePreviousVerifiedState EvidenceSourceType = "previous_verified_state"
+	SourceUserFact              EvidenceSourceType = "user_provided_fact"
+	SourceSystemState           EvidenceSourceType = "system_state"
 )
 
 // EvidenceAuthority indicates the trust level of an evidence source
 type EvidenceAuthority int
 
 const (
-	AuthorityModelClaim EvidenceAuthority = 10 // Untrusted
-	AuthorityRetrievedSource EvidenceAuthority = 30 // RAG Documents
-	AuthorityVerifiedDB     EvidenceAuthority = 50 // Ground Truth DB
-	AuthorityAuthoritativeRepo EvidenceAuthority = 70 // Source Repository / Filesystem
-	AuthorityAuthorizedTool EvidenceAuthority = 90 // Authorized Tool Results
-	AuthorityTrustedSystem  EvidenceAuthority = 100 // System State & Exact Config
+	AuthorityModelClaim        EvidenceAuthority = 10  // Untrusted
+	AuthorityRetrievedSource   EvidenceAuthority = 30  // RAG Documents
+	AuthorityVerifiedDB        EvidenceAuthority = 50  // Ground Truth DB
+	AuthorityAuthoritativeRepo EvidenceAuthority = 70  // Source Repository / Filesystem
+	AuthorityAuthorizedTool    EvidenceAuthority = 90  // Authorized Tool Results
+	AuthorityTrustedSystem     EvidenceAuthority = 100 // System State & Exact Config
 )
 
 // Evidence represents authoritative ground truth used to prove, support, or contradict claims
@@ -175,17 +175,17 @@ type ClaimExplanation struct {
 
 // EvidenceCoverage aggregates verification statistics across all claims in a generation
 type EvidenceCoverage struct {
-	TotalClaims              int                `json:"total_claims"`
-	VerifiedCount            int                `json:"verified_count"`
-	SupportedCount           int                `json:"supported_count"`
-	PartiallySupportedCount  int                `json:"partially_supported_count"`
-	ContradictedCount        int                `json:"contradicted_count"`
-	UnsupportedCount         int                `json:"unsupported_count"`
-	UnknownCount             int                `json:"unknown_count"`
-	CoverageRatio            float64            `json:"coverage_ratio"`
-	OverallRisk              RiskLevel          `json:"overall_risk"`
-	RecommendedAction        string             `json:"recommended_action"`
-	Explanations             []ClaimExplanation `json:"explanations,omitempty"`
+	TotalClaims             int                `json:"total_claims"`
+	VerifiedCount           int                `json:"verified_count"`
+	SupportedCount          int                `json:"supported_count"`
+	PartiallySupportedCount int                `json:"partially_supported_count"`
+	ContradictedCount       int                `json:"contradicted_count"`
+	UnsupportedCount        int                `json:"unsupported_count"`
+	UnknownCount            int                `json:"unknown_count"`
+	CoverageRatio           float64            `json:"coverage_ratio"`
+	OverallRisk             RiskLevel          `json:"overall_risk"`
+	RecommendedAction       string             `json:"recommended_action"`
+	Explanations            []ClaimExplanation `json:"explanations,omitempty"`
 }
 
 // HallucinationReport represents the complete diagnostic audit of a generation

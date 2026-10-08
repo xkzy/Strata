@@ -11,20 +11,20 @@ import (
 type ItemCategory string
 
 const (
-	CategorySystemPrompt     ItemCategory = "system_prompt"
-	CategoryUserMessage      ItemCategory = "user_message"
-	CategoryAssistantMessage ItemCategory = "assistant_message"
-	CategoryToolResult       ItemCategory = "tool_result"
-	CategoryFileContent      ItemCategory = "file_content"
+	CategorySystemPrompt      ItemCategory = "system_prompt"
+	CategoryUserMessage       ItemCategory = "user_message"
+	CategoryAssistantMessage  ItemCategory = "assistant_message"
+	CategoryToolResult        ItemCategory = "tool_result"
+	CategoryFileContent       ItemCategory = "file_content"
 	CategoryVerificationAudit ItemCategory = "verification_audit"
 )
 
 type ContextItem struct {
-	ID        int64        `json:"id"`
-	Category  ItemCategory `json:"category"`
-	Content   string       `json:"content"`
-	Tokens    int          `json:"tokens"`
-	Timestamp float64      `json:"timestamp"`
+	ID        int64             `json:"id"`
+	Category  ItemCategory      `json:"category"`
+	Content   string            `json:"content"`
+	Tokens    int               `json:"tokens"`
+	Timestamp float64           `json:"timestamp"`
 	Metadata  map[string]string `json:"metadata,omitempty"`
 }
 
@@ -133,14 +133,14 @@ func (v *VirtualContextManager) Stats() map[string]interface{} {
 
 	return map[string]interface{}{
 		"virtual_context_total_tokens": v.stats.VirtualContextTotalTokens,
-		"physical_active_tokens":      v.stats.PhysicalActiveTokens,
-		"compressed_tokens":           v.stats.CompressedTokens,
-		"indexed_tokens":              v.stats.IndexedTokens,
-		"total_items_tracked":         v.stats.TotalItemsTracked,
-		"compaction_events":           v.stats.CompactionEvents,
-		"retrieval_queries":           v.stats.RetrievalQueries,
-		"physical_limit":              v.PhysicalLimit,
-		"virtual_limit":               v.VirtualLimit,
+		"physical_active_tokens":       v.stats.PhysicalActiveTokens,
+		"compressed_tokens":            v.stats.CompressedTokens,
+		"indexed_tokens":               v.stats.IndexedTokens,
+		"total_items_tracked":          v.stats.TotalItemsTracked,
+		"compaction_events":            v.stats.CompactionEvents,
+		"retrieval_queries":            v.stats.RetrievalQueries,
+		"physical_limit":               v.PhysicalLimit,
+		"virtual_limit":                v.VirtualLimit,
 	}
 }
 

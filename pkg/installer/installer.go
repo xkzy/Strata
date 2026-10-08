@@ -232,10 +232,10 @@ type DownloadProgress struct {
 }
 
 type SetupManager struct {
-	mu          sync.RWMutex
-	progress    DownloadProgress
-	cancelCtx   context.Context
-	cancelFunc  context.CancelFunc
+	mu         sync.RWMutex
+	progress   DownloadProgress
+	cancelCtx  context.Context
+	cancelFunc context.CancelFunc
 }
 
 func NewSetupManager() *SetupManager {

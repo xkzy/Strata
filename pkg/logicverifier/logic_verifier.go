@@ -42,7 +42,6 @@ func (lv *LogicVerifier) VerifyText(text string, tenantID, sessionID string) []V
 	claims := lv.extractor.ExtractClaims(text, tenantID, sessionID)
 	results := make([]VerificationResult, 0, len(claims))
 
-
 	for _, claim := range claims {
 		if tenantID != "" {
 			claim.TenantID = tenantID

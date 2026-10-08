@@ -70,10 +70,10 @@ func (rm *ResourceManager) Metrics() map[string]interface{} {
 
 	return map[string]interface{}{
 		"concurrency":    rm.concurrency,
-		"queue_limit":   rm.queueLimit,
-		"cache_tier":    rm.cacheTier,
-		"power_policy":  rm.powerPolicy,
-		"active_work":   rm.activeWork,
+		"queue_limit":    rm.queueLimit,
+		"cache_tier":     rm.cacheTier,
+		"power_policy":   rm.powerPolicy,
+		"active_work":    rm.activeWork,
 		"total_admitted": rm.totalAdmitted,
 		"total_rejected": rm.totalRejected,
 		"workloads": []string{

@@ -10,15 +10,15 @@ import (
 )
 
 type ResponsesRequest struct {
-	Model             string          `json:"model"`
-	Input             json.RawMessage `json:"input"`
-	Instructions      string          `json:"instructions,omitempty"`
-	Tools             []interface{}   `json:"tools,omitempty"`
-	Temperature       *float64        `json:"temperature,omitempty"`
-	MaxOutputTokens   *int            `json:"max_output_tokens,omitempty"`
-	Stream            bool            `json:"stream,omitempty"`
-	Store             bool            `json:"store,omitempty"`
-	ReasoningEffort   string          `json:"reasoning_effort,omitempty"`
+	Model           string          `json:"model"`
+	Input           json.RawMessage `json:"input"`
+	Instructions    string          `json:"instructions,omitempty"`
+	Tools           []interface{}   `json:"tools,omitempty"`
+	Temperature     *float64        `json:"temperature,omitempty"`
+	MaxOutputTokens *int            `json:"max_output_tokens,omitempty"`
+	Stream          bool            `json:"stream,omitempty"`
+	Store           bool            `json:"store,omitempty"`
+	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
 }
 
 type OutputItem struct {
@@ -39,14 +39,14 @@ type UsageStats struct {
 }
 
 type ResponsesObject struct {
-	ID          string       `json:"id"`
-	Object      string       `json:"object"`
-	CreatedAt   int64        `json:"created_at"`
-	Model       string       `json:"model"`
-	Status      string       `json:"status"` // "completed", "in_progress", "incomplete", "failed"
-	Output      []OutputItem `json:"output"`
-	Usage       UsageStats   `json:"usage"`
-	Error       interface{}  `json:"error,omitempty"`
+	ID        string       `json:"id"`
+	Object    string       `json:"object"`
+	CreatedAt int64        `json:"created_at"`
+	Model     string       `json:"model"`
+	Status    string       `json:"status"` // "completed", "in_progress", "incomplete", "failed"
+	Output    []OutputItem `json:"output"`
+	Usage     UsageStats   `json:"usage"`
+	Error     interface{}  `json:"error,omitempty"`
 }
 
 type SSEEvent struct {

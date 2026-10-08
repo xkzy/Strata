@@ -11,12 +11,12 @@ import (
 )
 
 type VerificationPlanner struct {
-	cache           *VerificationCache
-	ruleEngine      *RuleEngine
+	cache            *VerificationCache
+	ruleEngine       *RuleEngine
 	constraintEngine *ConstraintEngine
-	unitVerifier    *UnitVerifier
-	schemaVerifier  *SchemaVerifier
-	metrics         *MetricsCollector
+	unitVerifier     *UnitVerifier
+	schemaVerifier   *SchemaVerifier
+	metrics          *MetricsCollector
 }
 
 func NewVerificationPlanner(cache *VerificationCache, metrics *MetricsCollector) *VerificationPlanner {

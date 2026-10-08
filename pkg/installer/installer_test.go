@@ -105,4 +105,3 @@ func TestSetupManager(t *testing.T) {
 		t.Fatalf("unexpected status: %s", st.Status)
 	}
 }
-

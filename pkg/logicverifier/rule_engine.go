@@ -384,4 +384,3 @@ func (re *RuleEngine) Verify(claim VerificationClaim) VerificationResult {
 	}
 	return re.VerifyDeduction(claim.Premises, concl, claim.ClaimID)
 }
-
