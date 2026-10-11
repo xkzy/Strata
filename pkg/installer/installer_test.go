@@ -171,3 +171,67 @@ func TestSetupManager(t *testing.T) {
 		t.Fatalf("unexpected status: %s", st.Status)
 	}
 }
+
+func TestMultiShardResolutionAndDisk(t *testing.T) {
+	// 1. Shard paths expansion
+	p := "/models/MiMo-V2.6-Flash-RL-MXFP4-00001-of-00002.gguf"
+	shards := FindAllShardPaths(p)
+	if len(shards) != 2 {
+		t.Fatalf("expected 2 shards, got %d", len(shards))
+	}
+	if shards[0] != p || shards[1] != "/models/MiMo-V2.6-Flash-RL-MXFP4-00002-of-00002.gguf" {
+		t.Errorf("unexpected shards: %v", shards)
+	}
+
+	// 2. Non-shard path
+	single := "/models/single_model.gguf"
+	if s := FindAllShardPaths(single); len(s) != 1 || s[0] != single {
+		t.Errorf("expected single path, got %v", s)
+	}
+
+	// 3. Shard URLs resolution
+	u := "https://huggingface.co/repo/resolve/main/Model-00001-of-00003.gguf"
+	urls := ResolveShardURLs(u, nil)
+	if len(urls) != 3 {
+		t.Fatalf("expected 3 shard URLs, got %d", len(urls))
+	}
+	if urls[2] != "https://huggingface.co/repo/resolve/main/Model-00003-of-00003.gguf" {
+		t.Errorf("unexpected 3rd shard URL: %s", urls[2])
+	}
+
+	// 4. Free disk space query
+	freeGB := GetFreeDiskSpaceGB(".")
+	if freeGB <= 0 {
+		t.Errorf("expected positive free disk space, got %f", freeGB)
+	}
+
+	// 5. AllShardsExist check with temp files
+	tmpDir := t.TempDir()
+	s1 := filepath.Join(tmpDir, "Test-00001-of-00002.gguf")
+	s2 := filepath.Join(tmpDir, "Test-00002-of-00002.gguf")
+
+	// Neither exists
+	if AllShardsExist(s1) {
+		t.Errorf("expected false when no shards exist")
+	}
+
+	// Only shard 1 exists
+	os.WriteFile(s1, []byte("shard1"), 0644)
+	if AllShardsExist(s1) {
+		t.Errorf("expected false when shard 2 missing")
+	}
+
+	// Shard 2 exists but is smaller than required 100MB for real weights
+	os.WriteFile(s2, []byte("shard2"), 0644)
+	if AllShardsExist(s1) {
+		t.Errorf("expected false when multi-shard weight shard is tiny/stub")
+	}
+
+	// Shard 2 with fake 101MB payload
+	f, _ := os.Create(s2)
+	f.Truncate(101 * 1024 * 1024)
+	f.Close()
+	if !AllShardsExist(s1) {
+		t.Errorf("expected true when all shards exist and have weight data")
+	}
+}

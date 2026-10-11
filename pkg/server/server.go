@@ -1157,8 +1157,8 @@ func (s *StrataServer) handleSetupDownload(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	// If the file or pack already exists locally, activate it immediately
-	if fi, err := os.Stat(req.DestPath); err == nil {
+	// If the file or pack already exists locally and has all shards, activate it immediately
+	if installer.AllShardsExist(req.DestPath) {
 		s.Config.ModelName = req.ModelName
 		s.Config.ModelPath = req.DestPath
 		if s.ConfigManager != nil {
@@ -1168,7 +1168,6 @@ func (s *StrataServer) handleSetupDownload(w http.ResponseWriter, r *http.Reques
 			s.ConfigManager.Update(cfg)
 			_ = s.ConfigManager.SaveToFile("")
 		}
-		_ = fi
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"status":       "activated",
 			"message":      fmt.Sprintf("Local model %s activated from %s", req.ModelName, req.DestPath),
@@ -1182,10 +1181,16 @@ func (s *StrataServer) handleSetupDownload(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	err := s.SetupManager.StartDownload(req.ModelName, req.DownloadURL, req.DestPath)
+	err := s.SetupManager.StartDownloadWithOptions(installer.DownloadOptions{
+		ModelName: req.ModelName,
+		URL:       req.DownloadURL,
+		DestPath:  req.DestPath,
+		SizeGB:    choice.SizeGB,
+		Shards:    choice.Shards,
+	})
 	if err != nil {
-		writeJSON(w, http.StatusConflict, map[string]interface{}{
-			"error":  err.Error(),
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error":  map[string]interface{}{"message": err.Error()},
 			"status": s.SetupManager.GetStatus(),
 		})
 		return

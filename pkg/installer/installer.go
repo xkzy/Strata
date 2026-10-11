@@ -13,10 +13,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -51,6 +53,7 @@ type ModelOption struct {
 	RepoID        string      `json:"repo_id"`
 	Filename      string      `json:"filename"`
 	DownloadURL   string      `json:"download_url"`
+	Shards        []string    `json:"shards,omitempty"`
 	SizeGB        float64     `json:"size_gb"`
 	MinRAMGB      float64     `json:"min_ram_gb"`
 	Recommended   bool        `json:"recommended"`
@@ -342,13 +345,17 @@ func GetCuratedHuggingFaceModels() []ModelOption {
 	return []ModelOption{
 		// --- Xiaomi MiMo (Hybrid MoE + Native RL) ---
 		{
-			Name:          "MiMo-V2.6-Flash-RL-Q2_K",
-			RepoID:        "ggml-org/MiMo-V2.6-Flash-RL-GGUF",
-			Filename:      "MiMo-V2.6-Flash-RL-Q2_K-00001-of-00002.gguf",
-			DownloadURL:   "https://huggingface.co/ggml-org/MiMo-V2.6-Flash-RL-GGUF/resolve/main/MiMo-V2.6-Flash-RL-Q2_K-00001-of-00002.gguf",
+			Name:        "MiMo-V2.6-Flash-RL-Q2_K",
+			RepoID:      "ggml-org/MiMo-V2.6-Flash-RL-GGUF",
+			Filename:    "MiMo-V2.6-Flash-RL-Q2_K-00001-of-00002.gguf",
+			DownloadURL: "https://huggingface.co/ggml-org/MiMo-V2.6-Flash-RL-GGUF/resolve/main/MiMo-V2.6-Flash-RL-Q2_K-00001-of-00002.gguf",
+			Shards: []string{
+				"https://huggingface.co/ggml-org/MiMo-V2.6-Flash-RL-GGUF/resolve/main/MiMo-V2.6-Flash-RL-Q2_K-00001-of-00002.gguf",
+				"https://huggingface.co/ggml-org/MiMo-V2.6-Flash-RL-GGUF/resolve/main/MiMo-V2.6-Flash-RL-Q2_K-00002-of-00002.gguf",
+			},
 			SizeGB:        126.2,
 			MinRAMGB:      28.0,
-			Description:   "Xiaomi MiMo-V2.6-Flash-RL 2-bit K-quant MoE with native RL reasoning (budget mode keeps 8-20 GB in RAM)",
+			Description:   "Xiaomi MiMo-V2.6-Flash-RL 2-bit K-quant MoE with native RL reasoning (2 shards, 126.2 GB, fits current disk)",
 			Source:        SourceHuggingFace,
 			Category:      "mimo",
 			Tags:          []string{"MiMo", "Xiaomi", "Reasoning", "MoE", "RL", "Q2_K"},
@@ -357,13 +364,17 @@ func GetCuratedHuggingFaceModels() []ModelOption {
 			ContextLength: 1048576,
 		},
 		{
-			Name:          "MiMo-V2.6-Flash-RL-MXFP4",
-			RepoID:        "ggml-org/MiMo-V2.6-Flash-RL-GGUF",
-			Filename:      "MiMo-V2.6-Flash-RL-MXFP4-00001-of-00002.gguf",
-			DownloadURL:   "https://huggingface.co/ggml-org/MiMo-V2.6-Flash-RL-GGUF/resolve/main/MiMo-V2.6-Flash-RL-MXFP4-00001-of-00002.gguf",
+			Name:        "MiMo-V2.6-Flash-RL-MXFP4",
+			RepoID:      "ggml-org/MiMo-V2.6-Flash-RL-GGUF",
+			Filename:    "MiMo-V2.6-Flash-RL-MXFP4-00001-of-00002.gguf",
+			DownloadURL: "https://huggingface.co/ggml-org/MiMo-V2.6-Flash-RL-GGUF/resolve/main/MiMo-V2.6-Flash-RL-MXFP4-00001-of-00002.gguf",
+			Shards: []string{
+				"https://huggingface.co/ggml-org/MiMo-V2.6-Flash-RL-GGUF/resolve/main/MiMo-V2.6-Flash-RL-MXFP4-00001-of-00002.gguf",
+				"https://huggingface.co/ggml-org/MiMo-V2.6-Flash-RL-GGUF/resolve/main/MiMo-V2.6-Flash-RL-MXFP4-00002-of-00002.gguf",
+			},
 			SizeGB:        167.4,
 			MinRAMGB:      28.0,
-			Description:   "Xiaomi MiMo-V2.6-Flash-RL 4-bit microscaling format MoE with high fidelity RL reasoning",
+			Description:   "Xiaomi MiMo-V2.6-Flash-RL 4-bit microscaling format MoE with high fidelity RL reasoning (2 shards, 167.4 GB)",
 			Source:        SourceHuggingFace,
 			Category:      "mimo",
 			Tags:          []string{"MiMo", "Xiaomi", "Reasoning", "MoE", "RL", "MXFP4"},
@@ -828,11 +839,118 @@ func (sm *SetupManager) CancelDownload() {
 	}
 }
 
+// FindAllShardPaths expands a shard-1 destination path to all shard paths if multi-shard pattern is detected
+func FindAllShardPaths(primaryPath string) []string {
+	re := regexp.MustCompile(`-(\d{5})-of-(\d{5})\.gguf$`)
+	m := re.FindStringSubmatch(primaryPath)
+	if len(m) == 3 {
+		total, err := strconv.Atoi(m[2])
+		if err == nil && total > 1 {
+			prefix := primaryPath[:len(primaryPath)-len(m[0])]
+			var paths []string
+			for i := 1; i <= total; i++ {
+				paths = append(paths, fmt.Sprintf("%s-%05d-of-%05d.gguf", prefix, i, total))
+			}
+			return paths
+		}
+	}
+	return []string{primaryPath}
+}
+
+// ResolveShardURLs returns all shard URLs for a multi-shard model download
+func ResolveShardURLs(primaryURL string, explicitShards []string) []string {
+	if len(explicitShards) > 0 {
+		return explicitShards
+	}
+	re := regexp.MustCompile(`-(\d{5})-of-(\d{5})\.gguf`)
+	m := re.FindStringSubmatch(primaryURL)
+	if len(m) == 3 {
+		total, err := strconv.Atoi(m[2])
+		if err == nil && total > 1 {
+			var urls []string
+			for i := 1; i <= total; i++ {
+				u := re.ReplaceAllString(primaryURL, fmt.Sprintf("-%05d-of-%05d.gguf", i, total))
+				urls = append(urls, u)
+			}
+			return urls
+		}
+	}
+	return []string{primaryURL}
+}
+
+// AllShardsExist verifies whether all shards of a multi-shard GGUF exist and are non-empty
+func AllShardsExist(primaryPath string) bool {
+	shards := FindAllShardPaths(primaryPath)
+	if len(shards) == 0 {
+		return false
+	}
+	for i, s := range shards {
+		fi, err := os.Stat(s)
+		if err != nil || fi.Size() == 0 {
+			return false
+		}
+		// If it is a multi-shard model and not shard 1, check that it contains substantial weight data (> 100 MB)
+		if len(shards) > 1 && i > 0 && fi.Size() < 100*1024*1024 {
+			return false
+		}
+	}
+	return true
+}
+
+// GetFreeDiskSpaceGB returns available storage space in GB on the filesystem containing dir
+func GetFreeDiskSpaceGB(dir string) float64 {
+	p := dir
+	if p == "" {
+		p = "."
+	}
+	if err := os.MkdirAll(p, 0755); err != nil {
+		p = "."
+	}
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(p, &stat); err == nil {
+		freeBytes := stat.Bavail * uint64(stat.Bsize)
+		return float64(freeBytes) / (1024 * 1024 * 1024)
+	}
+	return 999.0
+}
+
+type DownloadOptions struct {
+	ModelName string
+	URL       string
+	DestPath  string
+	SizeGB    float64
+	Shards    []string
+}
+
 func (sm *SetupManager) StartDownload(modelName, url, destPath string) error {
+	return sm.StartDownloadWithOptions(DownloadOptions{
+		ModelName: modelName,
+		URL:       url,
+		DestPath:  destPath,
+	})
+}
+
+func (sm *SetupManager) StartDownloadWithOptions(opts DownloadOptions) error {
 	sm.mu.Lock()
 	if sm.progress.Status == StatusDownloading {
 		sm.mu.Unlock()
 		return fmt.Errorf("a download is already in progress")
+	}
+
+	destDir := filepath.Dir(opts.DestPath)
+	freeGB := GetFreeDiskSpaceGB(destDir)
+	if opts.SizeGB > 0 && freeGB < opts.SizeGB {
+		sm.mu.Unlock()
+		return fmt.Errorf("insufficient disk space: %s requires ~%.1f GB, but only %.1f GB is available in %s. Please free up disk space or choose a smaller model (such as MiMo-V2.6-Flash-RL-Q2_K which requires 126.2 GB)", opts.ModelName, opts.SizeGB, freeGB, destDir)
+	}
+
+	shardURLs := ResolveShardURLs(opts.URL, opts.Shards)
+	shardPaths := FindAllShardPaths(opts.DestPath)
+	if len(shardPaths) != len(shardURLs) {
+		shardPaths = make([]string, len(shardURLs))
+		for i, u := range shardURLs {
+			shardPaths[i] = filepath.Join(destDir, filepath.Base(u))
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -840,45 +958,83 @@ func (sm *SetupManager) StartDownload(modelName, url, destPath string) error {
 	sm.cancelFunc = cancel
 	sm.progress = DownloadProgress{
 		Status:    StatusDownloading,
-		ModelName: modelName,
-		DestPath:  destPath,
+		ModelName: opts.ModelName,
+		DestPath:  opts.DestPath,
 	}
 	sm.mu.Unlock()
 
 	go func() {
+		totalShards := len(shardURLs)
 		lastBytes := int64(0)
 		lastTime := time.Now()
 
-		err := DownloadWithResume(url, destPath, func(downloaded, total int64) {
+		overallTotal := int64(opts.SizeGB * 1024 * 1024 * 1024)
+		priorBytes := int64(0)
+
+		for i := 0; i < totalShards; i++ {
+			select {
+			case <-ctx.Done():
+				sm.mu.Lock()
+				sm.progress.Status = StatusIdle
+				sm.progress.Error = "Download cancelled by user"
+				sm.mu.Unlock()
+				return
+			default:
+			}
+
+			currentURL := shardURLs[i]
+			currentDest := shardPaths[i]
+
 			sm.mu.Lock()
-			defer sm.mu.Unlock()
+			if totalShards > 1 {
+				sm.progress.ModelName = fmt.Sprintf("%s (Shard %d/%d)", opts.ModelName, i+1, totalShards)
+			}
+			sm.mu.Unlock()
 
-			now := time.Now()
-			duration := now.Sub(lastTime).Seconds()
-			if duration >= 0.5 {
-				bytesDelta := downloaded - lastBytes
-				sm.progress.SpeedMBs = float64(bytesDelta) / 1024 / 1024 / duration
-				lastBytes = downloaded
-				lastTime = now
+			err := DownloadWithResume(currentURL, currentDest, func(downloaded, shardTotal int64) {
+				sm.mu.Lock()
+				defer sm.mu.Unlock()
+
+				now := time.Now()
+				duration := now.Sub(lastTime).Seconds()
+				totalDownloaded := priorBytes + downloaded
+
+				if duration >= 0.5 {
+					bytesDelta := totalDownloaded - lastBytes
+					sm.progress.SpeedMBs = float64(bytesDelta) / 1024 / 1024 / duration
+					lastBytes = totalDownloaded
+					lastTime = now
+				}
+
+				sm.progress.Downloaded = totalDownloaded
+				if overallTotal > 0 {
+					sm.progress.Total = overallTotal
+					sm.progress.Percent = (float64(totalDownloaded) / float64(overallTotal)) * 100.0
+				} else if shardTotal > 0 {
+					sm.progress.Total = priorBytes + shardTotal
+					sm.progress.Percent = (float64(totalDownloaded) / float64(priorBytes+shardTotal)) * 100.0
+				}
+			})
+
+			if err != nil {
+				sm.mu.Lock()
+				sm.progress.Status = StatusFailed
+				sm.progress.Error = fmt.Sprintf("Failed downloading shard %d/%d (%s): %v", i+1, totalShards, filepath.Base(currentDest), err)
+				sm.mu.Unlock()
+				return
 			}
 
-			sm.progress.Downloaded = downloaded
-			sm.progress.Total = total
-			if total > 0 {
-				sm.progress.Percent = (float64(downloaded) / float64(total)) * 100.0
+			if fi, err := os.Stat(currentDest); err == nil {
+				priorBytes += fi.Size()
 			}
-		})
+		}
 
 		sm.mu.Lock()
 		defer sm.mu.Unlock()
-		if err != nil {
-			sm.progress.Status = StatusFailed
-			sm.progress.Error = err.Error()
-		} else {
-			sm.progress.Status = StatusCompleted
-			sm.progress.Percent = 100.0
-			sm.progress.SpeedMBs = 0
-		}
+		sm.progress.Status = StatusCompleted
+		sm.progress.Percent = 100.0
+		sm.progress.SpeedMBs = 0
+		sm.progress.ModelName = opts.ModelName
 	}()
 
 	return nil
