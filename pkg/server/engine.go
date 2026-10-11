@@ -227,6 +227,31 @@ func (s *StrataServer) StartEngine(ctx context.Context) error {
 			cfg.BinaryPath = spec.Exe
 		}
 		cfg.Args, cfg.Cwd = spec.Args, spec.Cwd
+		// Ensure --abliterate is accompanied by a measured refusal direction vector to avoid engine exit status 2
+		hasAbliterate := false
+		hasCvec := false
+		for _, a := range cfg.Args {
+			if a == "--abliterate" {
+				hasAbliterate = true
+			}
+			if a == "--control-vector-scaled" || a == "--abliteration-vector" {
+				hasCvec = true
+			}
+		}
+		if hasAbliterate && !hasCvec {
+			defaultCvec := filepath.Join("data", "experimental-speed-projection", "Qwen3.8-Flash-Next-experimental-speed-projection.gguf")
+			if _, err := os.Stat(defaultCvec); err == nil {
+				cfg.Args = append(cfg.Args, "--control-vector-scaled", defaultCvec+":1.0", "--cvec-mode", "project")
+			} else {
+				var safeArgs []string
+				for _, a := range cfg.Args {
+					if a != "--abliterate" {
+						safeArgs = append(safeArgs, a)
+					}
+				}
+				cfg.Args = safeArgs
+			}
+		}
 		for k, v := range spec.Env {
 			cfg.Env = append(cfg.Env, k+"="+v)
 		}

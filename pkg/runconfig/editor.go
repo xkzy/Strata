@@ -338,6 +338,21 @@ func Apply(cfg map[string]interface{}, changes map[string]interface{}) (map[stri
 			b, _ := v.(bool)
 			if b && at < 0 {
 				args = append(args, e.flag)
+				if e.key == "abliterate" {
+					hasCvec := false
+					for _, a := range args {
+						if s, _ := a.(string); s == "--control-vector-scaled" || s == "--abliteration-vector" {
+							hasCvec = true
+							break
+						}
+					}
+					if !hasCvec {
+						defaultCvec := filepath.Join("data", "experimental-speed-projection", "Qwen3.8-Flash-Next-experimental-speed-projection.gguf")
+						if _, err := os.Stat(defaultCvec); err == nil {
+							args = append(args, "--control-vector-scaled", defaultCvec+":1.0", "--cvec-mode", "project")
+						}
+					}
+				}
 			} else if !b && at >= 0 {
 				args = append(args[:at], args[at+1:]...)
 			}
