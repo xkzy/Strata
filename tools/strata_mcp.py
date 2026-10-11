@@ -67,9 +67,9 @@ FALLBACK_MODELS = {
                   "download_gb": 93.7, "ram_gb": 48, "arena_gb": 59.5, "families": ("unsloth",), "budget": True,
                   "vision": True},
     # Xiaomi MiMo-V2.6-Flash-RL: 48 layers, 256 MoE experts (8 active), 1M context, RL reasoning
-    "Q2_K": {"about": "2-bit K-quant, Xiaomi MiMo-V2.6-Flash-RL with ChatML reasoning", "download_gb": 126.2, "ram_gb": 64,
+    "Q2_K": {"about": "2-bit K-quant, Xiaomi MiMo-V2.6-Flash-RL with ChatML reasoning", "download_gb": 126.2, "ram_gb": 32,
              "arena_gb": 96.0, "families": ("mimo",), "budget": True},
-    "MXFP4": {"about": "4-bit microscaling format, high fidelity MiMo-V2.6-Flash-RL", "download_gb": 167.4, "ram_gb": 64,
+    "MXFP4": {"about": "4-bit microscaling format, high fidelity MiMo-V2.6-Flash-RL", "download_gb": 167.4, "ram_gb": 32,
               "arena_gb": 128.0, "families": ("mimo",), "budget": True},
 }
 FALLBACK_FAMILIES = {

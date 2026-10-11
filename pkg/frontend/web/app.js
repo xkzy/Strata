@@ -1691,6 +1691,7 @@ function filterAndRenderModels(recommended) {
           ${sourceIcon} ${sourceLabel}
         </span>
         ${isRec ? `<span class="model-rec-badge">★ Recommended</span>` : ""}
+        ${m.category === "mimo" || (m.tags || []).includes("MiMo") ? `<span class="model-rec-badge" style="background:linear-gradient(135deg,#ff6900,#ff8a3d);color:#fff;">🚀 MiMo RL</span>` : ""}
       </div>
       <div class="model-card-name">${esc(m.name)}</div>
       <div class="model-tags-row">${tagsHtml}</div>

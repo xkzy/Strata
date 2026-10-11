@@ -5,6 +5,7 @@ import (
 	"embed"
 	"io/fs"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -26,15 +27,29 @@ func NewFrontendHandler() *FrontendHandler {
 	}
 }
 
+func readWebFile(relPath string) ([]byte, error) {
+	candidates := []string{
+		filepath.Join("pkg", "frontend", "web", relPath),
+		filepath.Join("web", relPath),
+	}
+	for _, c := range candidates {
+		if b, err := os.ReadFile(c); err == nil {
+			return b, nil
+		}
+	}
+	return embeddedWeb.ReadFile("web/" + relPath)
+}
+
 func (h *FrontendHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	cleanPath := strings.TrimPrefix(path, "/")
 
 	// Direct routes for Monitor UI
 	if path == "/monitor" || path == "/monitor.html" || path == "/api-monitor" {
-		data, err := embeddedWeb.ReadFile("web/monitor.html")
+		data, err := readWebFile("monitor.html")
 		if err == nil {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			w.WriteHeader(http.StatusOK)
 			w.Write(data)
 			return
@@ -43,9 +58,10 @@ func (h *FrontendHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// SPA routes for Main Web App (Chat, Setup, Monitor, Settings, About)
 	if path == "/" || path == "/chat" || path == "/setup" || path == "/settings" || path == "/about" || path == "/index.html" {
-		data, err := embeddedWeb.ReadFile("web/index.html")
+		data, err := readWebFile("index.html")
 		if err == nil {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			w.WriteHeader(http.StatusOK)
 			w.Write(data)
 			return
@@ -55,7 +71,7 @@ func (h *FrontendHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Route /web/<file> -> web/<file>
 	if strings.HasPrefix(cleanPath, "web/") {
 		relPath := strings.TrimPrefix(cleanPath, "web/")
-		data, err := embeddedWeb.ReadFile("web/" + relPath)
+		data, err := readWebFile(relPath)
 		if err == nil {
 			setMimeType(w, relPath)
 			w.WriteHeader(http.StatusOK)
@@ -66,7 +82,7 @@ func (h *FrontendHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Route /fonts/<file> -> web/fonts/<file>
 	if strings.HasPrefix(cleanPath, "fonts/") {
-		data, err := embeddedWeb.ReadFile("web/" + cleanPath)
+		data, err := readWebFile(cleanPath)
 		if err == nil {
 			w.Header().Set("Content-Type", "font/woff2")
 			w.Header().Set("Cache-Control", "max-age=86400")
@@ -77,7 +93,7 @@ func (h *FrontendHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if file exists directly under web/
-	data, err := embeddedWeb.ReadFile("web/" + cleanPath)
+	data, err := readWebFile(cleanPath)
 	if err == nil {
 		setMimeType(w, cleanPath)
 		w.WriteHeader(http.StatusOK)
@@ -93,10 +109,13 @@ func setMimeType(w http.ResponseWriter, filename string) {
 	switch ext {
 	case ".html", ".htm":
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	case ".js":
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	case ".css":
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	case ".svg":
 		w.Header().Set("Content-Type", "image/svg+xml")
 	case ".woff2":

@@ -153,9 +153,9 @@ MODELS = {
                   "shards": 3, "file": "Qwen3.8-Flash-Next-{q}-0000{i}-of-00003.gguf", "engine": (0, 1, 38),
                   "vision": True},
     # Xiaomi MiMo-V2.6-Flash-RL: 48 layers, 256 MoE experts (8 active), 1M context, RL reasoning
-    "Q2_K": {"about": "2-bit K-quant, Xiaomi MiMo-V2.6-Flash-RL with ChatML reasoning", "download_gb": 126.2, "ram_gb": 64,
+    "Q2_K": {"about": "2-bit K-quant, Xiaomi MiMo-V2.6-Flash-RL with ChatML reasoning", "download_gb": 126.2, "ram_gb": 32,
              "arena_gb": 96.0, "families": ("mimo",), "budget": True},
-    "MXFP4": {"about": "4-bit microscaling format, high fidelity MiMo-V2.6-Flash-RL", "download_gb": 167.4, "ram_gb": 64,
+    "MXFP4": {"about": "4-bit microscaling format, high fidelity MiMo-V2.6-Flash-RL", "download_gb": 167.4, "ram_gb": 32,
               "arena_gb": 128.0, "families": ("mimo",), "budget": True},
 }
 # The experimental Unsloth file's four shards at the pinned revision: name -> (bytes, sha256), checked after the
@@ -4490,7 +4490,7 @@ def main() -> int:
             if d.get("budget"):
                 verdict = (("EXPERIMENTAL, " if d.get("experimental") else "") +
                            f"fits with {resident_budget_gib(m, ram)} GiB of its experts in RAM, the rest "
-                           "read from the SSD" if ram >= d["ram_gb"] else "does not fit")
+                           "read from the SSD" if ram >= d["ram_gb"] - 4 else "does not fit")
                 if hip:                                # #429: not run on AMD yet (its prompt kernels are CUDA-only)
                     verdict += " - NVIDIA only so far, untested on AMD"
             elif low_ram_needed(m, ram) and low_ram_fits(m, ram, low_ram_vram(gpu)) and a.low_ram != "off":
