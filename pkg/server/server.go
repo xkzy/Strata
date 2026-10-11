@@ -83,6 +83,33 @@ type StrataServer struct {
 }
 
 func NewStrataServer(cfg ServerConfig) *StrataServer {
+	cm := runconfig.NewConfigManager(cfg.ConfigFile)
+	if cm != nil {
+		saved := cm.Get()
+		activeModel, activePath := saved.GetActiveModel()
+		if cfg.ModelPath == "" && activePath != "" {
+			cfg.ModelPath = activePath
+		}
+		if (cfg.ModelName == "" || cfg.ModelName == "Qwen3.8-Flash-Next") && activeModel != "" {
+			cfg.ModelName = activeModel
+		}
+		if cfg.MaxContext <= 0 && saved.MaxContext > 0 {
+			cfg.MaxContext = saved.MaxContext
+		}
+		if cfg.VirtualLimit <= 0 && saved.VirtualLimit > 0 {
+			cfg.VirtualLimit = saved.VirtualLimit
+		}
+		if cfg.BindHost == "" && saved.Host != "" {
+			cfg.BindHost = saved.Host
+		}
+		if (cfg.Port <= 0 || cfg.Port == 8080) && saved.Port > 0 {
+			cfg.Port = saved.Port
+		}
+		if cfg.BinaryPath == "" && saved.EngineBinary != "" {
+			cfg.BinaryPath = saved.EngineBinary
+		}
+	}
+
 	if cfg.Port <= 0 {
 		cfg.Port = 8080
 	}
@@ -111,8 +138,6 @@ func NewStrataServer(cfg ServerConfig) *StrataServer {
 	tc.Start()
 
 	hr := hallucination.NewRuntime(".", hallucination.DefaultSafetyControllerOptions())
-
-	cm := runconfig.NewConfigManager(cfg.ConfigFile)
 	reg := modelschema.NewRegistry()
 	primaryID := cfg.ModelName
 	if primaryID == "" {
