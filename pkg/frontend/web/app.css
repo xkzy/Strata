@@ -171,15 +171,15 @@ main { flex: 1; min-height: 0; display: flex; }
 .cc-bars[hidden] { display: none; }
 .cc-note { margin: 0; }
 .cc-note:empty { display: none; }
-.cfg-form { display: grid; grid-template-columns: minmax(180px, max-content) minmax(0, 1fr); gap: var(--st-s-3) var(--st-s-4);
+.cfg-form { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(260px, 1fr); gap: var(--st-s-4) var(--st-s-6);
             align-items: center; }
-.cfg-form label { font-size: var(--st-fs-sm); font-weight: var(--st-fw-medium); }
-.cfg-form label code { font: 400 12px var(--st-font-mono); color: var(--st-ink-muted); display: block; }
-.cfg-form .st-input { height: 38px; width: 100%; max-width: 360px; }
-.cfg-actions { display: flex; align-items: center; gap: var(--st-s-3); }
+.cfg-form label { font-size: var(--st-fs-sm); font-weight: var(--st-fw-medium); line-height: 1.4; color: var(--st-ink); }
+.cfg-form label code { font: 400 12px var(--st-font-mono); color: var(--st-ink-muted); display: block; margin-top: 3px; }
+.cfg-form .st-input { height: 42px; width: 100%; max-width: 100%; font-size: var(--st-fs-sm); padding: 0 12px; }
+.cfg-actions { display: flex; align-items: center; gap: var(--st-s-3); margin-top: var(--st-s-2); }
 
 /* ---------------------------------------------------------------- about */
-.about { max-width: 860px; }
+.about { max-width: 960px; }
 .about .st-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
 .about p { margin: 0; }
 .facts { display: grid; grid-template-columns: minmax(140px, max-content) 1fr; gap: 10px var(--st-s-6); margin: 0; font-size: var(--st-fs-md); }
