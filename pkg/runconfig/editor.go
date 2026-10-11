@@ -347,9 +347,18 @@ func Apply(cfg map[string]interface{}, changes map[string]interface{}) (map[stri
 						}
 					}
 					if !hasCvec {
-						defaultCvec := filepath.Join("data", "experimental-speed-projection", "Qwen3.8-Flash-Next-experimental-speed-projection.gguf")
-						if _, err := os.Stat(defaultCvec); err == nil {
-							args = append(args, "--control-vector-scaled", defaultCvec+":1.0", "--cvec-mode", "project")
+						packDir := ""
+						if p, _ := nw["args"].([]interface{}); len(p) > 0 {
+							for i := 0; i+1 < len(p); i++ {
+								if s, _ := p[i].(string); s == "--pack" {
+									packDir = fmt.Sprint(p[i+1])
+									break
+								}
+							}
+						}
+						vecPath := FindOrFetchRefusalVector(packDir, "")
+						if vecPath != "" {
+							args = append(args, "--control-vector-scaled", vecPath+":1.0", "--cvec-mode", "project")
 						}
 					}
 				}

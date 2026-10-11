@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"strata/pkg/engineipc"
+	"strata/pkg/runconfig"
 	"strata/pkg/tokenizer"
 )
 
@@ -239,9 +240,10 @@ func (s *StrataServer) StartEngine(ctx context.Context) error {
 			}
 		}
 		if hasAbliterate && !hasCvec {
-			defaultCvec := filepath.Join("data", "experimental-speed-projection", "Qwen3.8-Flash-Next-experimental-speed-projection.gguf")
-			if _, err := os.Stat(defaultCvec); err == nil {
-				cfg.Args = append(cfg.Args, "--control-vector-scaled", defaultCvec+":1.0", "--cvec-mode", "project")
+			packDir := argValue(spec.Args, "--pack")
+			vecPath := runconfig.FindOrFetchRefusalVector(packDir, s.Config.ModelPath)
+			if vecPath != "" {
+				cfg.Args = append(cfg.Args, "--control-vector-scaled", vecPath+":1.0", "--cvec-mode", "project")
 			} else {
 				var safeArgs []string
 				for _, a := range cfg.Args {
