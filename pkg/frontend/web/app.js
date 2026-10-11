@@ -125,6 +125,65 @@ $("api-key").onchange = () => {
 
 let health = {model: "strata", images: false, max_context: 0, models: []};
 
+let isSwitchingModel = false;
+async function switchActiveModel(modelName, configPath) {
+  if (!modelName || isSwitchingModel) return;
+  isSwitchingModel = true;
+  toast("info", "Switching Model", `Loading ${modelName}... Initializing engine and mapping weights`, 4000);
+  setPill("busy", `Loading ${modelName}...`);
+
+  try {
+    const r = await fetch("api/models/switch", {
+      method: "POST",
+      headers: headers(true),
+      body: JSON.stringify({
+        model: modelName,
+        config: configPath || ""
+      })
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      toast("error", "Model Switch Failed", err.error?.message || err.warning || `HTTP ${r.status}`);
+      setPill("error", "Switch failed");
+      isSwitchingModel = false;
+      return;
+    }
+
+    // Poll health until the new model is loaded and ready
+    let attempts = 0;
+    const pollInterval = setInterval(async () => {
+      attempts++;
+      try {
+        const hr = await fetch("health", { headers: headers() });
+        if (hr.ok) {
+          const h = await hr.json();
+          if (h.model === modelName && (h.loaded === true || h.status === "ok")) {
+            clearInterval(pollInterval);
+            health = h;
+            isSwitchingModel = false;
+            store.set("active_model", modelName);
+            syncModelSelect(h.models);
+            $("chat-empty-sub").textContent = `${modelName} runs on this PC. Nothing leaves it.`;
+            setPill("idle", "Ready");
+            toast("success", "Model Active", `${modelName} is now active and ready!`);
+            return;
+          }
+        }
+      } catch (e) {}
+
+      if (attempts > 30) {
+        clearInterval(pollInterval);
+        isSwitchingModel = false;
+        loadHealth();
+      }
+    }, 1500);
+  } catch (e) {
+    toast("error", "Connection Error", e.message);
+    setPill("error", "Error");
+    isSwitchingModel = false;
+  }
+}
+
 function syncModelSelect(models) {
   const sel = $("model-select");
   if (!sel) return;
@@ -145,9 +204,13 @@ function syncModelSelect(models) {
   }
   
   sel.onchange = () => {
-    store.set("active_model", sel.value);
-    $("chat-empty-sub").textContent = `${sel.value} runs on this PC. Nothing leaves it.`;
-    toast("info", "Active Model", `Switched to ${sel.value}`);
+    const target = sel.value;
+    if (target && target !== health.model) {
+      switchActiveModel(target);
+    } else {
+      store.set("active_model", target);
+      $("chat-empty-sub").textContent = `${target} runs on this PC. Nothing leaves it.`;
+    }
   };
 }
 
@@ -166,6 +229,22 @@ async function loadHealth() {
       syncModelSelect(health.models);
       const curModel = getSelectedModel();
       $("chat-empty-sub").textContent = `${curModel} runs on this PC. Nothing leaves it.`;
+
+      // Sync uncensor / abliteration state if present
+      if (typeof health.abliterate !== "undefined") {
+        if ($("setup-abliterate")) {
+          $("setup-abliterate").setAttribute("aria-checked", String(!!health.abliterate));
+        }
+        if ($("setup-abliterate-strength-row")) {
+          $("setup-abliterate-strength-row").hidden = !health.abliterate;
+        }
+        if ($("setup-abliterate-strength") && typeof health.abliteration_strength !== "undefined") {
+          $("setup-abliterate-strength").value = health.abliteration_strength || 1.0;
+          if ($("o-setup-abliterate-strength")) {
+            $("o-setup-abliterate-strength").textContent = (+health.abliteration_strength || 1.0).toFixed(2);
+          }
+        }
+      }
     }
   } catch (e) {
     setTimeout(loadHealth, 2000);
@@ -1647,6 +1726,8 @@ async function loadSetup() {
       const data = await r.json();
       detectedHwSpecs = data.hardware;
       allSetupModels = data.models || [];
+      if (data.models_dir) window.strataModelsDir = data.models_dir;
+      if (data.data_dir) window.strataDataDir = data.data_dir;
       renderSetupHardware(data.hardware);
       filterAndRenderModels(data.recommended);
     }
@@ -1748,6 +1829,7 @@ function filterAndRenderModels(recommended) {
         ${isInstalled ? `<span class="model-installed-badge">💾 Installed</span>` : ""}
         ${isRec ? `<span class="model-rec-badge">★ Recommended</span>` : ""}
         ${m.category === "mimo" || (m.tags || []).includes("MiMo") ? `<span class="model-rec-badge" style="background:linear-gradient(135deg,#ff6900,#ff8a3d);color:#fff;">🚀 MiMo RL</span>` : ""}
+        ${isInstalled ? `<button class="st-btn st-btn--secondary st-btn--sm model-card-activate-btn" style="margin-left:auto;padding:2px 8px;font-size:11px;" type="button" title="Activate this model now">⚡ Activate</button>` : ""}
         ${hasFiles ? `<button class="model-card-delete-btn" title="Delete model files from disk" type="button"><svg class="st-icon st-icon--sm" style="width:14px;height:14px;pointer-events:none;"><use href="web/sprite.svg#i-trash"/></svg></button>` : ""}
       </div>
       <div class="model-card-name">${esc(m.name)}</div>
@@ -1760,6 +1842,15 @@ function filterAndRenderModels(recommended) {
     `;
 
     card.onclick = () => selectSetupModel(m);
+    const actBtn = card.querySelector(".model-card-activate-btn");
+    if (actBtn) {
+      actBtn.onclick = (e) => {
+        e.stopPropagation();
+        selectSetupModel(m);
+        switchActiveModel(m.name, m.filename || "");
+        showTab("chat");
+      };
+    }
     const delBtn = card.querySelector(".model-card-delete-btn");
     if (delBtn) {
       delBtn.onclick = (e) => {
@@ -1799,7 +1890,8 @@ function selectSetupModel(m) {
     if (m.filename && (m.filename.startsWith("/") || m.filename.includes("\\"))) {
       $("setup-dest-path").value = m.filename;
     } else {
-      $("setup-dest-path").value = `models/${m.filename || (m.name.toLowerCase() + ".gguf")}`;
+      const baseDir = window.strataModelsDir || "Strata-data/models";
+      $("setup-dest-path").value = `${baseDir}/${m.filename || (m.name.toLowerCase() + ".gguf")}`;
     }
   }
 
@@ -1862,10 +1954,11 @@ async function startSetupDownload() {
     return;
   }
 
-  // If selecting an existing local pack, activate it directly without downloading
-  if (selectedModelOpt.download_url === "" || (selectedModelOpt.name && selectedModelOpt.name.includes("Local"))) {
+  // If selecting an existing local pack or installed model, activate it directly without downloading
+  if (selectedModelOpt.download_url === "" || (selectedModelOpt.name && selectedModelOpt.name.includes("Local")) || selectedModelOpt.installed) {
     await saveSetupConfig();
-    toast("success", "Local Model Activated", `${selectedModelOpt.name} is now active.`);
+    await switchActiveModel(selectedModelOpt.name, selectedModelOpt.filename || "");
+    showTab("chat");
     return;
   }
 
@@ -1909,6 +2002,8 @@ async function saveSetupConfig() {
     pool_workers: +($("setup-pool-workers") ? $("setup-pool-workers").value : 16),
     pcie_frac: +($("setup-pcie-frac") ? $("setup-pcie-frac").value : 0.5),
     gpus: ($("setup-gpus") && $("setup-gpus").value.trim()) || "",
+    abliterate: $("setup-abliterate") ? $("setup-abliterate").getAttribute("aria-checked") === "true" : false,
+    abliteration_strength: +($("setup-abliterate-strength") ? $("setup-abliterate-strength").value : 1.0),
   };
 
   try {
@@ -2047,6 +2142,20 @@ async function deleteSetupModel(m) {
 if ($("hw-refresh-btn")) $("hw-refresh-btn").onclick = loadSetup;
 if ($("setup-download-btn")) $("setup-download-btn").onclick = startSetupDownload;
 if ($("setup-save-btn")) $("setup-save-btn").onclick = saveSetupConfig;
+if ($("setup-abliterate")) {
+  $("setup-abliterate").onclick = () => {
+    const on = $("setup-abliterate").getAttribute("aria-checked") !== "true";
+    $("setup-abliterate").setAttribute("aria-checked", String(on));
+    if ($("setup-abliterate-strength-row")) $("setup-abliterate-strength-row").hidden = !on;
+  };
+}
+if ($("setup-abliterate-strength")) {
+  $("setup-abliterate-strength").oninput = () => {
+    if ($("o-setup-abliterate-strength")) {
+      $("o-setup-abliterate-strength").textContent = (+($("setup-abliterate-strength").value)).toFixed(2);
+    }
+  };
+}
 if ($("setup-delete-btn")) $("setup-delete-btn").onclick = () => deleteSetupModel(selectedModelOpt);
 if ($("setup-cancel-btn")) $("setup-cancel-btn").onclick = cancelSetupDownload;
 if ($("setup-import-btn")) $("setup-import-btn").onclick = importCustomSetupModel;

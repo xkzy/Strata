@@ -1864,9 +1864,9 @@ int main(int argc, char** argv) {
         else if (a == "--resident-cpu-experts") o.resident_cpu_experts = o.resident_cpu_explicit = true;
         else if (a == "--resident-experts") {
             o.mmap_experts = o.resident_cpu_experts = o.resident_pin = o.resident_soft = true;
-            o.resident_headroom = 4ull << 30;
+            o.resident_headroom = 10ull << 30;
             // A/B arms: STRATA_RESIDENT_PIN=0 keeps the copy pageable (the --resident-cpu-experts form);
-            // STRATA_RESIDENT_HEADROOM_GIB=N leaves N GiB of the available RAM free instead of 4
+            // STRATA_RESIDENT_HEADROOM_GIB=N leaves N GiB of the available RAM free instead of 10
             if (const char* v = std::getenv("STRATA_RESIDENT_PIN"); v != nullptr && std::string(v) == "0")
                 o.resident_pin = false;
             if (const char* v = std::getenv("STRATA_RESIDENT_HEADROOM_GIB"); v != nullptr && std::atof(v) >= 0.0)
@@ -1877,7 +1877,7 @@ int main(int argc, char** argv) {
             if (!(gib > 0.0)) { std::fprintf(stderr, "strata generate: --resident-budget-gib needs N > 0\n"); return 2; }
             o.resident_budget = (uint64_t) (gib * 1073741824.0);
             o.mmap_experts = o.resident_cpu_experts = o.resident_pin = true;
-            o.resident_headroom = 4ull << 30;
+            o.resident_headroom = 10ull << 30;
             if (const char* v = std::getenv("STRATA_RESIDENT_PIN"); v != nullptr && std::string(v) == "0")
                 o.resident_pin = false;
             if (const char* v = std::getenv("STRATA_RESIDENT_HEADROOM_GIB"); v != nullptr && std::atof(v) >= 0.0)

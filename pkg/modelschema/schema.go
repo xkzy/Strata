@@ -16,6 +16,7 @@ const (
 	FamilyDeepSeek ModelFamily = "deepseek"
 	FamilyLlama    ModelFamily = "llama"
 	FamilyMistral  ModelFamily = "mistral"
+	FamilyOpenAI   ModelFamily = "openai"
 	FamilyGeneric  ModelFamily = "generic"
 )
 

@@ -47,30 +47,42 @@ func readEngineSpec(path string) (*engineSpec, error) {
 	return &sp, nil
 }
 
-// findEngineSpec picks the engine config: the --config file, else the single strata-*.json in the working directory
-// that holds an engine command line.
-func findEngineSpec(configFile string) (*engineSpec, string, error) {
+// findEngineSpec picks the engine config: the --config file, else the last session config or newest strata-*.json.
+func findEngineSpec(configFile string, lastConfigFile string) (*engineSpec, string, error) {
 	if configFile != "" {
 		sp, err := readEngineSpec(configFile)
 		return sp, configFile, err
 	}
+	if lastConfigFile != "" {
+		if sp, err := readEngineSpec(lastConfigFile); err == nil {
+			return sp, lastConfigFile, nil
+		}
+	}
 	matches, _ := filepath.Glob("strata-*.json")
-	sort.Strings(matches)
 	var found []string
-	var spec *engineSpec
+	specs := make(map[string]*engineSpec)
 	for _, m := range matches {
 		if sp, err := readEngineSpec(m); err == nil {
 			found = append(found, m)
-			spec = sp
+			specs[m] = sp
 		}
 	}
 	switch len(found) {
 	case 0:
 		return nil, "", nil
 	case 1:
-		return spec, found[0], nil
+		return specs[found[0]], found[0], nil
 	}
-	return nil, "", fmt.Errorf("several engine configs here (%s): choose one with --config", strings.Join(found, ", "))
+	// Sort by modification time descending so newest config is chosen
+	sort.Slice(found, func(i, j int) bool {
+		fi, erri := os.Stat(found[i])
+		fj, errj := os.Stat(found[j])
+		if erri == nil && errj == nil {
+			return fi.ModTime().After(fj.ModTime())
+		}
+		return found[i] < found[j]
+	})
+	return specs[found[0]], found[0], nil
 }
 
 func argValue(args []string, flag string) string {
@@ -80,6 +92,51 @@ func argValue(args []string, flag string) string {
 		}
 	}
 	return ""
+}
+
+func resolveTokenizerDir(tokDir string, modelPath string) string {
+	if tokDir != "" {
+		if _, err := os.Stat(filepath.Join(tokDir, "vocab.json")); err == nil {
+			return tokDir
+		}
+	}
+	candidates := []string{
+		tokDir,
+		filepath.Join(modelPath, "tokenizer"),
+		modelPath,
+	}
+	if modelPath != "" {
+		base := filepath.Base(modelPath)
+		dir := filepath.Dir(modelPath)
+		parent := filepath.Dir(dir)
+		candidates = append(candidates,
+			filepath.Join(parent, "packs", strings.ToLower(base), "tokenizer"),
+			filepath.Join(parent, "packs", strings.ToLower(strings.ReplaceAll(base, "_", "-")), "tokenizer"),
+			filepath.Join(parent, "packs", strings.ToLower(strings.ReplaceAll(base, "-", "_")), "tokenizer"),
+			filepath.Join("packs", strings.ToLower(base), "tokenizer"),
+		)
+	}
+	packGlobs := []string{
+		"packs/*/tokenizer",
+		"../packs/*/tokenizer",
+		"/home/khing/Downloads/Strata-data/packs/*/tokenizer",
+		"/home/khing/Downloads/Strata-data/packs/coder-iq1_m/tokenizer",
+	}
+	for _, pg := range packGlobs {
+		if matches, err := filepath.Glob(pg); err == nil {
+			candidates = append(candidates, matches...)
+		}
+	}
+
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(c, "vocab.json")); err == nil {
+			return c
+		}
+	}
+	return tokDir
 }
 
 // engineState is what the server knows about its engine besides the process itself.
@@ -110,7 +167,11 @@ func (s *StrataServer) tokenizerOrNil() *tokenizer.Tokenizer {
 // an error when the engine cannot be started; the server keeps running and every generation request then fails with
 // that reason (HTTP 503) instead of being answered with invented text.
 func (s *StrataServer) StartEngine(ctx context.Context) error {
-	spec, source, err := findEngineSpec(s.Config.ConfigFile)
+	lastConfig := ""
+	if s.ConfigManager != nil {
+		lastConfig = s.ConfigManager.Get().LastConfigFile
+	}
+	spec, source, err := findEngineSpec(s.Config.ConfigFile, lastConfig)
 	if err != nil {
 		s.setProblem(err.Error())
 		return err
@@ -151,6 +212,7 @@ func (s *StrataServer) StartEngine(ctx context.Context) error {
 		s.setProblem(err.Error())
 		return err
 	}
+	tokDir = resolveTokenizerDir(tokDir, s.Config.ModelPath)
 	if tokDir == "" {
 		err := fmt.Errorf("the model's tokenizer directory is unknown (set \"tokenizer\" in the engine config or STRATA_TOKENIZER_DIR)")
 		s.setProblem(err.Error())
@@ -205,6 +267,15 @@ func (s *StrataServer) StartEngine(ctx context.Context) error {
 		return err
 	}
 	s.setupRuntime(tok.VocabSize())
+	if s.ConfigManager != nil && source != "" {
+		cfg := s.ConfigManager.Get()
+		cfg.LastConfigFile = source
+		if s.Config.ModelName != "" {
+			cfg.LastModel = s.Config.ModelName
+		}
+		s.ConfigManager.Update(cfg)
+		_ = s.ConfigManager.SaveToFile("")
+	}
 	return nil
 }
 

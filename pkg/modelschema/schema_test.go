@@ -106,6 +106,18 @@ func TestModelRegistry_Builtins(t *testing.T) {
 	if deepseek.Family != FamilyDeepSeek || deepseek.Architecture != ArchMultiHeadLatentAttention {
 		t.Fatalf("unexpected deepseek properties: family=%s, arch=%s", deepseek.Family, deepseek.Architecture)
 	}
+
+	// 5. OpenAI GPT-OSS-20B
+	gptoss, ok := reg.GetManifest("gpt-oss-20b")
+	if !ok || gptoss == nil {
+		t.Fatal("failed to find built-in gpt-oss-20b")
+	}
+	if gptoss.Family != FamilyOpenAI || gptoss.Architecture != ArchSparseMoE {
+		t.Fatalf("unexpected gpt-oss properties: family=%s, arch=%s", gptoss.Family, gptoss.Architecture)
+	}
+	if gptoss.MoE == nil || gptoss.MoE.NumExperts != 32 || gptoss.MoE.TopK != 4 {
+		t.Fatalf("unexpected gpt-oss MoE topology: %+v", gptoss.MoE)
+	}
 }
 
 func TestModelRegistry_AliasesAndResolve(t *testing.T) {
@@ -125,6 +137,11 @@ func TestModelRegistry_AliasesAndResolve(t *testing.T) {
 		{"mamba-ssm", "mamba-2.8b"},
 		{"deepseek", "deepseek-v3"},
 		{"deepseek-r1", "deepseek-v3"},
+		{"gpt-oss", "gpt-oss-20b"},
+		{"gpt-oss-20b", "gpt-oss-20b"},
+		{"openai/gpt-oss-20b", "gpt-oss-20b"},
+		{"unsloth/gpt-oss-20b-gguf", "gpt-oss-20b"},
+		{"unsloth/gpt-oss-20b", "gpt-oss-20b"},
 	}
 
 	for _, tt := range tests {

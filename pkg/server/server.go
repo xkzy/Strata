@@ -90,7 +90,12 @@ func NewStrataServer(cfg ServerConfig) *StrataServer {
 		if cfg.ModelPath == "" && activePath != "" {
 			cfg.ModelPath = activePath
 		}
-		if (cfg.ModelName == "" || cfg.ModelName == "Qwen3.8-Flash-Next") && activeModel != "" {
+		if cfg.ConfigFile == "" && saved.LastConfigFile != "" {
+			cfg.ConfigFile = saved.LastConfigFile
+		}
+		if (cfg.ModelName == "" || cfg.ModelName == "Qwen3.8-Flash-Next") && saved.LastModel != "" {
+			cfg.ModelName = saved.LastModel
+		} else if (cfg.ModelName == "" || cfg.ModelName == "Qwen3.8-Flash-Next") && activeModel != "" {
 			cfg.ModelName = activeModel
 		}
 		if cfg.MaxContext <= 0 && saved.MaxContext > 0 {
@@ -212,6 +217,7 @@ func (s *StrataServer) Router() http.Handler {
 	mux.HandleFunc("/v1/models/", s.handleModels)
 	mux.HandleFunc("/models", s.handleModels)
 	mux.HandleFunc("/models/", s.handleModels)
+	mux.HandleFunc("/api/models/switch", s.handleModelSwitch)
 
 	// Health, Status & Telemetry
 	mux.HandleFunc("/health", s.handleHealth)
@@ -445,15 +451,59 @@ func (s *StrataServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"virtual_context_limit":   s.Config.VirtualLimit,
 		"virtual_expansion_ratio": float64(s.Config.VirtualLimit) / float64(s.Config.MaxContext),
 	}
-	if s.Registry != nil {
-		modelsList := make([]map[string]interface{}, 0)
-		for _, m := range s.Registry.ListManifests() {
+
+	seenModels := make(map[string]bool)
+	modelsList := make([]map[string]interface{}, 0)
+
+	addModel := func(id, name string) {
+		if id == "" {
+			return
+		}
+		if name == "" {
+			name = id
+		}
+		if !seenModels[id] {
+			seenModels[id] = true
 			modelsList = append(modelsList, map[string]interface{}{
-				"id":   m.ID,
-				"name": m.Name,
+				"id":   id,
+				"name": name,
 			})
 		}
-		out["models"] = modelsList
+	}
+
+	if s.Config.ModelName != "" {
+		addModel(s.Config.ModelName, s.Config.ModelName)
+	}
+	if s.Registry != nil {
+		for _, m := range s.Registry.ListManifests() {
+			addModel(m.ID, m.Name)
+		}
+	}
+	if s.ConfigManager != nil {
+		for id, m := range s.ConfigManager.Get().AllModels() {
+			name := m.Name
+			if name == "" {
+				name = id
+			}
+			addModel(id, name)
+		}
+	}
+	if matches, err := filepath.Glob("strata-*.json"); err == nil {
+		for _, m := range matches {
+			if sp, err := readEngineSpec(m); err == nil && sp.ModelName != "" {
+				addModel(sp.ModelName, sp.ModelName)
+			}
+		}
+	}
+	out["models"] = modelsList
+
+	if s.ConfigManager != nil {
+		cfg := s.ConfigManager.Get()
+		out["abliterate"] = cfg.Abliterate
+		out["abliteration_strength"] = cfg.AbliterationStrength
+		if cfg.LastConfigFile != "" {
+			out["last_config_file"] = cfg.LastConfigFile
+		}
 	}
 	for k, v := range s.engineStatus() {
 		out[k] = v
@@ -569,12 +619,124 @@ func (s *StrataServer) handleCache(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *StrataServer) handleModelInfo(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	info := map[string]interface{}{
 		"name":        s.Config.ModelName,
 		"path":        s.Config.ModelPath,
 		"max_context": s.Config.MaxContext,
 		"loaded":      s.engineStatus()["loaded"],
-	})
+	}
+	if s.ConfigManager != nil {
+		cfg := s.ConfigManager.Get()
+		info["abliterate"] = cfg.Abliterate
+		info["abliteration_strength"] = cfg.AbliterationStrength
+		if cfg.LastConfigFile != "" {
+			info["last_config_file"] = cfg.LastConfigFile
+		}
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+func (s *StrataServer) handleModelSwitch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Model                string   `json:"model"`
+		Config               string   `json:"config"`
+		Abliterate           *bool    `json:"abliterate,omitempty"`
+		AbliterationStrength *float64 `json:"abliteration_strength,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":{"message":"Invalid JSON payload"}}`, http.StatusBadRequest)
+		return
+	}
+
+	targetModel := strings.TrimSpace(req.Model)
+	if targetModel == "" && req.Config == "" {
+		http.Error(w, `{"error":{"message":"Model name or config path is required"}}`, http.StatusBadRequest)
+		return
+	}
+
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+
+	// 1. Stop current engine if running
+	if s.EngineIPC != nil {
+		_ = s.EngineIPC.Stop()
+	}
+
+	// 2. Update abliteration settings if provided
+	if s.ConfigManager != nil {
+		cfg := s.ConfigManager.Get()
+		if req.Abliterate != nil {
+			cfg.Abliterate = *req.Abliterate
+		}
+		if req.AbliterationStrength != nil {
+			cfg.AbliterationStrength = *req.AbliterationStrength
+		}
+		s.ConfigManager.Update(cfg)
+	}
+
+	// 3. Resolve target config file and model name
+	targetConfig := req.Config
+	if targetConfig == "" {
+		matches, _ := filepath.Glob("strata-*.json")
+		cleanTarget := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(targetModel, " ", "_"), "/", "_"))
+		for _, m := range matches {
+			if sp, err := readEngineSpec(m); err == nil {
+				if strings.EqualFold(sp.ModelName, targetModel) || strings.Contains(strings.ToLower(m), cleanTarget) {
+					targetConfig = m
+					if sp.ModelName != "" {
+						targetModel = sp.ModelName
+					}
+					break
+				}
+			}
+		}
+
+		if targetConfig == "" && s.ConfigManager != nil {
+			cfg := s.ConfigManager.Get()
+			if entry, ok := cfg.GetModelEntry(targetModel); ok && entry.ModelPath != "" {
+				s.Config.ModelPath = entry.ModelPath
+				if entry.MaxContext > 0 {
+					s.Config.MaxContext = entry.MaxContext
+				}
+			}
+		}
+	} else {
+		if sp, err := readEngineSpec(targetConfig); err == nil && sp.ModelName != "" {
+			targetModel = sp.ModelName
+		}
+	}
+
+	if targetModel != "" {
+		s.Config.ModelName = targetModel
+	}
+	s.Config.ConfigFile = targetConfig
+
+	// Persist last session config
+	if s.ConfigManager != nil {
+		cfg := s.ConfigManager.Get()
+		cfg.LastConfigFile = targetConfig
+		cfg.LastModel = s.Config.ModelName
+		s.ConfigManager.Update(cfg)
+		_ = s.ConfigManager.SaveToFile("")
+	}
+
+	// 4. Start the new engine
+	startErr := s.StartEngine(context.Background())
+	resp := map[string]interface{}{
+		"status": "switching",
+		"model":  s.Config.ModelName,
+		"config": s.Config.ConfigFile,
+	}
+	if startErr != nil {
+		resp["warning"] = startErr.Error()
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *StrataServer) handleCancel(w http.ResponseWriter, r *http.Request) {
@@ -1050,6 +1212,9 @@ func (s *StrataServer) handleSetupModels(w http.ResponseWriter, r *http.Request)
 		"hardware":    specs,
 		"models":      models,
 		"recommended": rec,
+		"data_dir":    installer.GetDataDir(),
+		"models_dir":  installer.GetModelsDir(),
+		"packs_dir":   installer.GetPacksDir(),
 	})
 }
 
@@ -1060,13 +1225,15 @@ func (s *StrataServer) handleSetupConfigure(w http.ResponseWriter, r *http.Reque
 	}
 
 	var req struct {
-		ModelName    string   `json:"model_name"`
-		ModelPath    string   `json:"model_path"`
-		MaxContext   int      `json:"max_context"`
-		VirtualLimit int      `json:"virtual_limit"`
-		PoolWorkers  int      `json:"pool_workers"`
-		PcieFrac     *float64 `json:"pcie_frac"`
-		GPUs         string   `json:"gpus"`
+		ModelName            string   `json:"model_name"`
+		ModelPath            string   `json:"model_path"`
+		MaxContext           int      `json:"max_context"`
+		VirtualLimit         int      `json:"virtual_limit"`
+		PoolWorkers          int      `json:"pool_workers"`
+		PcieFrac             *float64 `json:"pcie_frac"`
+		GPUs                 string   `json:"gpus"`
+		Abliterate           *bool    `json:"abliterate,omitempty"`
+		AbliterationStrength *float64 `json:"abliteration_strength,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":{"message":"Invalid JSON payload"}}`, http.StatusBadRequest)
@@ -1102,21 +1269,34 @@ func (s *StrataServer) handleSetupConfigure(w http.ResponseWriter, r *http.Reque
 		if req.GPUs != "" {
 			cfg.GPUs = req.GPUs
 		}
+		if req.Abliterate != nil {
+			cfg.Abliterate = *req.Abliterate
+		}
+		if req.AbliterationStrength != nil {
+			cfg.AbliterationStrength = *req.AbliterationStrength
+		}
 		s.ConfigManager.Update(cfg)
 		_ = s.ConfigManager.SaveToFile("")
 	}
 
+	resConfig := map[string]interface{}{
+		"model_name":    s.Config.ModelName,
+		"model_path":    s.Config.ModelPath,
+		"max_context":   s.Config.MaxContext,
+		"virtual_limit": s.Config.VirtualLimit,
+		"pool_workers":  req.PoolWorkers,
+		"pcie_frac":     req.PcieFrac,
+		"gpus":          req.GPUs,
+	}
+	if s.ConfigManager != nil {
+		cfg := s.ConfigManager.Get()
+		resConfig["abliterate"] = cfg.Abliterate
+		resConfig["abliteration_strength"] = cfg.AbliterationStrength
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "configured",
-		"config": map[string]interface{}{
-			"model_name":    s.Config.ModelName,
-			"model_path":    s.Config.ModelPath,
-			"max_context":   s.Config.MaxContext,
-			"virtual_limit": s.Config.VirtualLimit,
-			"pool_workers":  req.PoolWorkers,
-			"pcie_frac":     req.PcieFrac,
-			"gpus":          req.GPUs,
-		},
+		"config": resConfig,
 	})
 }
 
@@ -1187,8 +1367,8 @@ func (s *StrataServer) handleSetupDownload(w http.ResponseWriter, r *http.Reques
 	if choice.DownloadURL == "" { // a model already on this machine (catalog entry with a local path)
 		req.DestPath = choice.Filename
 	} else {
-		req.DestPath = filepath.Join("models", filepath.Base(choice.Filename)) // the file name only: no directories from the catalog either
-		if dest, err := filepath.Abs(req.DestPath); err != nil || !strings.HasPrefix(dest, mustAbs("models")+string(filepath.Separator)) {
+		req.DestPath = filepath.Join(installer.GetModelsDir(), filepath.Base(choice.Filename))
+		if !installer.IsSafeModelPath(req.DestPath) {
 			http.Error(w, `{"error":{"message":"invalid destination"}}`, http.StatusBadRequest)
 			return
 		}

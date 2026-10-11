@@ -52,6 +52,7 @@ func TestModelsEndpoint_ListAndDetail(t *testing.T) {
 		"mimo-v2.6-flash-rl",
 		"mamba-2.8b",
 		"deepseek-v3",
+		"gpt-oss-20b",
 	}
 
 	for _, expected := range expectedBuiltins {

@@ -190,6 +190,7 @@ func (r *anRequest) toSpec(s *StrataServer) (genSpec, error) {
 	}
 	if r.Abliterate != nil {
 		spec.Sampling.Abliterate = *r.Abliterate
+		spec.ExplicitAbliterate = r.Abliterate
 	}
 	if r.AbliterationStrength != nil {
 		spec.Sampling.AbliterationStrength = *r.AbliterationStrength

@@ -2,8 +2,8 @@
 
 Strata runs the Qwen3.8-Flash-Next mixture-of-experts model (and its Coder, Swift 1.5 and Unsloth variants) on a
 normal PC: one NVIDIA or AMD graphics card plus system RAM, on Windows or Linux. It has a C++/CUDA/HIP engine
-(`src/`, `include/`), a Python server with an OpenAI- and Anthropic-compatible API and a web app (`serve/`), and a
-one-click installer (`setup.py`, started by `START-HERE.bat` / `setup.sh`).
+(`src/`, `include/`), a native Go server with an OpenAI- and Anthropic-compatible API and a web app (`pkg/server/`, `pkg/frontend/`),
+and a native one-click installer (`bin/strata setup`, started by `START-HERE.bat` / `setup.sh`).
 
 ## Installing Strata for a user
 
@@ -18,7 +18,6 @@ offers the same steps as tools.
   the [paper](docs/paper/Strata-Paper.pdf).
 - The auto-adaptive resource controller (issue #18, server layer): [docs/ADAPTIVE.md](docs/ADAPTIVE.md).
 - AMD (HIP) build and validation: [docs/AMD_HIP.md](docs/AMD_HIP.md); multi-GPU: [docs/MULTI_GPU.md](docs/MULTI_GPU.md).
-- Setup's own tests run without a GPU or downloads: `python tools/test_setup_<name>.py` (for example
-  `tools/test_setup_amd.py`, `tools/test_setup_choices.py`).
+- Setup's own tests run without a GPU or downloads: `go test ./pkg/installer/...` and `go test ./pkg/...`.
 - Keep the docs' style: plain words, measured numbers with what they were measured on, no claims without a
   measurement.

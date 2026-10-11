@@ -12,6 +12,9 @@
   "anthropic_thinking": "model",
   "power_policy": "BALANCED",
   "resource_adapt": true,
+  "abliterate": true,
+  "abliteration_strength": 1.5,
+  "last_model": "gpt-oss-20b",
   "sampling": {
     "temperature": 0,
     "top_p": 0.95,

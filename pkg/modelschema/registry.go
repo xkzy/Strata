@@ -191,6 +191,36 @@ func (r *ModelRegistry) registerBuiltins() {
 		Description:     "Multi-head Latent Attention (MLA) architecture with DeepSeekMoE routing",
 		HuggingFaceRepo: "deepseek-ai/DeepSeek-V3-GGUF",
 	})
+
+	// 6. OpenAI GPT-OSS-20B (Open-Weight 21B MoE Reasoning)
+	_ = r.RegisterManifest(ModelManifest{
+		ID:           "gpt-oss-20b",
+		Name:         "OpenAI GPT-OSS-20B",
+		Family:       FamilyOpenAI,
+		Architecture: ArchSparseMoE,
+		Attention:    AttentionFullMHA,
+		MoE: &MoETopology{
+			NumExperts:  32,
+			TopK:        4,
+			RoutingType: "softmax",
+		},
+		Resources: ResourceSpec{
+			MinRAMBytes:          14 << 30, // 14 GiB
+			MinVRAMBytes:         6 << 30,  // 6 GiB
+			LayersTotal:          32,
+			HiddenDim:            4096,
+			NumHeads:             32,
+			NumKVHeads:           8,
+			MaxContextTokens:     131072,
+			DefaultContextTokens: 32768,
+			SupportsMTP:          true,
+			SupportsAbliteration: true,
+		},
+		Aliases:         []string{"gpt-oss", "gpt-oss-20b", "openai/gpt-oss-20b", "openai-gpt-oss-20b", "unsloth/gpt-oss-20b-gguf", "unsloth/gpt-oss-20b", "gpt-oss-20b-gguf", "unsloth-gpt-oss-20b"},
+		Description:     "OpenAI open-weight 21B MoE reasoning model with 3.6B active parameters, SwiGLU activations, and CoT reasoning",
+		HuggingFaceRepo: "unsloth/gpt-oss-20b-GGUF",
+		DefaultGGUF:     "gpt-oss-20b-UD-Q4_K_XL.gguf",
+	})
 }
 
 // RegisterManifest registers a new model manifest into the catalog

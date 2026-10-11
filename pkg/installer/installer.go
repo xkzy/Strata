@@ -254,71 +254,177 @@ func ScanLocalOllamaModels() []ModelOption {
 	return results
 }
 
-// ScanLocalCustomModels discovers existing local Strata packs and GGUFs
+// GetDataDir returns the root Strata-data directory where models, packs, and mtp layers are stored.
+func GetDataDir() string {
+	if d := os.Getenv("STRATA_DATA_DIR"); d != "" {
+		return d
+	}
+	cwd, _ := os.Getwd()
+	// Priority 1: parent directory / Strata-data (standard layout: ../Strata-data next to Strata/)
+	parentData := filepath.Join(filepath.Dir(cwd), "Strata-data")
+	if fi, err := os.Stat(parentData); err == nil && fi.IsDir() {
+		return parentData
+	}
+	// Priority 2: user home ~/Downloads/Strata-data
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		homeData := filepath.Join(home, "Downloads", "Strata-data")
+		if fi, err := os.Stat(homeData); err == nil && fi.IsDir() {
+			return homeData
+		}
+	}
+	// Priority 3: local ./Strata-data
+	localData := filepath.Join(cwd, "Strata-data")
+	if fi, err := os.Stat(localData); err == nil && fi.IsDir() {
+		return localData
+	}
+	return parentData
+}
+
+// GetModelsDir returns the directory where GGUF model files are stored ($STRATA_DATA_DIR/models).
+func GetModelsDir() string {
+	dir := filepath.Join(GetDataDir(), "models")
+	_ = os.MkdirAll(dir, 0755)
+	return dir
+}
+
+// GetPacksDir returns the directory where compiled Strata packs are stored ($STRATA_DATA_DIR/packs).
+func GetPacksDir() string {
+	dir := filepath.Join(GetDataDir(), "packs")
+	_ = os.MkdirAll(dir, 0755)
+	return dir
+}
+
+func calcDirSizeGB(dir string) float64 {
+	var total int64
+	_ = filepath.Walk(dir, func(_ string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			total += info.Size()
+		}
+		return nil
+	})
+	return float64(int((float64(total)/(1024*1024*1024))*10+0.5)) / 10.0
+}
+
+func formatPackName(n string) string {
+	n = strings.ReplaceAll(n, "-", " ")
+	n = strings.ReplaceAll(n, "_", " ")
+	words := strings.Fields(n)
+	for i, w := range words {
+		if len(w) > 0 {
+			words[i] = strings.ToUpper(w[:1]) + w[1:]
+		}
+	}
+	return strings.Join(words, "-")
+}
+
+// ScanLocalCustomModels discovers existing local Strata packs and GGUFs in Strata-data
 func ScanLocalCustomModels() []ModelOption {
 	var results []ModelOption
+	seenPaths := make(map[string]bool)
 
-	candidates := []struct {
-		name        string
-		path        string
-		sizeGB      float64
-		minRAMGB    float64
-		desc        string
-		category    string
-		tags        []string
-		recommended bool
-	}{
-		{
-			name:        "Qwen3.8-Flash-Next-Coder-IQ1_M (Local Pack)",
-			path:        "/home/khing/Downloads/Strata-data/packs/coder-iq1_m",
-			sizeGB:      26.0,
-			minRAMGB:    16.0,
-			desc:        "Existing local compiled pack in Strata-data (Instant Activation, Optimized KV)",
-			category:    "coder",
-			tags:        []string{"Strata Pack", "MoE", "Local", "Fast"},
-			recommended: true,
-		},
-		{
-			name:        "Qwen3.8-Flash-Next-Coder-IQ1_M (Local GGUF)",
-			path:        "/home/khing/Downloads/Strata-data/models/coder-IQ1_M",
-			sizeGB:      58.4,
-			minRAMGB:    24.0,
-			desc:        "Existing local GGUF shards in Strata-data directory",
-			category:    "coder",
-			tags:        []string{"GGUF Shards", "Local"},
-			recommended: false,
-		},
-	}
-
-	for _, c := range candidates {
-		if _, err := os.Stat(c.path); err == nil {
-			results = append(results, ModelOption{
-				Name:          c.name,
-				RepoID:        "local/" + filepath.Base(c.path),
-				Filename:      c.path,
-				DownloadURL:   "",
-				SizeGB:        c.sizeGB,
-				MinRAMGB:      c.minRAMGB,
-				Recommended:   c.recommended,
-				Description:   c.desc,
-				Source:        SourceLocal,
-				Category:      c.category,
-				Tags:          c.tags,
-				Quantization:  "IQ1_M",
-				ParamSize:     "MoE",
-				ContextLength: 32768,
-				Installed:     true,
-				HasFiles:      true,
-			})
+	// 1. Scan packs in GetPacksDir()
+	packsDir := GetPacksDir()
+	if entries, err := os.ReadDir(packsDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				packPath := filepath.Join(packsDir, e.Name())
+				if seenPaths[packPath] {
+					continue
+				}
+				hasTok := false
+				if _, err := os.Stat(filepath.Join(packPath, "tokenizer", "vocab.json")); err == nil {
+					hasTok = true
+				}
+				hasIndex := false
+				if _, err := os.Stat(filepath.Join(packPath, "index.txt")); err == nil {
+					hasIndex = true
+				}
+				hasNative := false
+				if _, err := os.Stat(filepath.Join(packPath, "native_experts.txt")); err == nil {
+					hasNative = true
+				}
+				if hasTok || hasIndex || hasNative {
+					seenPaths[packPath] = true
+					sizeGB := calcDirSizeGB(packPath)
+					name := e.Name()
+					results = append(results, ModelOption{
+						Name:          formatPackName(name) + " (Local Pack)",
+						RepoID:        "local/packs/" + name,
+						Filename:      packPath,
+						DownloadURL:   "",
+						SizeGB:        sizeGB,
+						MinRAMGB:      max(16.0, sizeGB*0.8),
+						Recommended:   strings.Contains(strings.ToLower(name), "coder"),
+						Description:   fmt.Sprintf("Existing local compiled pack in Strata-data/packs/%s (Instant Activation, Optimized KV)", name),
+						Source:        SourceLocal,
+						Category:      "coder",
+						Tags:          []string{"Strata Pack", "MoE", "Local", "Fast"},
+						Quantization:  extractQuant(name),
+						ParamSize:     "MoE",
+						ContextLength: 32768,
+						Installed:     true,
+						HasFiles:      true,
+					})
+				}
+			}
 		}
 	}
 
-	// Scan local models/ directory for downloaded .gguf files
-	if entries, err := os.ReadDir("models"); err == nil {
-		reShard := regexp.MustCompile(`-(\d{5})-of-(\d{5})\.gguf$`)
+	// 2. Scan GGUFs in GetModelsDir() and local "models"
+	modelsDirs := []string{GetModelsDir(), "models"}
+	reShard := regexp.MustCompile(`-(\d{5})-of-(\d{5})\.gguf$`)
+
+	for _, mDir := range modelsDirs {
+		entries, err := os.ReadDir(mDir)
+		if err != nil {
+			continue
+		}
 		for _, e := range entries {
-			if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), ".gguf") {
-				// If this is a shard > 1, do not list as a separate broken model
+			fullPath := filepath.Join(mDir, e.Name())
+			if seenPaths[fullPath] {
+				continue
+			}
+
+			if e.IsDir() {
+				subEntries, err := os.ReadDir(fullPath)
+				if err != nil {
+					continue
+				}
+				var firstShard string
+				var totalBytes int64
+				for _, se := range subEntries {
+					if strings.HasSuffix(strings.ToLower(se.Name()), ".gguf") {
+						fi, _ := se.Info()
+						if fi != nil {
+							totalBytes += fi.Size()
+						}
+						if firstShard == "" || strings.Contains(se.Name(), "-00001-of-") {
+							firstShard = filepath.Join(fullPath, se.Name())
+						}
+					}
+				}
+				if firstShard != "" {
+					seenPaths[fullPath] = true
+					sizeGB := float64(totalBytes) / (1024 * 1024 * 1024)
+					results = append(results, ModelOption{
+						Name:          formatPackName(e.Name()) + " (Local GGUF)",
+						RepoID:        "local/models/" + e.Name(),
+						Filename:      fullPath,
+						DownloadURL:   "",
+						SizeGB:        float64(int(sizeGB*10+0.5)) / 10.0,
+						MinRAMGB:      float64(int((sizeGB*0.5+8)*10+0.5)) / 10.0,
+						Description:   fmt.Sprintf("Existing local GGUF shards in Strata-data/models/%s", e.Name()),
+						Source:        SourceLocal,
+						Category:      "coder",
+						Tags:          []string{"GGUF Shards", "Local"},
+						Quantization:  extractQuant(e.Name()),
+						ParamSize:     "MoE",
+						ContextLength: 32768,
+						Installed:     true,
+						HasFiles:      true,
+					})
+				}
+			} else if strings.HasSuffix(strings.ToLower(e.Name()), ".gguf") {
 				sm := reShard.FindStringSubmatch(e.Name())
 				if len(sm) == 3 {
 					idx, _ := strconv.Atoi(sm[1])
@@ -326,9 +432,8 @@ func ScanLocalCustomModels() []ModelOption {
 						continue
 					}
 				}
-
-				filePath := filepath.Join("models", e.Name())
-				shards := FindAllShardPaths(filePath)
+				seenPaths[fullPath] = true
+				shards := FindAllShardPaths(fullPath)
 				var totalBytes int64
 				for _, s := range shards {
 					if fi, err := os.Stat(s); err == nil {
@@ -343,18 +448,18 @@ func ScanLocalCustomModels() []ModelOption {
 				results = append(results, ModelOption{
 					Name:          name + " (Local)",
 					RepoID:        "local/models/" + e.Name(),
-					Filename:      filePath,
+					Filename:      fullPath,
 					DownloadURL:   "",
 					SizeGB:        float64(int(sizeGB*10+0.5)) / 10.0,
 					MinRAMGB:      float64(int((sizeGB*1.2+2)*10+0.5)) / 10.0,
-					Description:   fmt.Sprintf("Downloaded GGUF file in models/ directory (%s)", e.Name()),
+					Description:   fmt.Sprintf("Downloaded GGUF file in Strata-data/models (%s)", e.Name()),
 					Source:        SourceLocal,
 					Category:      "local",
 					Tags:          []string{"Local", "GGUF", "Ready"},
 					Quantization:  extractQuant(e.Name()),
 					ParamSize:     extractParamSize(e.Name()),
 					ContextLength: 32768,
-					Installed:     AllShardsExist(filePath),
+					Installed:     AllShardsExist(fullPath),
 					HasFiles:      true,
 				})
 			}
@@ -544,6 +649,66 @@ func GetCuratedHuggingFaceModels() []ModelOption {
 			Quantization:  "Q4_K_M",
 			ParamSize:     "8B",
 			ContextLength: 32768,
+		},
+		{
+			Name:          "GPT-OSS-20B-MXFP4",
+			RepoID:        "openai/gpt-oss-20b",
+			Filename:      "gpt-oss-20b-mxfp4.gguf",
+			DownloadURL:   "https://huggingface.co/openai/gpt-oss-20b/resolve/main/gpt-oss-20b-mxfp4.gguf",
+			SizeGB:        13.5,
+			MinRAMGB:      16.0,
+			Description:   "OpenAI GPT-OSS 21B MoE (3.6B active) in native MXFP4 quantization with full CoT reasoning",
+			Source:        SourceHuggingFace,
+			Category:      "reasoning",
+			Tags:          []string{"OpenAI", "GPT-OSS", "Reasoning", "MoE", "MXFP4", "20B"},
+			Quantization:  "MXFP4",
+			ParamSize:     "21B MoE (3.6B Active)",
+			ContextLength: 131072,
+		},
+		{
+			Name:          "GPT-OSS-20B-UD-Q4_K_XL",
+			RepoID:        "unsloth/gpt-oss-20b-GGUF",
+			Filename:      "gpt-oss-20b-UD-Q4_K_XL.gguf",
+			DownloadURL:   "https://huggingface.co/unsloth/gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-UD-Q4_K_XL.gguf",
+			SizeGB:        11.9,
+			MinRAMGB:      16.0,
+			Description:   "OpenAI GPT-OSS-20B Unsloth Dynamic Q4_K_XL quantization (maximum 4-bit fidelity, 131k context)",
+			Source:        SourceHuggingFace,
+			Category:      "reasoning",
+			Tags:          []string{"OpenAI", "Unsloth", "UD-Q4_K_XL", "21B MoE", "Dynamic", "Reasoning"},
+			Quantization:  "UD-Q4_K_XL",
+			ParamSize:     "21B MoE (3.6B Active)",
+			ContextLength: 131072,
+		},
+		{
+			Name:          "GPT-OSS-20B-Q4_K_M",
+			RepoID:        "unsloth/gpt-oss-20b-GGUF",
+			Filename:      "gpt-oss-20b-Q4_K_M.gguf",
+			DownloadURL:   "https://huggingface.co/unsloth/gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-Q4_K_M.gguf",
+			SizeGB:        11.6,
+			MinRAMGB:      16.0,
+			Description:   "OpenAI GPT-OSS-20B balanced Q4_K_M quantization from Unsloth (131k context, CoT reasoning)",
+			Source:        SourceHuggingFace,
+			Category:      "reasoning",
+			Tags:          []string{"OpenAI", "Unsloth", "Q4_K_M", "21B MoE", "Reasoning"},
+			Quantization:  "Q4_K_M",
+			ParamSize:     "21B MoE (3.6B Active)",
+			ContextLength: 131072,
+		},
+		{
+			Name:          "GPT-OSS-20B-Q2_K",
+			RepoID:        "unsloth/gpt-oss-20b-GGUF",
+			Filename:      "gpt-oss-20b-Q2_K.gguf",
+			DownloadURL:   "https://huggingface.co/unsloth/gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-Q2_K.gguf",
+			SizeGB:        11.5,
+			MinRAMGB:      16.0,
+			Description:   "OpenAI GPT-OSS-20B ultra-compact 2-bit quantization from Unsloth",
+			Source:        SourceHuggingFace,
+			Category:      "reasoning",
+			Tags:          []string{"OpenAI", "Unsloth", "Q2_K", "21B MoE", "Compact"},
+			Quantization:  "Q2_K",
+			ParamSize:     "21B MoE (3.6B Active)",
+			ContextLength: 131072,
 		},
 
 		// --- General & Lightweight ---
@@ -1253,6 +1418,8 @@ func IsSafeModelPath(target string) bool {
 	allowedDirs := []string{
 		mustAbs("models"),
 		mustAbs("packs"),
+		GetModelsDir(),
+		GetPacksDir(),
 	}
 
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
@@ -1285,8 +1452,11 @@ func DeleteModelFiles(target string) (int64, []string, error) {
 
 	// Resolve path candidate
 	candidates := []string{target}
-	if !filepath.IsAbs(target) && !strings.HasPrefix(target, "models/") && !strings.HasPrefix(target, "packs/") {
-		candidates = append([]string{filepath.Join("models", target)}, candidates...)
+	if !filepath.IsAbs(target) {
+		candidates = append([]string{
+			filepath.Join(GetModelsDir(), target),
+			filepath.Join("models", target),
+		}, candidates...)
 	}
 
 	var resolvedPath string

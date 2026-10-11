@@ -472,3 +472,97 @@ func TestCASEndpoints(t *testing.T) {
 	}
 }
 
+func TestModelSwitchEndpoint(t *testing.T) {
+	srv := setupTestServer()
+	ts := httptest.NewServer(srv.Router())
+	defer ts.Close()
+
+	// 1. Switch to a new model with abliterate enabled
+	switchPayload := `{
+		"model": "gpt-oss-20b",
+		"abliterate": true,
+		"abliteration_strength": 1.5
+	}`
+	resp, err := http.Post(ts.URL+"/api/models/switch", "application/json", strings.NewReader(switchPayload))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("failed POST /api/models/switch: %v", err)
+	}
+
+	var switchRes map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&switchRes)
+	if switchRes["status"] != "switching" || switchRes["model"] != "gpt-oss-20b" {
+		t.Errorf("unexpected switch response: %v", switchRes)
+	}
+
+	if srv.Config.ModelName != "gpt-oss-20b" {
+		t.Errorf("expected server model name to be updated to gpt-oss-20b, got %s", srv.Config.ModelName)
+	}
+
+	if srv.ConfigManager != nil {
+		cfg := srv.ConfigManager.Get()
+		if !cfg.Abliterate {
+			t.Errorf("expected abliterate to be true in config manager")
+		}
+		if cfg.AbliterationStrength != 1.5 {
+			t.Errorf("expected abliteration_strength to be 1.5, got %v", cfg.AbliterationStrength)
+		}
+		if cfg.LastModel != "gpt-oss-20b" {
+			t.Errorf("expected LastModel to be gpt-oss-20b, got %s", cfg.LastModel)
+		}
+	}
+
+	// 2. Verify /health reflects the new model and uncensor settings
+	hResp, err := http.Get(ts.URL + "/health")
+	if err != nil || hResp.StatusCode != http.StatusOK {
+		t.Fatalf("failed GET /health: %v", err)
+	}
+	var health map[string]interface{}
+	json.NewDecoder(hResp.Body).Decode(&health)
+	if health["model"] != "gpt-oss-20b" {
+		t.Errorf("expected health.model to be gpt-oss-20b, got %v", health["model"])
+	}
+	if health["abliterate"] != true {
+		t.Errorf("expected health.abliterate to be true, got %v", health["abliterate"])
+	}
+	if health["abliteration_strength"] != 1.5 {
+		t.Errorf("expected health.abliteration_strength to be 1.5, got %v", health["abliteration_strength"])
+	}
+}
+
+func TestLastSessionConfigRestore(t *testing.T) {
+	// Create temporary directory for isolated config testing
+	tmpDir, err := os.MkdirTemp("", "strata-last-session-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	origWd, _ := os.Getwd()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir to temp dir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	// Write strata-config.json with LastConfigFile and LastModel
+	dummyConfig := `{
+		"last_config_file": "strata-gpt_oss_20b.json",
+		"last_model": "GPT-OSS-20B-UD-Q4_K_XL",
+		"max_context": 65536
+	}`
+	if err := os.WriteFile("strata-config.json", []byte(dummyConfig), 0644); err != nil {
+		t.Fatalf("failed to write dummy config: %v", err)
+	}
+
+	// Initialize server with empty config file
+	srv := NewStrataServer(ServerConfig{})
+	if srv.Config.ConfigFile != "strata-gpt_oss_20b.json" {
+		t.Errorf("expected ConfigFile to be restored to strata-gpt_oss_20b.json, got %s", srv.Config.ConfigFile)
+	}
+	if srv.Config.ModelName != "GPT-OSS-20B-UD-Q4_K_XL" {
+		t.Errorf("expected ModelName to be restored to GPT-OSS-20B-UD-Q4_K_XL, got %s", srv.Config.ModelName)
+	}
+	if srv.Config.MaxContext != 65536 {
+		t.Errorf("expected MaxContext to be 65536, got %d", srv.Config.MaxContext)
+	}
+}
+

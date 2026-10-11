@@ -52,6 +52,8 @@ type StrataConfig struct {
 	Abliterate            bool                   `json:"abliterate,omitempty"`
 	AbliterationStrength  float64                `json:"abliteration_strength,omitempty"`
 	AbliterationVector    string                 `json:"abliteration_vector,omitempty"`
+	LastConfigFile        string                 `json:"last_config_file,omitempty"`
+	LastModel             string                 `json:"last_model,omitempty"`
 	Sampling              SamplingConfig         `json:"sampling"`
 	MCPServers            map[string]interface{} `json:"mcp_servers,omitempty"`
 	AllowedHosts          []string               `json:"allowed_hosts,omitempty"`
@@ -176,6 +178,11 @@ type ConfigManager struct {
 }
 
 func NewConfigManager(filePath string) *ConfigManager {
+	if filePath == "" {
+		if _, err := os.Stat("strata-config.json"); err == nil {
+			filePath = "strata-config.json"
+		}
+	}
 	cm := &ConfigManager{
 		filePath: filePath,
 		config:   DefaultConfig(),

@@ -368,7 +368,16 @@
           <input class="st-input" id="setup-custom-url" type="text" placeholder="Auto-filled from selection or enter custom URL">
 
           <label for="setup-dest-path">Local Destination Path<code>Storage location</code></label>
-          <input class="st-input" id="setup-dest-path" type="text" placeholder="models/qwen3.8-flash-next-q8_0.gguf">
+          <input class="st-input" id="setup-dest-path" type="text" placeholder="Strata-data/models/qwen3.8-flash-next-q8_0.gguf">
+
+          <div class="toggle-row" style="margin-top: var(--st-s-3); margin-bottom: var(--st-s-2);">
+            <span>Uncensor Model (Abliteration)<br><span class="muted small">Inference-time refusal suppression without modifying weights</span></span>
+            <button class="st-toggle" id="setup-abliterate" role="switch" aria-checked="false" aria-label="Uncensor Model"></button>
+          </div>
+          <div class="st-field" id="setup-abliterate-strength-row" hidden>
+            <label class="st-label" for="setup-abliterate-strength">Abliteration Strength<code>--abliteration-strength</code> <output id="o-setup-abliterate-strength">1.00</output></label>
+            <input class="st-slider" type="range" id="setup-abliterate-strength" min="0.1" max="2.0" step="0.05" value="1.0">
+          </div>
         </form>
 
         <div class="setup-actions">

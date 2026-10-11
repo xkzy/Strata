@@ -25,6 +25,7 @@ type genSpec struct {
 	RawPrompt           string // /v1/completions: the prompt is used as given, no template
 	Raw                 bool
 	Sampling            engineipc.SamplingParams
+	ExplicitAbliterate  *bool
 	MaxTokens           int // 0 = not given
 	Stops               []string
 	Scope               multitenant.SecurityScope // tenant / user / session of the caller (headers + body)
@@ -153,6 +154,22 @@ func (s *StrataServer) startGeneration(ctx context.Context, spec genSpec) (<-cha
 	s.eng.mu.RLock()
 	stopIDs := s.eng.stopIDs
 	s.eng.mu.RUnlock()
+
+	if spec.ExplicitAbliterate != nil {
+		spec.Sampling.Abliterate = *spec.ExplicitAbliterate
+	} else if !spec.Sampling.Abliterate && s.ConfigManager != nil {
+		cfg := s.ConfigManager.Get()
+		if cfg.Abliterate {
+			spec.Sampling.Abliterate = true
+			if spec.Sampling.AbliterationStrength == 0 && cfg.AbliterationStrength > 0 {
+				spec.Sampling.AbliterationStrength = cfg.AbliterationStrength
+			}
+		}
+	}
+	if spec.Sampling.Abliterate && spec.Sampling.AbliterationStrength == 0 {
+		spec.Sampling.AbliterationStrength = 1.0
+	}
+
 	engOut := make(chan engineipc.TokenEvent, 64)
 	go s.EngineIPC.GenerateIDs(ctx, ids, spec.Sampling, maxNew, stopIDs, spec.Stops, engOut)
 
@@ -325,9 +342,13 @@ func (spec *genSpec) setDebug(r *http.Request) {
 // setAbliterate parses X-Strata-Abliterate and X-Strata-Abliteration-Strength headers.
 func (spec *genSpec) setAbliterate(r *http.Request) {
 	if h := r.Header.Get("X-Strata-Abliterate"); h != "" {
-		spec.Sampling.Abliterate = h == "1" || strings.EqualFold(h, "true") || strings.EqualFold(h, "on")
+		v := h == "1" || strings.EqualFold(h, "true") || strings.EqualFold(h, "on")
+		spec.Sampling.Abliterate = v
+		spec.ExplicitAbliterate = &v
 	} else if h := r.Header.Get("X-Abliterate"); h != "" {
-		spec.Sampling.Abliterate = h == "1" || strings.EqualFold(h, "true") || strings.EqualFold(h, "on")
+		v := h == "1" || strings.EqualFold(h, "true") || strings.EqualFold(h, "on")
+		spec.Sampling.Abliterate = v
+		spec.ExplicitAbliterate = &v
 	}
 	if h := r.Header.Get("X-Strata-Abliteration-Strength"); h != "" {
 		if v, err := strconv.ParseFloat(h, 64); err == nil && v >= 0 {
