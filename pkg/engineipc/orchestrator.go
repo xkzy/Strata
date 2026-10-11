@@ -500,6 +500,13 @@ func (eo *EngineOrchestrator) Status() (State, string) {
 	return eo.state, eo.reason
 }
 
+// State returns the current State enum of the engine
+func (eo *EngineOrchestrator) State() State {
+	eo.mu.RLock()
+	defer eo.mu.RUnlock()
+	return eo.state
+}
+
 func (eo *EngineOrchestrator) IsAlive() bool {
 	st, _ := eo.Status()
 	return st == StateReady
