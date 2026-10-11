@@ -29,6 +29,7 @@ import (
 	"strata/pkg/resourcemanager"
 	"strata/pkg/responses"
 	"strata/pkg/runconfig"
+	"strata/pkg/session"
 	"strata/pkg/structured"
 	"strata/pkg/telemetry"
 	"strata/pkg/virtualcontext"
@@ -48,6 +49,7 @@ type ServerConfig struct {
 	WindowTokens  int    // physical context window the runtime fills (default 32768, at most the engine's context)
 	BindHost      string // address the HTTP server listens on; empty is treated as loopback
 	APIMonitor    bool   // keep the last requests' prompts and answers for the standalone Monitor page (opt-in)
+	SessionDir    string // directory for persistent chat session storage
 }
 
 type StrataServer struct {
@@ -65,6 +67,7 @@ type StrataServer struct {
 	MultiTenant     *multitenant.MultiTenantManager
 	VirtualContext  *virtualcontext.VirtualContextManager
 	Memory          *virtualcontext.ConversationMemory // per-session recall for the tool interception
+	SessionStore    *session.Store                     // persistent disk-backed web chat sessions
 	started         time.Time
 	AntiLoop        *antiloop.AntiLoopManager
 	ResourceManager *resourcemanager.ResourceManager
@@ -174,6 +177,15 @@ func NewStrataServer(cfg ServerConfig) *StrataServer {
 		}
 	}
 
+	sessDir := cfg.SessionDir
+	if sessDir == "" {
+		sessDir = filepath.Join(installer.GetDataDir(), "sessions")
+	}
+	sessStore, err := session.NewStore(sessDir)
+	if err != nil {
+		sessStore, _ = session.NewStore(filepath.Join(os.TempDir(), "strata-sessions"))
+	}
+
 	s := &StrataServer{
 		Config:          cfg,
 		Registry:        reg,
@@ -189,6 +201,7 @@ func NewStrataServer(cfg ServerConfig) *StrataServer {
 		MultiTenant:     multitenant.NewMultiTenantManager(),
 		VirtualContext:  vc,
 		Memory:          virtualcontext.NewConversationMemory(0, 0),
+		SessionStore:    sessStore,
 		started:         time.Now(),
 		AntiLoop:        antiloop.Instance(),
 		ResourceManager: resourcemanager.NewResourceManager(),
@@ -279,7 +292,10 @@ func (s *StrataServer) Router() http.Handler {
 	mux.HandleFunc("/v1/strata/hallucination/claims", s.handleHallucinationClaims)
 	mux.HandleFunc("/v1/strata/hallucination/metrics", s.handleHallucinationMetrics)
 
-	// Multi-Tenant & Session Management
+	// Multi-Tenant & Web Chat Session Management
+	mux.HandleFunc("/api/sessions", s.handleSessions)
+	mux.HandleFunc("/api/sessions/", s.handleSessionDetail)
+	mux.HandleFunc("/api/strata/sessions/delete", s.handleSessionDelete)
 	mux.HandleFunc("/v1/strata/sessions", s.handleSessions)
 	mux.HandleFunc("/v1/strata/sessions/fork", s.handleSessionFork)
 	mux.HandleFunc("/v1/strata/sessions/delete", s.handleSessionDelete)
@@ -389,7 +405,7 @@ func (s *StrataServer) corsMiddleware(next http.Handler) http.Handler {
 			}
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Tenant-ID, X-User-ID, X-Session-ID")
 		}
 		if r.Method == http.MethodOptions {
@@ -414,7 +430,7 @@ func (s *StrataServer) corsMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
-		if r.Method == http.MethodPost || r.Method == http.MethodPut {
+		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
 			if limit := bodyLimit(r.URL.Path); limit > 0 {
 				r.Body = http.MaxBytesReader(w, r.Body, limit)
 			}
@@ -432,6 +448,8 @@ func bodyLimit(path string) int64 {
 	case path == "/v1/chat/completions", path == "/chat/completions", path == "/v1/completions", path == "/completions", path == "/v1/messages", path == "/messages",
 		path == "/v1/messages/count_tokens", strings.HasPrefix(path, "/v1/responses"):
 		return 0
+	case strings.HasPrefix(path, "/api/sessions"), strings.HasPrefix(path, "/v1/strata/sessions"):
+		return 32 << 20
 	}
 	return 1 << 20
 }
@@ -1019,42 +1037,6 @@ func (s *StrataServer) handleLogicVerifyMetrics(w http.ResponseWriter, r *http.R
 // ---------------------------------------------------------------------------
 // Chat, Completions & Messages Handlers (OpenAI & Anthropic Compatible)
 // ---------------------------------------------------------------------------
-
-func (s *StrataServer) handleSessions(w http.ResponseWriter, r *http.Request) {
-	scope := multitenant.FromHeaders(r.Header, nil)
-	s.MultiTenant.RegisterSession(scope)
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status":     "active",
-		"session_id": scope.SessionID,
-	})
-}
-
-func (s *StrataServer) handleSessionFork(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		ParentSessionID string `json:"parent_session_id"`
-		NewSessionID    string `json:"new_session_id"`
-	}
-	json.NewDecoder(r.Body).Decode(&body)
-	scope := multitenant.DefaultSecurityScope()
-	scope.SessionID = body.NewSessionID
-	s.MultiTenant.RegisterSession(scope)
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status":     "forked",
-		"session_id": scope.SessionID,
-	})
-}
-
-func (s *StrataServer) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		SessionID string `json:"session_id"`
-	}
-	json.NewDecoder(r.Body).Decode(&body)
-	deleted := s.MultiTenant.DeleteSession(body.SessionID)
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"deleted":    deleted,
-		"session_id": body.SessionID,
-	})
-}
 
 func (s *StrataServer) handleTenantMetrics(w http.ResponseWriter, r *http.Request) {
 	scope := multitenant.FromHeaders(r.Header, nil)

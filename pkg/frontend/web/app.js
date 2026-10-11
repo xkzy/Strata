@@ -929,6 +929,119 @@ function timeSince(t) {
   return new Date(t).toLocaleDateString([], {month: "short", day: "numeric"});
 }
 
+function syncSessionToServer(sess) {
+  if (!sess || !sess.id) return;
+  const payload = {
+    id: sess.id,
+    title: sess.title || "New Chat",
+    created_at: sess.createdAt || sess.created_at || Date.now(),
+    updated_at: sess.updatedAt || sess.updated_at || Date.now(),
+    model: sess.model || getSelectedModel() || (health && health.model) || "",
+    messages: (sess.messages || []).map((m) => ({
+      role: m.role,
+      text: m.text || "",
+      reasoning: m.reasoning || "",
+      time: m.time || Date.now(),
+      meta: m.meta || "",
+      stopped: !!m.stopped,
+      error: m.error || "",
+      images: (m.images || []).map((i) => ({name: i.name})),
+      files: (m.files || []).map((f) => ({name: f.name})),
+      tools: m.tools || [],
+    })),
+  };
+  fetch("api/sessions", {
+    method: "POST",
+    headers: headers(true),
+    body: JSON.stringify(payload),
+  }).catch(() => {});
+}
+
+async function loadSessionMessages(id) {
+  try {
+    const r = await fetch(`api/sessions/${encodeURIComponent(id)}`, { headers: headers() });
+    if (!r.ok) return;
+    const full = await r.json();
+    const target = sessions.find((s) => s.id === id);
+    if (target && full && Array.isArray(full.messages)) {
+      target.messages = full.messages;
+      if (id === activeSessionId) {
+        messages = full.messages;
+        renderChat();
+      }
+      saveSessions(false, false);
+    }
+  } catch (e) {
+    // offline fallback
+  }
+}
+
+async function syncSessionsFromServer() {
+  try {
+    const r = await fetch("api/sessions", { headers: headers() });
+    if (!r.ok) return;
+    const data = await r.json();
+    const serverList = (data && data.sessions) || [];
+    if (!Array.isArray(serverList) || serverList.length === 0) {
+      if (sessions.length > 0 && sessions.some((s) => s.messages && s.messages.length > 0)) {
+        for (const s of sessions) {
+          syncSessionToServer(s);
+        }
+      }
+      return;
+    }
+
+    const localMap = new Map(sessions.map((s) => [s.id, s]));
+    const merged = [];
+
+    for (const ss of serverList) {
+      const local = localMap.get(ss.id);
+      if (local) {
+        merged.push({
+          id: ss.id,
+          title: ss.title || local.title || "New Chat",
+          createdAt: ss.created_at || ss.createdAt || local.createdAt || Date.now(),
+          updatedAt: ss.updated_at || ss.updatedAt || local.updatedAt || Date.now(),
+          messages: local.messages && local.messages.length > 0 ? local.messages : [],
+          model: ss.model || local.model,
+        });
+        localMap.delete(ss.id);
+      } else {
+        merged.push({
+          id: ss.id,
+          title: ss.title || "New Chat",
+          createdAt: ss.created_at || ss.createdAt || Date.now(),
+          updatedAt: ss.updated_at || ss.updatedAt || Date.now(),
+          messages: [],
+          model: ss.model,
+        });
+      }
+    }
+
+    for (const [_, unpushed] of localMap) {
+      merged.push(unpushed);
+      syncSessionToServer(unpushed);
+    }
+
+    sessions = merged;
+    if (!sessions.some((s) => s.id === activeSessionId)) {
+      activeSessionId = sessions[0] ? sessions[0].id : ("sess-" + randomId());
+    }
+
+    const currentActive = sessions.find((s) => s.id === activeSessionId);
+    if (currentActive && (!currentActive.messages || currentActive.messages.length === 0)) {
+      await loadSessionMessages(currentActive.id);
+    } else if (currentActive) {
+      messages = currentActive.messages || [];
+      renderChat();
+    }
+
+    saveSessions(true, false);
+  } catch (e) {
+    // offline fallback
+  }
+}
+
 function initSessions() {
   const storedList = store.get("sessions_list", null);
   if (Array.isArray(storedList) && storedList.length > 0) {
@@ -955,15 +1068,18 @@ function initSessions() {
 
   const active = sessions.find((s) => s.id === activeSessionId) || sessions[0];
   messages = active.messages || [];
-  saveSessions(true);
+  saveSessions(true, true);
 
   if (store.get("sidebar_collapsed", false)) {
     const sb = $("chat-sidebar");
     if (sb) sb.classList.add("collapsed");
   }
+
+  // Two-way server sync
+  syncSessionsFromServer();
 }
 
-function saveSessions(renderList = true) {
+function saveSessions(renderList = true, pushServer = true) {
   const active = sessions.find((s) => s.id === activeSessionId);
   if (active) {
     active.messages = messages.map((m) => ({
@@ -988,10 +1104,13 @@ function saveSessions(renderList = true) {
     $("session-count-label").textContent = `${sessions.length} chat${sessions.length === 1 ? "" : "s"}`;
   }
   if (renderList) renderSessionList();
+  if (pushServer && active) {
+    syncSessionToServer(active);
+  }
 }
 
 function saveChat() {
-  saveSessions(true);
+  saveSessions(true, true);
 }
 
 function renderSessionList() {
@@ -1050,23 +1169,29 @@ function createNewSession() {
   messages = [];
   attachments = [];
   renderAttachments();
-  saveSessions(true);
+  saveSessions(true, true);
   renderChat();
   $("input").value = "";
   autosize();
   $("input").focus();
 }
 
-function switchSession(id) {
+async function switchSession(id) {
   if (id === activeSessionId) return;
   if (busy) { toast("warn", "Still writing", "Stop the current generation first."); return; }
   const target = sessions.find((s) => s.id === id);
   if (!target) return;
   activeSessionId = target.id;
-  messages = target.messages || [];
+  if (!target.messages || target.messages.length === 0) {
+    messages = [];
+    renderChat();
+    await loadSessionMessages(id);
+  } else {
+    messages = target.messages || [];
+  }
   attachments = [];
   renderAttachments();
-  saveSessions(true);
+  saveSessions(true, false);
   renderChat();
   $("input").focus();
 }
@@ -1093,9 +1218,10 @@ function deleteSession(id, e) {
     activeSessionId = sessions[0].id;
     messages = sessions[0].messages || [];
   }
-  saveSessions(true);
+  saveSessions(true, false);
   renderChat();
-  // Server-side cleanup notification (non-blocking)
+  // Server-side cleanup (non-blocking)
+  fetch(`api/sessions/${encodeURIComponent(id)}`, { method: "DELETE", headers: headers() }).catch(() => {});
   fetch(`api/strata/sessions/delete?id=${encodeURIComponent(id)}`, { method: "POST", headers: headers() }).catch(() => {});
   toast("info", "Chat deleted");
 }
@@ -1108,7 +1234,7 @@ function renameSession(id) {
   if (name !== null && name.trim()) {
     s.title = name.trim();
     s.updatedAt = Date.now();
-    saveSessions(true);
+    saveSessions(true, true);
     toast("success", "Chat renamed");
   }
 }
@@ -1129,8 +1255,14 @@ function forkSession() {
   sessions.unshift(forked);
   activeSessionId = forked.id;
   messages = forked.messages;
-  saveSessions(true);
+  saveSessions(true, true);
   renderChat();
+  // Call server fork API as well
+  fetch(`api/sessions/${encodeURIComponent(active.id)}/fork`, {
+    method: "POST",
+    headers: headers(true),
+    body: JSON.stringify({ new_session_id: forked.id, new_title: forked.title }),
+  }).catch(() => {});
   toast("success", "Chat Forked", "Created a new branch from this conversation.");
 }
 
@@ -1146,8 +1278,9 @@ function clearAllSessions() {
   sessions = [fresh];
   activeSessionId = fresh.id;
   messages = [];
-  saveSessions(true);
+  saveSessions(true, false);
   renderChat();
+  fetch("api/sessions", { method: "DELETE", headers: headers() }).catch(() => {});
   toast("info", "All chats cleared");
 }
 function timeStr(t) { return new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
