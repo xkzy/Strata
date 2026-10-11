@@ -40,9 +40,17 @@ main { flex: 1; min-height: 0; display: flex; }
 
 .chat-main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
 .chat-topbar { display: flex; align-items: center; gap: var(--st-s-3); padding: 4px var(--st-s-4); border-bottom: 1px solid var(--st-line-soft); background: var(--st-surface); flex: none; min-height: 38px; }
+.sidebar-toggle-btn { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: var(--st-fs-xs); font-weight: var(--st-fw-bold); border-radius: var(--st-r-md); color: var(--st-ink); background: var(--st-surface-2); border: 1px solid var(--st-line); cursor: pointer; transition: all var(--st-dur); flex: none; }
+.sidebar-toggle-btn:hover { background: color-mix(in srgb, var(--st-accent) 12%, var(--st-surface-2)); border-color: var(--st-accent); }
+.sidebar-toggle-btn.active { background: color-mix(in srgb, var(--st-accent) 16%, var(--st-surface-2)); border-color: var(--st-accent); color: var(--st-accent); }
+.sidebar-toggle-text { font-size: var(--st-fs-xs); font-weight: var(--st-fw-bold); }
 .active-session-info { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 70%; }
 .active-session-title { font-size: var(--st-fs-sm); font-weight: var(--st-fw-bold); color: var(--st-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .active-session-title:hover { color: var(--st-accent); }
+
+@media (max-width: 768px) {
+  .chat-sidebar { position: absolute; top: 0; bottom: 0; left: 0; z-index: 30; box-shadow: 4px 0 20px rgba(0,0,0,0.2); }
+}
 
 .chat-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .chat { max-width: 860px; margin: 0 auto; padding: var(--st-s-6) var(--st-s-6) var(--st-s-6); display: flex;

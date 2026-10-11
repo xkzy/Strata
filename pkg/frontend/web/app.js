@@ -1070,9 +1070,14 @@ function initSessions() {
   messages = active.messages || [];
   saveSessions(true, true);
 
-  if (store.get("sidebar_collapsed", false)) {
-    const sb = $("chat-sidebar");
-    if (sb) sb.classList.add("collapsed");
+  const sb = $("chat-sidebar");
+  if (sb) {
+    if (store.get("sidebar_collapsed", false)) {
+      sb.classList.add("collapsed");
+    } else {
+      sb.classList.remove("collapsed");
+    }
+    updateSidebarToggleBtn();
   }
 
   // Two-way server sync
@@ -1588,12 +1593,23 @@ $("input").addEventListener("input", autosize);
 $("new-btn").onclick = () => createNewSession();
 if ($("sidebar-new-btn")) $("sidebar-new-btn").onclick = () => createNewSession();
 
+function updateSidebarToggleBtn() {
+  const sb = $("chat-sidebar");
+  const btn = $("sidebar-open-btn");
+  if (!sb || !btn) return;
+  const isCollapsed = sb.classList.contains("collapsed");
+  btn.classList.toggle("active", !isCollapsed);
+  btn.setAttribute("aria-expanded", String(!isCollapsed));
+  btn.title = isCollapsed ? "Show chat history sidebar (Ctrl+B)" : "Hide chat history sidebar (Ctrl+B)";
+}
+
 if ($("sidebar-close-btn")) {
   $("sidebar-close-btn").onclick = () => {
     const sb = $("chat-sidebar");
     if (sb) {
       sb.classList.add("collapsed");
       store.set("sidebar_collapsed", true);
+      updateSidebarToggleBtn();
     }
   };
 }
@@ -1604,9 +1620,26 @@ if ($("sidebar-open-btn")) {
     if (sb) {
       sb.classList.toggle("collapsed");
       store.set("sidebar_collapsed", sb.classList.contains("collapsed"));
+      updateSidebarToggleBtn();
     }
   };
 }
+
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && (e.key === "b" || e.key === "B")) {
+    const activeEl = document.activeElement;
+    if (activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA") && activeEl.id !== "session-search-input") {
+      if (activeEl.selectionStart !== activeEl.selectionEnd) return;
+    }
+    e.preventDefault();
+    const sb = $("chat-sidebar");
+    if (sb) {
+      sb.classList.toggle("collapsed");
+      store.set("sidebar_collapsed", sb.classList.contains("collapsed"));
+      updateSidebarToggleBtn();
+    }
+  }
+});
 
 if ($("active-session-title")) $("active-session-title").onclick = () => renameSession(activeSessionId);
 if ($("rename-session-btn")) $("rename-session-btn").onclick = () => renameSession(activeSessionId);
