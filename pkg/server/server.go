@@ -699,12 +699,33 @@ func (s *StrataServer) handleModelSwitch(w http.ResponseWriter, r *http.Request)
 
 	// 3. Resolve target config file and model name
 	targetConfig := req.Config
+	if targetConfig != "" {
+		if realPath, sp, err := resolveEngineConfigFile(targetConfig); err == nil {
+			targetConfig = realPath
+			if sp.ModelName != "" {
+				targetModel = sp.ModelName
+			}
+		} else {
+			if fi, serr := os.Stat(targetConfig); serr == nil && fi.IsDir() {
+				s.Config.ModelPath = targetConfig
+			}
+			targetConfig = ""
+		}
+	}
+
 	if targetConfig == "" {
 		matches, _ := filepath.Glob("strata-*.json")
 		cleanTarget := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(targetModel, " ", "_"), "/", "_"))
+		cleanTarget = strings.TrimSuffix(cleanTarget, "_(local_pack)")
+		cleanTarget = strings.ReplaceAll(cleanTarget, "-", "_")
+
 		for _, m := range matches {
 			if sp, err := readEngineSpec(m); err == nil {
-				if strings.EqualFold(sp.ModelName, targetModel) || strings.Contains(strings.ToLower(m), cleanTarget) {
+				pack := argValue(sp.Args, "--pack")
+				cleanM := strings.ToLower(strings.ReplaceAll(m, "-", "_"))
+				if strings.EqualFold(sp.ModelName, targetModel) ||
+					(cleanTarget != "" && (strings.Contains(cleanM, cleanTarget) || strings.Contains(cleanTarget, strings.TrimSuffix(cleanM, ".json")))) ||
+					(pack != "" && (pack == req.Config || strings.EqualFold(filepath.Base(pack), filepath.Base(req.Config)))) {
 					targetConfig = m
 					if sp.ModelName != "" {
 						targetModel = sp.ModelName
@@ -722,10 +743,6 @@ func (s *StrataServer) handleModelSwitch(w http.ResponseWriter, r *http.Request)
 					s.Config.MaxContext = entry.MaxContext
 				}
 			}
-		}
-	} else {
-		if sp, err := readEngineSpec(targetConfig); err == nil && sp.ModelName != "" {
-			targetModel = sp.ModelName
 		}
 	}
 

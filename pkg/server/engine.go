@@ -33,6 +33,9 @@ type engineSpec struct {
 }
 
 func readEngineSpec(path string) (*engineSpec, error) {
+	if fi, err := os.Stat(path); err == nil && fi.IsDir() {
+		return nil, fmt.Errorf("%s is a directory, not an engine config file", path)
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -47,15 +50,54 @@ func readEngineSpec(path string) (*engineSpec, error) {
 	return &sp, nil
 }
 
+// resolveEngineConfigFile turns a file path or pack/model directory into a valid engineSpec and config file path.
+func resolveEngineConfigFile(path string) (string, *engineSpec, error) {
+	if path == "" {
+		return "", nil, nil
+	}
+	fi, err := os.Stat(path)
+	if err == nil && fi.IsDir() {
+		baseName := filepath.Base(path)
+		cands := []string{
+			fmt.Sprintf("strata-%s.json", strings.ToLower(baseName)),
+			fmt.Sprintf("strata-%s.json", strings.ToLower(strings.ReplaceAll(baseName, "_", "-"))),
+			fmt.Sprintf("strata-%s.json", strings.ToLower(strings.ReplaceAll(baseName, "-", "_"))),
+		}
+		for _, cand := range cands {
+			if sp, err := readEngineSpec(cand); err == nil {
+				return cand, sp, nil
+			}
+		}
+		if matches, err := filepath.Glob("strata-*.json"); err == nil {
+			for _, m := range matches {
+				if sp, err := readEngineSpec(m); err == nil {
+					if pack := argValue(sp.Args, "--pack"); pack == path || strings.EqualFold(filepath.Base(pack), baseName) {
+						return m, sp, nil
+					}
+				}
+			}
+		}
+		return "", nil, fmt.Errorf("%s is a directory, not an engine config file", path)
+	}
+	sp, err := readEngineSpec(path)
+	if err != nil {
+		return "", nil, err
+	}
+	return path, sp, nil
+}
+
 // findEngineSpec picks the engine config: the --config file, else the last session config or newest strata-*.json.
 func findEngineSpec(configFile string, lastConfigFile string) (*engineSpec, string, error) {
 	if configFile != "" {
-		sp, err := readEngineSpec(configFile)
-		return sp, configFile, err
+		if realPath, sp, err := resolveEngineConfigFile(configFile); err == nil {
+			return sp, realPath, nil
+		} else if !os.IsNotExist(err) && !strings.Contains(err.Error(), "is a directory") {
+			return nil, configFile, err
+		}
 	}
 	if lastConfigFile != "" {
-		if sp, err := readEngineSpec(lastConfigFile); err == nil {
-			return sp, lastConfigFile, nil
+		if realPath, sp, err := resolveEngineConfigFile(lastConfigFile); err == nil {
+			return sp, realPath, nil
 		}
 	}
 	matches, _ := filepath.Glob("strata-*.json")
