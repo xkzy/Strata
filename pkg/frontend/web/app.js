@@ -1622,11 +1622,12 @@ function filterAndRenderModels(recommended) {
   const filtered = allSetupModels.filter((m) => {
     // 1. Category Filter
     if (activeSetupCat === "recommended" && !m.recommended) return false;
+    if (activeSetupCat === "mimo" && m.category !== "mimo" && !(m.name || "").toLowerCase().includes("mimo") && !(m.tags || []).some((t) => t.toLowerCase() === "mimo")) return false;
     if (activeSetupCat === "huggingface" && m.source !== "huggingface") return false;
     if (activeSetupCat === "ollama" && m.source !== "ollama") return false;
     if (activeSetupCat === "local" && m.source !== "local") return false;
     if (activeSetupCat === "coder" && m.category !== "coder") return false;
-    if (activeSetupCat === "reasoning" && m.category !== "reasoning") return false;
+    if (activeSetupCat === "reasoning" && m.category !== "reasoning" && !(m.tags || []).some((t) => t.toLowerCase() === "reasoning")) return false;
     if (activeSetupCat === "lightweight" && m.category !== "lightweight") return false;
 
     // 2. Search Query Filter

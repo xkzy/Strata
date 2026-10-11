@@ -4498,7 +4498,12 @@ def main() -> int:
                            "of its experts, " + ("the rest stays in RAM)" if low_ram_resident(m, ram, low_ram_vram(gpu))
                                                  else "the rest is read from the SSD as needed)"))
             any_fits = any_fits or not verdict.startswith("does not fit")
-            say(f"  {m:8s} needs ~{d['ram_gb']} GB RAM: {verdict}")
+            fam_title = ""
+            for f in d.get("families", ()):
+                if f in FAMILIES and f != "qwen":
+                    fam_title = f" ({FAMILIES[f]['title']})"
+                    break
+            say(f"  {m:10s}{fam_title} needs ~{d['ram_gb']} GB RAM: {verdict}")
         if not any_fits:
             # #977: every size says "does not fit", so the verdict says so too (and the exit code, for scripts). It only
             # reports: --model NAME --yes still installs one anyway.

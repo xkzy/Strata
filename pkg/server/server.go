@@ -408,6 +408,16 @@ func (s *StrataServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"virtual_context_limit":   s.Config.VirtualLimit,
 		"virtual_expansion_ratio": float64(s.Config.VirtualLimit) / float64(s.Config.MaxContext),
 	}
+	if s.Registry != nil {
+		modelsList := make([]map[string]interface{}, 0)
+		for _, m := range s.Registry.ListManifests() {
+			modelsList = append(modelsList, map[string]interface{}{
+				"id":   m.ID,
+				"name": m.Name,
+			})
+		}
+		out["models"] = modelsList
+	}
 	for k, v := range s.engineStatus() {
 		out[k] = v
 	}
