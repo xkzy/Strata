@@ -14,6 +14,7 @@ import (
 	"strata/pkg/chattemplate"
 	"strata/pkg/engineipc"
 	"strata/pkg/multitenant"
+	"strata/pkg/reqtrace"
 	"strata/pkg/rtclient"
 )
 
@@ -188,7 +189,9 @@ func (b *rtBackend) BuildPrompt(ctx context.Context, msgs []rtclient.Message, pr
 	if limit <= 0 {
 		limit = 32768
 	}
+	reqtrace.Add(ctx, "server", "prompt built: %d messages -> %d tokens (limit %d)", len(msgs), len(ids), limit)
 	if len(ids) > limit {
+		reqtrace.Add(ctx, "server", "PROMPT CUT FROM THE FRONT: %d tokens over the limit, the oldest %d tokens are dropped (this moves every position: no KV reuse)", len(ids)-limit, len(ids)-limit)
 		ids = ids[len(ids)-limit:]
 	}
 	if os.Getenv("STRATA_DEBUG_PROMPT") != "" {
@@ -207,6 +210,7 @@ func (b *rtBackend) Generate(ctx context.Context, ids []int, sp rtclient.Samplin
 	if maxTokens <= 0 || maxTokens > avail {
 		maxTokens = avail
 	}
+	reqtrace.Add(ctx, "server", "engine generation: %d prompt tokens, max_new %d", len(ids), maxTokens)
 	b.s.eng.mu.RLock()
 	stopIDs := b.s.eng.stopIDs
 	b.s.eng.mu.RUnlock()
@@ -234,8 +238,13 @@ func (b *rtBackend) Generate(ctx context.Context, ids []int, sp rtclient.Samplin
 				rq.finish("error", ev.GenTokens, 0)
 				out <- rtclient.GenToken{End: true, Err: ev.Error}
 			case ev.IsEnd:
+				reqtrace.Add(ctx, "server", "engine generation ended: finish=%s, %d tokens generated, %.1f tok/s", ev.FinishReason, ev.GenTokens, ev.TokPerSec)
 				rq.finish(endFinish(ev.FinishReason), ev.GenTokens, ev.TokPerSec)
 				out <- rtclient.GenToken{End: true, Finish: ev.FinishReason}
+			case ev.IsProgress:
+				// the engine reading the prompt: progress for the Monitor, not a generated token. Forwarded as a token it fed the
+				// runtime's loop detector empty tokens, which cancelled the generation after ~10 progress lines and restarted it
+				rq.promptProgress(ev.PromptRead, ev.PromptTotal)
 			default:
 				rq.token()
 				out <- rtclient.GenToken{ID: ev.TokenID, Text: ev.Text}
@@ -294,6 +303,14 @@ func (s *StrataServer) startRuntimeGeneration(ctx context.Context, spec genSpec)
 				send(genEvent{parsedEvent: pe})
 			}
 		})
+		if done != nil {
+			for _, t := range done.Trace {
+				reqtrace.Add(ctx, "runtime", "+%.0f ms  %s: %s", t.Ms, t.Kind, t.Detail)
+			}
+		}
+		if err != nil {
+			reqtrace.Add(ctx, "runtime", "ended with an error: %v", err)
+		}
 		if err != nil {
 			be.signal(err) // an error before any generation reaches the caller as an HTTP status
 			failed <- err

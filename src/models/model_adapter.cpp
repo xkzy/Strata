@@ -1,6 +1,9 @@
 // src/models/model_adapter.cpp - MoE Model Adapters Implementation
 #include "strata/models/model_adapter.hpp"
 #include "strata/models/qwen_hybrid.hpp"
+#include "strata/kernels/fast_activations.hpp"
+#include "strata/kernels/fast_mimo.hpp"
+#include "strata/kernels/fast_mamba.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -29,8 +32,6 @@ void softmax(float* x, size_t n) {
         }
     }
 }
-
-#include "strata/kernels/fast_activations.hpp"
 
 // Fast Sigmoid helper
 inline float sigmoid(float v) {
@@ -304,29 +305,119 @@ public:
         if (custom_cfg) {
             cfg_ = *custom_cfg;
         } else {
-            cfg_.model_name = "MiMo-V2.6-Pro";
-            cfg_.architecture = "mimo_v2_6";
-            cfg_.n_embd = 6144;
-            cfg_.n_layers = 70;
-            cfg_.hybrid_interval = 4;
-            cfg_.n_head = 48;
+            cfg_.model_name = "MiMo-V2.6-Flash-RL";
+            cfg_.architecture = "mimo2";
+            cfg_.n_embd = 4096;
+            cfg_.n_layers = 48;
+            cfg_.hybrid_interval = 6;
+            cfg_.n_head = 64;
             cfg_.n_head_kv = 8;
             cfg_.head_dim = 128;
-            cfg_.n_expert = 384;
+            cfg_.head_dim_qk = 192; // Asymmetric QK head dimension
+            cfg_.n_expert = 256;
             cfg_.active_experts = 8;
-            cfg_.n_shared_experts = 2;
+            cfg_.n_shared_experts = 0; // Pure sparse MoE (no shared experts)
             cfg_.n_ff = 2048;
-            cfg_.shared_n_ff = 4096;
+            cfg_.shared_n_ff = 0;
             cfg_.mtp_layers = 5;
-            cfg_.sliding_window = 4096;
+            cfg_.sliding_window = 128; // 128-token local sliding window
             cfg_.hc = 1;
-            cfg_.routing_type = RoutingType::kTopKSigmoid;
+            cfg_.routing_type = RoutingType::kTopKSoftmax;
             cfg_.attention_type = AttentionType::kSlidingWindowAttn;
         }
     }
 
     const MoEModelConfig& config() const override { return cfg_; }
-    std::string architecture_name() const override { return "mimo_v2_6"; }
+    std::string architecture_name() const override { return "mimo2"; }
+
+    std::string tensor_name(int64_t layer, const std::string& role) const override {
+        return "blk." + std::to_string(layer) + "." + role;
+    }
+
+    bool validate_weights(const core::WeightTable& /*table*/, std::string& /*err*/) const override {
+        return true;
+    }
+
+    LayerType layer_type(int64_t layer) const override {
+        if (layer == 0) return LayerType::kPureDense;
+        return LayerType::kStandardMoE;
+    }
+
+    bool is_full_attention_layer(int64_t layer) const override {
+        // MiMo-V2.6-Flash-RL: 9 GA layers (layers 0, 6, 12, 18, 24, 30, 36, 42, 47) and 39 SWA layers
+        if (layer == 0 || layer == 47) return true;
+        return (layer % 6 == 0);
+    }
+
+    void route_token(const float* routing_logits, int64_t n_expert, int64_t top_k,
+                     int32_t* selected_experts_out, float* weights_out) const override {
+        if (n_expert == 256 && top_k == 8) {
+            strata::kernels::FastMiMoMoERouter::route_top8(routing_logits, selected_experts_out, weights_out, true);
+            return;
+        }
+        thread_local std::vector<std::pair<float, int32_t>> tl_scored;
+        if (static_cast<int64_t>(tl_scored.size()) < n_expert) {
+            tl_scored.resize(n_expert);
+        }
+        for (int64_t i = 0; i < n_expert; ++i) {
+            float score = routing_logits[i];
+            tl_scored[i] = {score, static_cast<int32_t>(i)};
+        }
+        std::partial_sort(tl_scored.begin(), tl_scored.begin() + top_k, tl_scored.begin() + n_expert,
+                          [](const auto& a, const auto& b) { return a.first > b.first; });
+
+        float max_v = tl_scored[0].first;
+        float sum_exp = 0.0f;
+        for (int64_t i = 0; i < top_k; ++i) {
+            float exp_v = std::exp(tl_scored[i].first - max_v);
+            selected_experts_out[i] = tl_scored[i].second;
+            weights_out[i] = exp_v;
+            sum_exp += exp_v;
+        }
+        if (sum_exp > 0.0f) {
+            const float inv_sum = 1.0f / sum_exp;
+            for (int64_t i = 0; i < top_k; ++i) {
+                weights_out[i] *= inv_sum;
+            }
+        }
+    }
+
+    std::unique_ptr<MoEModelAdapter> clone() const override {
+        return std::make_unique<MiMoV26Adapter>(&cfg_);
+    }
+
+private:
+    MoEModelConfig cfg_;
+};
+
+// ------------------- Mamba SSM Adapter -------------------
+class MambaAdapter : public MoEModelAdapter {
+public:
+    explicit MambaAdapter(const MoEModelConfig* custom_cfg = nullptr) {
+        if (custom_cfg) {
+            cfg_ = *custom_cfg;
+        } else {
+            cfg_.model_name = "Mamba-2.8B";
+            cfg_.architecture = "mamba";
+            cfg_.n_embd = 2560;
+            cfg_.n_layers = 64;
+            cfg_.n_head = 0;
+            cfg_.n_head_kv = 0;
+            cfg_.head_dim = 0;
+            cfg_.n_expert = 0;
+            cfg_.active_experts = 0;
+            cfg_.n_shared_experts = 0;
+            cfg_.ssm_state_size = 16;
+            cfg_.ssm_d_conv = 4;
+            cfg_.ssm_expand = 2;
+            cfg_.ssm_conv_channels = 5120;
+            cfg_.sliding_window = 0; // State-space recurrence has constant O(1) memory footprint
+            cfg_.attention_type = AttentionType::kStateSpaceModel;
+        }
+    }
+
+    const MoEModelConfig& config() const override { return cfg_; }
+    std::string architecture_name() const override { return "mamba"; }
 
     std::string tensor_name(int64_t layer, const std::string& role) const override {
         return "blk." + std::to_string(layer) + "." + role;
@@ -337,43 +428,20 @@ public:
     }
 
     LayerType layer_type(int64_t /*layer*/) const override {
-        return LayerType::kSharedExpertMoE;
+        return LayerType::kPureDense;
     }
 
-    bool is_full_attention_layer(int64_t layer) const override {
-        // Interleaves sliding-window attention and global attention
-        return (layer % cfg_.hybrid_interval) == (cfg_.hybrid_interval - 1);
+    bool is_full_attention_layer(int64_t /*layer*/) const override {
+        return false;
     }
 
-    void route_token(const float* routing_logits, int64_t n_expert, int64_t top_k,
-                     int32_t* selected_experts_out, float* weights_out) const override {
-        thread_local std::vector<std::pair<float, int32_t>> tl_scored;
-        if (static_cast<int64_t>(tl_scored.size()) < n_expert) {
-            tl_scored.resize(n_expert);
-        }
-        for (int64_t i = 0; i < n_expert; ++i) {
-            float score = sigmoid(routing_logits[i]);
-            tl_scored[i] = {score, static_cast<int32_t>(i)};
-        }
-        std::partial_sort(tl_scored.begin(), tl_scored.begin() + top_k, tl_scored.begin() + n_expert,
-                          [](const auto& a, const auto& b) { return a.first > b.first; });
-
-        float sum = 0.0f;
-        for (int64_t i = 0; i < top_k; ++i) {
-            selected_experts_out[i] = tl_scored[i].second;
-            weights_out[i] = tl_scored[i].first;
-            sum += weights_out[i];
-        }
-        if (sum > 0.0f) {
-            const float inv_sum = 1.0f / sum;
-            for (int64_t i = 0; i < top_k; ++i) {
-                weights_out[i] *= inv_sum;
-            }
-        }
+    void route_token(const float* /*routing_logits*/, int64_t /*n_expert*/, int64_t /*top_k*/,
+                     int32_t* /*selected_experts_out*/, float* /*weights_out*/) const override {
+        // Pure state-space model: no MoE routing
     }
 
     std::unique_ptr<MoEModelAdapter> clone() const override {
-        return std::make_unique<MiMoV26Adapter>(&cfg_);
+        return std::make_unique<MambaAdapter>(&cfg_);
     }
 
 private:
@@ -469,6 +537,15 @@ ModelAdapterRegistry::ModelAdapterRegistry() {
     register_factory("mimo", [](const MoEModelConfig* cfg) {
         return std::make_unique<MiMoV26Adapter>(cfg);
     });
+    register_factory("mimo2", [](const MoEModelConfig* cfg) {
+        return std::make_unique<MiMoV26Adapter>(cfg);
+    });
+    register_factory("mamba", [](const MoEModelConfig* cfg) {
+        return std::make_unique<MambaAdapter>(cfg);
+    });
+    register_factory("mamba2", [](const MoEModelConfig* cfg) {
+        return std::make_unique<MambaAdapter>(cfg);
+    });
     register_factory("generic_moe", [](const MoEModelConfig* cfg) {
         return std::make_unique<GenericMoEAdapter>(cfg);
     });
@@ -502,9 +579,13 @@ std::vector<std::string> ModelAdapterRegistry::available_architectures() const {
 }
 
 std::unique_ptr<MoEModelAdapter> ModelAdapterRegistry::detect_and_create(const core::WeightTable& table) const {
+    // Check for Mamba-style tensors (A_log, conv1d, dt_proj, x_proj)
+    if (table.find("blk.0.mixer.A_log") || table.find("blk.0.mixer.conv1d.weight") || table.find("blk.0.mixer.dt_proj.weight")) {
+        return create("mamba");
+    }
     // Check for MiMo-style tensors (e.g. MTP head or MiMo router)
     if (table.find("blk.0.mtp_head.0.weight") || table.find("blk.0.mimo_router.weight")) {
-        return create("mimo_v2_6");
+        return create("mimo2");
     }
     // Check for DeepSeek-style tensors
     if (table.find("blk.0.ffn_shared_exps.weight") || table.find("blk.0.shared_expert.weight")) {

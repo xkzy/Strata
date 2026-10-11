@@ -62,6 +62,10 @@ var editable = []editableKey{
 		help: "What the adaptive resource controller aims for (#18): throughput, latency, a balance, or saved energy"},
 	{key: "resource_adapt", kind: "bool",
 		help: "Adapt queue limits and admission to measured load (#18); off keeps one fixed limit whatever the load"},
+	{key: "abliterate", kind: "arg_bool", flag: "--abliterate",
+		help: "Online abliteration (uncensor mode): removes the measured refusal direction from the residual stream per request. Needs a refusal vector (--abliteration-vector FILE or --control-vector-scaled); there is no built-in direction"},
+	{key: "abliteration_strength", kind: "arg_float", flag: "--abliteration-strength",
+		help: "Refusal suppression strength multiplier (default 1.0)"},
 }
 
 func spec(key string) (editableKey, bool) {
@@ -90,6 +94,16 @@ func argValue(cfg map[string]interface{}, flag string) interface{} {
 	return nil
 }
 
+func argBoolValue(cfg map[string]interface{}, flag string) bool {
+	args, _ := cfg["args"].([]interface{})
+	for _, a := range args {
+		if s, _ := a.(string); s == flag {
+			return true
+		}
+	}
+	return false
+}
+
 func valueOf(cfg map[string]interface{}, e editableKey) interface{} {
 	switch e.kind {
 	case "sampling":
@@ -97,6 +111,8 @@ func valueOf(cfg map[string]interface{}, e editableKey) interface{} {
 		return s[strings.TrimPrefix(e.key, "sampling.")]
 	case "arg", "arg_float", "arg_str":
 		return argValue(cfg, e.flag)
+	case "arg_bool":
+		return argBoolValue(cfg, e.flag)
 	}
 	return cfg[e.key]
 }
@@ -111,6 +127,8 @@ func View(cfg map[string]interface{}, path string) map[string]interface{} {
 			kind = "number"
 		case "arg_str":
 			kind = "string"
+		case "arg_bool":
+			kind = "bool"
 		}
 		k := map[string]interface{}{"key": e.key, "value": valueOf(cfg, e), "help": e.help, "kind": kind}
 		if e.kind == "enum" {
@@ -167,7 +185,7 @@ func check(key string, v interface{}, cfg map[string]interface{}) (interface{}, 
 	one := 1.0
 	sixtyFour := 64.0
 	switch e.kind {
-	case "bool":
+	case "bool", "arg_bool":
 		b, ok := v.(bool)
 		if !ok {
 			return nil, fmt.Errorf("%s: expected true or false, not %v", key, v)
@@ -212,7 +230,11 @@ func check(key string, v interface{}, cfg map[string]interface{}) (interface{}, 
 		f, err := number(key, v, true, 0, nil, false)
 		return num(f, true), err
 	case "arg_float":
-		f, err := number(key, v, false, 0, &one, false)
+		var maxF *float64
+		if e.flag == "--pcie-frac" {
+			maxF = &one
+		}
+		f, err := number(key, v, false, 0, maxF, false)
 		return num(f, false), err
 	case "arg_str":
 		s, ok := v.(string)
@@ -287,7 +309,7 @@ func Apply(cfg map[string]interface{}, changes map[string]interface{}) (map[stri
 			} else {
 				delete(nw, "sampling")
 			}
-		case "arg":
+		case "arg", "arg_float", "arg_str":
 			args, _ := nw["args"].([]interface{})
 			at := -1
 			for i := 0; i+1 < len(args); i++ {
@@ -302,6 +324,22 @@ func Apply(cfg map[string]interface{}, changes map[string]interface{}) (map[stri
 				args[at+1] = fmt.Sprint(v)
 			case v != nil:
 				args = append(args, e.flag, fmt.Sprint(v))
+			}
+			nw["args"] = args
+		case "arg_bool":
+			args, _ := nw["args"].([]interface{})
+			at := -1
+			for i := 0; i < len(args); i++ {
+				if s, _ := args[i].(string); s == e.flag {
+					at = i
+					break
+				}
+			}
+			b, _ := v.(bool)
+			if b && at < 0 {
+				args = append(args, e.flag)
+			} else if !b && at >= 0 {
+				args = append(args[:at], args[at+1:]...)
 			}
 			nw["args"] = args
 		default:

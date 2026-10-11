@@ -191,12 +191,23 @@ class NoBrowser(unittest.TestCase):
     def test_run_script(self):
         with tempfile.TemporaryDirectory() as d, unittest.mock.patch.object(setup, "ROOT", Path(d)):
             text = lambda p: p.read_text(encoding="utf-8")   # noqa: E731
-            self.assertIn('"--open"', text(setup.write_run_script("Q2_0", Path(d) / "strata-q2_0.json", 8080)))
-            script = setup.write_run_script("Q2_0", Path(d) / "strata-q2_0.json", 8080, False)
+            (Path(d) / "bin").mkdir()
+            (Path(d) / "bin" / ("strata-server.exe" if setup.WIN else "strata-server")).write_bytes(b"")
+            script = setup.write_run_script("Q2_0", Path(d) / "strata-q2_0.json", 8080)
+            self.assertNotIn("server.py", text(script))      # the Python server is gone
+            self.assertNotIn("--engine", text(script))       # the Go server has no such flag
             self.assertNotIn("--open", text(script))
             self.assertIn('"--port" "8080"', text(script))
 
+    def test_gpu_env(self):
+        self.assertEqual(setup.gpu_env({}, None), {})
+        self.assertEqual(setup.gpu_env({"gpu": 1}, None)["CUDA_VISIBLE_DEVICES"], "1")
+        self.assertEqual(setup.gpu_env({"gpu": [0, 2]}, None)["CUDA_VISIBLE_DEVICES"], "0,2")
+        self.assertEqual(setup.gpu_env({"gpu": 1}, 3)["CUDA_VISIBLE_DEVICES"], "3")   # --gpu wins for this start
+        self.assertEqual(setup.gpu_env({"gpu": 1, "backend": "hip"}, None), {"HIP_VISIBLE_DEVICES": "1"})
+
     def start_cmd(self, cfg, keep=None):
+        self.opener = unittest.mock.Mock()                   # the browser opens by open_when_ready (the server has no --open)
         with tempfile.TemporaryDirectory() as d:
             exe = Path(d) / "strata.exe"
             exe.write_bytes(b"")
@@ -206,24 +217,25 @@ class NoBrowser(unittest.TestCase):
             with unittest.mock.patch.object(setup, "gpus", lambda: self.found), \
                     unittest.mock.patch.object(setup, "is_wsl", lambda: False), \
                     unittest.mock.patch.object(setup, "ensure_engine_for", lambda cards, path, c, yes: c), \
+                    unittest.mock.patch.object(setup, "open_when_ready", self.opener), \
                     unittest.mock.patch.object(setup.subprocess, "call", call):
                 _, out = quiet(setup.start, p, None, None, True, True, None, keep)
             return call.call_args[0][0], out, json.loads(p.read_text())
 
     def test_on_a_start(self):
         cmd, out, _ = self.start_cmd({})
-        self.assertIn("--open", cmd)                                      # the default, as before
+        self.opener.assert_called_once()                                      # the default, as before
         self.assertIn("the browser opens when it is ready", out)
         cmd, out, _ = self.start_cmd({"open_browser": False})
-        self.assertNotIn("--open", cmd)
+        self.opener.assert_not_called()
         self.assertNotIn("the browser opens", out)
         self.assertIn("no browser", out)                                  # the Settings line says so
         cmd, out, saved = self.start_cmd({}, {"open_browser": False})     # START-HERE --no-browser: kept from now on
-        self.assertNotIn("--open", cmd)
+        self.opener.assert_not_called()
         self.assertIs(saved["open_browser"], False)
         self.assertIn("saved for this model: no browser", out)
         cmd, out, saved = self.start_cmd({"open_browser": False}, {"open_browser": True})
-        self.assertIn("--open", cmd)
+        self.opener.assert_called_once()
         self.assertIs(saved["open_browser"], True)
 
 

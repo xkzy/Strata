@@ -224,8 +224,9 @@
               <button type="button" role="tab" data-mon-pane="input" aria-selected="true">Input</button>
               <button type="button" role="tab" data-mon-pane="output" aria-selected="false">Output</button>
               <button type="button" role="tab" data-mon-pane="reasoning" aria-selected="false">Reasoning</button>
-              <button type="button" role="tab" data-mon-pane="vctx" aria-selected="false">Virtual KV & RAG</button>
-              <button type="button" role="tab" data-mon-pane="tool" aria-selected="false">Tool & CAS</button>
+              <button type="button" role="tab" data-mon-pane="debug" aria-selected="false">Debug</button>
+              <button type="button" role="tab" data-mon-pane="vctx" aria-selected="false">Context &amp; KV (runtime)</button>
+              <button type="button" role="tab" data-mon-pane="tool" aria-selected="false">Verification (runtime)</button>
               <button type="button" role="tab" data-mon-pane="scope" aria-selected="false">Tenant Scope</button>
               <button type="button" role="tab" data-mon-pane="response" aria-selected="false">API Response</button>
               <button type="button" class="st-btn st-btn--secondary" id="mon-copy-btn" style="margin-left:auto;height:28px;padding:0 10px;font-size:12px;">Copy</button>
@@ -476,6 +477,12 @@
     <div class="toggle-row" id="esp-row" hidden><span>Experimental speed projection<br><span class="muted small">the
       engine's control vector; off = the stock model. Switching reads the chat again once</span></span>
       <button class="st-toggle" id="s-esp" role="switch" aria-checked="true" aria-label="Experimental speed projection"></button></div>
+    <div class="toggle-row" id="abliterate-row"><span>Online Abliteration (Uncensored)<br><span class="muted small">inference-time representation intervention without modifying weights</span></span>
+      <button class="st-toggle" id="s-abliterate" role="switch" aria-checked="false" aria-label="Online Abliteration"></button></div>
+    <div class="st-field" id="abliterate-strength-field" hidden>
+      <label class="st-label" for="s-abliterate-strength">Abliteration strength <output id="o-abliterate-strength">1.00</output></label>
+      <input class="st-slider" type="range" id="s-abliterate-strength" min="0.1" max="2.0" step="0.05" value="1.0">
+    </div>
     <div class="toggle-row"><span>Use for other apps too<br><span class="muted small">omp and other API clients get
       these settings for anything they don't set themselves</span></span>
       <button class="st-toggle" id="s-share" role="switch" aria-checked="false" aria-label="Use for other apps too"></button></div>

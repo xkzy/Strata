@@ -35,14 +35,61 @@ func waitRecords(t *testing.T, base string, n int) []interface{} {
 	return list
 }
 
-func TestAPIMonitorIsOffByDefault(t *testing.T) {
+func TestAPIMonitorIsOnByDefaultAndOffByEnv(t *testing.T) {
 	ts := httptest.NewServer(setupTestServer().Router())
 	defer ts.Close()
 	for _, p := range []string{"/api/requests", "/monitor", "/api-monitor"} {
 		resp, _ := http.Get(ts.URL + p)
-		if resp.StatusCode != 404 {
-			t.Errorf("GET %s with the monitor off = %d, want 404 (nothing is kept, no page)", p, resp.StatusCode)
+		if resp.StatusCode != 200 {
+			t.Errorf("GET %s with the default monitor = %d, want 200", p, resp.StatusCode)
 		}
+	}
+	t.Setenv("STRATA_API_MONITOR", "0")
+	off := httptest.NewServer(setupTestServer().Router())
+	defer off.Close()
+	for _, p := range []string{"/api/requests", "/monitor", "/api-monitor"} {
+		resp, _ := http.Get(off.URL + p)
+		if resp.StatusCode != 404 {
+			t.Errorf("GET %s with STRATA_API_MONITOR=0 = %d, want 404 (nothing is kept, no page)", p, resp.StatusCode)
+		}
+	}
+}
+
+func TestAPIMonitorIsOffOnANetworkBindUnlessAskedFor(t *testing.T) {
+	srv := setupTestServer()
+	srv.Config.BindHost, srv.Config.APIKey = "0.0.0.0", "k"
+	if srv.apiMonitorOn() {
+		t.Errorf("a server listening beyond loopback must not keep every caller's prompts by default")
+	}
+	t.Setenv("STRATA_API_MONITOR", "1")
+	asked := setupTestServer()
+	asked.Config.BindHost, asked.Config.APIKey = "0.0.0.0", "k"
+	if !asked.apiMonitorOn() {
+		t.Errorf("STRATA_API_MONITOR=1 must switch it on")
+	}
+}
+
+func TestAPIMonitorKeepsDebugEvents(t *testing.T) {
+	ts, _ := startChatServer(t, "Hello from the model!")
+	if resp, body := postJSON(t, ts.URL+"/v1/chat/completions", `{"model":"x","messages":[{"role":"user","content":"hi there"}]}`); resp.StatusCode != 200 {
+		t.Fatalf("%d %s", resp.StatusCode, body)
+	}
+	list := waitRecords(t, ts.URL, 1)
+	r := list[0].(map[string]interface{})
+	if _, ok := r["debug"]; ok {
+		t.Errorf("the list must not carry the debug events")
+	}
+	if n, _ := r["debug_count"].(float64); n < 1 {
+		t.Errorf("debug_count = %v, want at least the server's own event", r["debug_count"])
+	}
+	_, d := getJSON(t, ts.URL+"/api/requests?id="+r["id"].(string))
+	ev, _ := d["debug"].([]interface{})
+	if len(ev) == 0 {
+		t.Fatalf("no debug events in the detail: %v", d)
+	}
+	first := ev[0].(map[string]interface{})
+	if first["source"] != "server" || !strings.Contains(first["msg"].(string), "/v1/chat/completions") {
+		t.Errorf("first event: %v", first)
 	}
 }
 

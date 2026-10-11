@@ -7,10 +7,19 @@
 // - Supports both scalar and vectorized (float2, float4) paths with fast GPU intrinsics (__expf, __fdividef, __fmaf_rn, __tanhf)
 //   and optimized CPU host execution.
 
-#include <cmath>
-#include <cstdint>
-#include <cstddef>
 #include <algorithm>
+#include <cassert>
+#include <chrono>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <vector>
+
+#if !defined(__CUDACC__) && !defined(__HIPCC__) && (defined(__x86_64__) || defined(_M_X64))
+#include <immintrin.h>
+#endif
 
 #if defined(__CUDACC__) || defined(__HIPCC__)
 #define STRATA_HD __host__ __device__ __forceinline__
@@ -262,22 +271,97 @@ STRATA_D float4 fast_gelu4(float4 v) {
 }
 #endif
 
+#if !defined(__CUDACC__) && !defined(__HIPCC__) && (defined(__x86_64__) || defined(_M_X64))
+#if defined(__AVX2__) && defined(__FMA__)
+// Fast vector exp(x) approximation accurate to single precision (< 1e-6 relative error)
+inline __m256 _mm256_fastexp_ps(__m256 x) {
+    x = _mm256_max_ps(x, _mm256_set1_ps(-88.0f));
+    x = _mm256_min_ps(x, _mm256_set1_ps(88.0f));
+
+    const __m256 log2e = _mm256_set1_ps(1.4426950408889634f);
+    __m256 z = _mm256_mul_ps(x, log2e);
+    __m256 n_flt = _mm256_round_ps(z, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+    __m256i n_int = _mm256_cvtps_epi32(n_flt);
+
+    const __m256 c_ln2_hi = _mm256_set1_ps(-0.6931471805599453f);
+    const __m256 c_ln2_lo = _mm256_set1_ps(-1.4286068203094172e-6f);
+    __m256 r = _mm256_fmadd_ps(n_flt, c_ln2_hi, x);
+    r = _mm256_fmadd_ps(n_flt, c_ln2_lo, r);
+
+    const __m256 c0 = _mm256_set1_ps(1.0f);
+    const __m256 c1 = _mm256_set1_ps(1.0f);
+    const __m256 c2 = _mm256_set1_ps(0.5f);
+    const __m256 c3 = _mm256_set1_ps(1.6666666666666666e-1f);
+    const __m256 c4 = _mm256_set1_ps(4.1666666666666664e-2f);
+    const __m256 c5 = _mm256_set1_ps(8.3333333333333332e-3f);
+
+    __m256 p = _mm256_fmadd_ps(c5, r, c4);
+    p = _mm256_fmadd_ps(p, r, c3);
+    p = _mm256_fmadd_ps(p, r, c2);
+    p = _mm256_fmadd_ps(p, r, c1);
+    p = _mm256_fmadd_ps(p, r, c0);
+
+    __m256i pow2 = _mm256_slli_epi32(_mm256_add_epi32(n_int, _mm256_set1_epi32(127)), 23);
+    return _mm256_mul_ps(p, _mm256_castsi256_ps(pow2));
+}
+
+inline __m256 _mm256_fastsilu_ps(__m256 x) {
+    const __m256 one = _mm256_set1_ps(1.0f);
+    __m256 neg_x = _mm256_sub_ps(_mm256_setzero_ps(), x);
+    __m256 exp_neg_x = _mm256_fastexp_ps(neg_x);
+    __m256 denom = _mm256_add_ps(one, exp_neg_x);
+    __m256 rcp = _mm256_rcp_ps(denom);
+    rcp = _mm256_mul_ps(rcp, _mm256_fnmadd_ps(denom, rcp, _mm256_set1_ps(2.0f)));
+    return _mm256_mul_ps(x, rcp);
+}
+#endif
+#endif
+
 } // namespace fast_math
 
 // ----------------------------------------------------------------------------
 // CPU Batch Vectorized Helpers
 // ----------------------------------------------------------------------------
 inline void fast_activate_array(const float* __restrict__ in, float* __restrict__ out, size_t n, ActivationType type) {
-    #pragma omp parallel for schedule(static) if (n >= 4096)
-    for (size_t i = 0; i < n; ++i) {
+    size_t i = 0;
+#if !defined(__CUDACC__) && !defined(__HIPCC__) && defined(__AVX2__) && defined(__FMA__)
+    if (type == ActivationType::kSiLU) {
+        #pragma omp parallel for schedule(static) if (n >= 4096)
+        for (size_t j = 0; j < (n / 8) * 8; j += 8) {
+            __m256 v = _mm256_loadu_ps(in + j);
+            _mm256_storeu_ps(out + j, fast_math::_mm256_fastsilu_ps(v));
+        }
+        i = (n / 8) * 8;
+    } else if (type == ActivationType::kReLU) {
+        const __m256 zero = _mm256_setzero_ps();
+        #pragma omp parallel for schedule(static) if (n >= 4096)
+        for (size_t j = 0; j < (n / 8) * 8; j += 8) {
+            __m256 v = _mm256_loadu_ps(in + j);
+            _mm256_storeu_ps(out + j, _mm256_max_ps(v, zero));
+        }
+        i = (n / 8) * 8;
+    }
+#endif
+    for (; i < n; ++i) {
         out[i] = fast_math::fast_activate(type, in[i]);
     }
 }
 
 inline void fast_swiglu_array(const float* __restrict__ gate, const float* __restrict__ up,
                               float* __restrict__ out, size_t n) {
+    size_t i = 0;
+#if !defined(__CUDACC__) && !defined(__HIPCC__) && defined(__AVX2__) && defined(__FMA__)
     #pragma omp parallel for schedule(static) if (n >= 4096)
-    for (size_t i = 0; i < n; ++i) {
+    for (size_t j = 0; j < (n / 8) * 8; j += 8) {
+        __m256 g = _mm256_loadu_ps(gate + j);
+        __m256 u = _mm256_loadu_ps(up + j);
+        __m256 silu_g = fast_math::_mm256_fastsilu_ps(g);
+        __m256 res = _mm256_mul_ps(silu_g, u);
+        _mm256_storeu_ps(out + j, res);
+    }
+    i = (n / 8) * 8;
+#endif
+    for (; i < n; ++i) {
         out[i] = fast_math::fast_swiglu(gate[i], up[i]);
     }
 }

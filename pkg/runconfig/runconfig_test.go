@@ -44,3 +44,54 @@ func TestConfigManager_DefaultsAndFilePersistence(t *testing.T) {
 
 	os.Remove(tmpFile)
 }
+
+func TestConfig_MultiModelSupport(t *testing.T) {
+	// Single model legacy
+	legacy := DefaultConfig()
+	legacy.Model = "qwen3.8-flash-next"
+	legacy.ModelPath = "/models/qwen.gguf"
+
+	actID, actPath := legacy.GetActiveModel()
+	if actID != "qwen3.8-flash-next" || actPath != "/models/qwen.gguf" {
+		t.Fatalf("unexpected legacy active model: %s, %s", actID, actPath)
+	}
+
+	entry, ok := legacy.GetModelEntry("qwen3.8-flash-next")
+	if !ok || entry.ModelPath != "/models/qwen.gguf" {
+		t.Fatalf("failed to get legacy model entry: %+v", entry)
+	}
+
+	all := legacy.AllModels()
+	if len(all) != 1 || all["qwen3.8-flash-next"].ModelPath != "/models/qwen.gguf" {
+		t.Fatalf("unexpected all models from legacy config: %+v", all)
+	}
+
+	// Multi-model config
+	multi := DefaultConfig()
+	multi.DefaultModel = "mimo"
+	multi.Models = map[string]ModelEntry{
+		"qwen": {
+			ID:        "qwen3.8-flash-next",
+			ModelPath: "/models/qwen.gguf",
+		},
+		"mimo": {
+			ID:        "mimo-v2.6-flash-rl",
+			ModelPath: "/models/mimo.gguf",
+		},
+	}
+
+	mActID, mActPath := multi.GetActiveModel()
+	if mActID != "mimo-v2.6-flash-rl" || mActPath != "/models/mimo.gguf" {
+		t.Fatalf("unexpected multi-model active model: %s, %s", mActID, mActPath)
+	}
+
+	mEntry, ok := multi.GetModelEntry("qwen")
+	if !ok || mEntry.ModelPath != "/models/qwen.gguf" {
+		t.Fatalf("failed to get multi-model entry: %+v", mEntry)
+	}
+
+	mAll := multi.AllModels()
+	if len(mAll) != 2 {
+		t.Fatalf("expected 2 models in multi config, got %d", len(mAll))
+	}
+}

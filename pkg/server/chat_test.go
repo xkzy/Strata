@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -135,6 +136,11 @@ func fakeEngine() {
 		if marker := os.Getenv("STRATA_FAKE_IF_PROMPT_HAS"); marker != "" { // answers differently when the prompt contains a marker
 			if strings.Contains(prompt, marker) {
 				reply = os.Getenv("STRATA_FAKE_IF_REPLY")
+			}
+		}
+		if n, _ := strconv.Atoi(os.Getenv("STRATA_FAKE_PP")); n > 0 { // the engine reading a long prompt: n progress lines first
+			for k := 1; k <= n; k++ {
+				fmt.Fprintf(out, "PP %d %d 0.5 600.0\n", k*512, n*512)
 			}
 		}
 		reason := "stop"
@@ -511,3 +517,45 @@ func TestSecurityAuthCorsAndDownload(t *testing.T) {
 		t.Error("loopback, or any address with a key, is fine")
 	}
 }
+
+func TestOnlineAbliterationHeaderAndBody(t *testing.T) {
+	// 1. Test X-Strata-Abliterate and X-Strata-Abliteration-Strength headers
+	req, _ := http.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Strata-Abliterate", "true")
+	req.Header.Set("X-Strata-Abliteration-Strength", "1.25")
+
+	var spec genSpec
+	spec.setAbliterate(req)
+	if !spec.Sampling.Abliterate {
+		t.Errorf("expected spec.Sampling.Abliterate to be true, got %v", spec.Sampling.Abliterate)
+	}
+	if spec.Sampling.AbliterationStrength != 1.25 {
+		t.Errorf("expected AbliterationStrength to be 1.25, got %v", spec.Sampling.AbliterationStrength)
+	}
+
+	// 2. Test JSON body abliterate options
+	var oaReq oaRequest
+	if err := json.Unmarshal([]byte(`{"messages":[{"role":"user","content":"hi"}],"abliterate":true,"abliteration_strength":0.85}`), &oaReq); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+	if oaReq.Abliterate == nil || !*oaReq.Abliterate {
+		t.Errorf("expected oaReq.Abliterate to be true")
+	}
+	if oaReq.AbliterationStrength == nil || *oaReq.AbliterationStrength != 0.85 {
+		t.Errorf("expected oaReq.AbliterationStrength to be 0.85")
+	}
+
+	// 3. Test Anthropic body abliterate options
+	var anReq anRequest
+	if err := json.Unmarshal([]byte(`{"model":"claude","messages":[{"role":"user","content":"hi"}],"abliterate":true,"abliteration_strength":1.1}`), &anReq); err != nil {
+		t.Fatalf("failed to unmarshal Anthropic JSON: %v", err)
+	}
+	if anReq.Abliterate == nil || !*anReq.Abliterate {
+		t.Errorf("expected anReq.Abliterate to be true")
+	}
+	if anReq.AbliterationStrength == nil || *anReq.AbliterationStrength != 1.1 {
+		t.Errorf("expected anReq.AbliterationStrength to be 1.1")
+	}
+}
+

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"strata/pkg/chattemplate"
@@ -27,7 +28,8 @@ type genSpec struct {
 	MaxTokens           int // 0 = not given
 	Stops               []string
 	Scope               multitenant.SecurityScope // tenant / user / session of the caller (headers + body)
-	Debug               bool                      // return the runtime's decision trace (X-Strata-Debug: 1)
+	Debug               bool                      // collect the runtime's decision trace for the Monitor (on unless X-Strata-Debug: 0)
+	DebugEcho           bool                      // also return it in the response body (X-Strata-Debug: 1)
 	DisableMath         bool                      // disable math interception (X-Strata-Math-Engine: off)
 	DisableTools        bool                      // disable tool interception (X-Strata-Tool-Intercept: off)
 	mathDone, toolsDone bool                      // the interceptions ran: they run once per request, however many paths it takes
@@ -311,3 +313,30 @@ func (s *StrataServer) interceptMathIntent(spec *genSpec) {
 		}
 	}
 }
+
+// setDebug reads the debug headers: the trace is always collected for the Monitor (STRATA_DEBUG=0 or X-Strata-Debug: 0 turn
+// it off), and only X-Strata-Debug: 1 puts it in the response body.
+func (spec *genSpec) setDebug(r *http.Request) {
+	h := r.Header.Get("X-Strata-Debug")
+	spec.Debug = h != "0" && os.Getenv("STRATA_DEBUG") != "0"
+	spec.DebugEcho = h == "1"
+}
+
+// setAbliterate parses X-Strata-Abliterate and X-Strata-Abliteration-Strength headers.
+func (spec *genSpec) setAbliterate(r *http.Request) {
+	if h := r.Header.Get("X-Strata-Abliterate"); h != "" {
+		spec.Sampling.Abliterate = h == "1" || strings.EqualFold(h, "true") || strings.EqualFold(h, "on")
+	} else if h := r.Header.Get("X-Abliterate"); h != "" {
+		spec.Sampling.Abliterate = h == "1" || strings.EqualFold(h, "true") || strings.EqualFold(h, "on")
+	}
+	if h := r.Header.Get("X-Strata-Abliteration-Strength"); h != "" {
+		if v, err := strconv.ParseFloat(h, 64); err == nil && v >= 0 {
+			spec.Sampling.AbliterationStrength = v
+		}
+	} else if h := r.Header.Get("X-Abliteration-Strength"); h != "" {
+		if v, err := strconv.ParseFloat(h, 64); err == nil && v >= 0 {
+			spec.Sampling.AbliterationStrength = v
+		}
+	}
+}
+

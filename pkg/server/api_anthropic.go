@@ -49,6 +49,8 @@ type anRequest struct {
 		Type         string `json:"type"`
 		BudgetTokens int    `json:"budget_tokens"`
 	} `json:"thinking"`
+	Abliterate          *bool    `json:"abliterate"`
+	AbliterationStrength *float64 `json:"abliteration_strength"`
 }
 
 // anBlocks reads Anthropic content: a string or a list of blocks.
@@ -186,6 +188,12 @@ func (r *anRequest) toSpec(s *StrataServer) (genSpec, error) {
 	if r.TopK != nil {
 		spec.Sampling.TopK = *r.TopK
 	}
+	if r.Abliterate != nil {
+		spec.Sampling.Abliterate = *r.Abliterate
+	}
+	if r.AbliterationStrength != nil {
+		spec.Sampling.AbliterationStrength = *r.AbliterationStrength
+	}
 	spec.MaxTokens = r.MaxTokens
 	spec.Stops = r.StopSequences
 	return spec, nil
@@ -239,6 +247,8 @@ func (s *StrataServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Re
 		return
 	}
 	spec.Scope = requestScope(r, req.Metadata.UserID, "")
+	spec.setDebug(r)
+	spec.setAbliterate(r)
 	if h := r.Header.Get("X-Strata-Math-Engine"); h == "off" || h == "false" || h == "0" {
 		spec.DisableMath = true
 	}
@@ -254,6 +264,8 @@ func (s *StrataServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Re
 	model := req.Model
 	if model == "" {
 		model = s.Config.ModelName
+	} else if s.Registry != nil {
+		model = s.Registry.ResolveModel(req.Model, s.Config.ModelName)
 	}
 
 	if req.Stream {

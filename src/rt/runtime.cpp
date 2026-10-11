@@ -129,6 +129,7 @@ InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, co
     std::vector<Message> convo = request.messages;
     std::shared_ptr<VirtualContext> vc;
     std::set<uint64_t> current_items;
+    int64_t base_budget = 0;
     std::string vc_query;
     SelectionRequest sel;
     std::string last_working_set;
@@ -173,10 +174,12 @@ InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, co
         { std::vector<Message> scratch = request.messages; const size_t c = tools_->process(request.scope, scratch); if (c) bump(&RuntimeMetrics::tool_results_compacted, c); }
         sel.query = vc_query;
         sel.current_items = current_items;
+        for (uint64_t id : ids) if (id) sel.request_items.insert(id);   // the prefix-stable window carries only what this request holds
         sel.requester = request.scope.security;
         const int64_t reserve_out = std::min<int64_t>(request.sampling.max_tokens, cfg_.virtual_context.physical_tokens / 4);
         const int64_t reserve_evidence = static_cast<int64_t>((cfg_.context.snippet_chars * cfg_.context.rag_top_k) / 4) + 300;
-        sel.budget_tokens = std::max<int64_t>(512, cfg_.virtual_context.physical_tokens - reserve_out - reserve_evidence);
+        base_budget = std::max<int64_t>(512, cfg_.virtual_context.physical_tokens - reserve_out - reserve_evidence);
+        sel.budget_tokens = std::max<int64_t>(512, static_cast<int64_t>(static_cast<double>(base_budget) * vc->budget_scale()));
         reselect("");
         if (not_stored) convo.push_back({"system", "Some earlier messages of this conversation exceeded the storage limit and are not available to you. Do not guess their content.", ""});
     } else {
@@ -317,14 +320,31 @@ InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, co
         }
         bump(&RuntimeMetrics::attempts);
 
-        std::vector<Message> msgs = ctx.messages;
-        if (!notes.empty()) {
-            std::string n = "Verified facts for this answer (state them as plain fact, do not mention checking):";
-            for (const auto& x : notes) n += "\n- " + x;
-            msgs.push_back({"system", n, ""});
+        auto build_ids = [&]() {
+            std::vector<Message> msgs = ctx.messages;
+            if (!notes.empty()) {
+                std::string n = "Verified facts for this answer (state them as plain fact, do not mention checking):";
+                for (const auto& x : notes) n += "\n- " + x;
+                msgs.push_back({"system", n, ""});
+            }
+            return deps_.prompt_builder ? deps_.prompt_builder->build(msgs, buffer.text())
+                                        : deps_.tokenizer->encode(deps_.prompt_template->render(msgs, buffer.text()));
+        };
+        std::vector<int32_t> ids = build_ids();
+        if (vc && attempts == 1 && base_budget > 0) {
+            // The window was budgeted in estimated tokens.  A prompt longer than the physical window is cut at its FRONT by the
+            // server, which moves every position and ends all KV reuse: measure it and fit the window instead, in one step.
+            const int64_t target = cfg_.virtual_context.physical_tokens - std::min<int64_t>(request.sampling.max_tokens, cfg_.virtual_context.physical_tokens / 4) - 16;
+            for (int fit = 0; fit < 3 && static_cast<int64_t>(ids.size()) > target && target > 0; ++fit) {
+                const double f = static_cast<double>(target) / static_cast<double>(ids.size()) * 0.97;
+                sel.budget_tokens = std::max<int64_t>(512, static_cast<int64_t>(static_cast<double>(sel.budget_tokens) * f));
+                trace("context", "window re-fit: " + std::to_string(ids.size()) + " tokens over " + std::to_string(target) + ", budget now " + std::to_string(sel.budget_tokens));
+                reselect("");
+                ctx = context_->prepare(request.scope, convo);
+                ids = build_ids();
+            }
+            vc->set_budget_scale(static_cast<double>(sel.budget_tokens) / static_cast<double>(base_budget));
         }
-        const std::vector<int32_t> ids = deps_.prompt_builder ? deps_.prompt_builder->build(msgs, buffer.text())
-                                                              : deps_.tokenizer->encode(deps_.prompt_template->render(msgs, buffer.text()));
         resp.prompt_tokens = static_cast<int>(ids.size());
         if (vc) {   // the physical KV holds this working set only; reuse exactly the matching prefix
             KvReusePlan kp = vc->plan_kv(deps_.prompt_builder ? KvIdentity{deps_.prompt_builder->identity(), ""} : KvIdentity{deps_.tokenizer->id(), deps_.prompt_template->version()}, ids);
@@ -335,6 +355,7 @@ InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, co
         Sampling samp = request.sampling;
         double cur_temp = temp.current_temperature();
         samp.temperature = cur_temp;
+        trace("generation", "attempt " + std::to_string(attempts) + " starts: " + std::to_string(ids.size()) + " prompt tokens, temperature " + std::to_string(samp.temperature));
         auto session = deps_.generator->start(ids, samp, request.scope.key());
         // whatever happens below (an exception from a verifier, the sink or the prompt builder), the engine must not stay busy
         struct SessionGuard { std::unique_ptr<IGenSession>& s; ~SessionGuard() { if (s) { try { s->cancel(); } catch (...) {} } } } session_guard{session};
@@ -410,6 +431,7 @@ InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, co
                 emit(buffer.push(""));
             }
         }
+        trace("generation", "attempt " + std::to_string(attempts) + " ends: " + std::to_string(produced) + " tokens, " + (restart ? "restart requested" : ended ? "engine finished" : "token limit reached, session cancelled"));
         session->cancel();   // idempotent: a session that has not ended (max_tokens reached) must not keep the engine busy
         session.reset();
         if (restart) continue;

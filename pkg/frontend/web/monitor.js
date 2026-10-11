@@ -95,6 +95,12 @@ function list() {
   }
 }
 
+// The debug events of a request: what the server, the runtime and the engine did for it, oldest first.
+function debugLines(detail, filter) {
+  const ev = (detail.debug || []).filter((e) => !filter || filter(e));
+  return ev.map((e) => `${String(Math.round(e.ms)).padStart(8)} ms  ${String(e.source).padEnd(9)} ${e.msg}`);
+}
+
 function content() {
   if (!detail) return;
 
@@ -111,29 +117,19 @@ function content() {
   } else if (pane === "reasoning") {
     value = detail.reasoning || "No separate reasoning content.";
     note = "Extracted reasoning content (<think>), when available.";
+  } else if (pane === "debug") {
+    const lines = debugLines(detail);
+    value = lines.length ? lines.join("\n") : "No debug events were recorded for this request.";
+    note = `Debug trace: ${lines.length} events (server, rtclient, engine, runtime), time since the request arrived.`;
   } else if (pane === "vctx") {
-    const vctxInfo = detail.virtual_context || {};
-    value = JSON.stringify({
-      virtual_context_tokens: vctxInfo.virtual_tokens ?? "Active tracking",
-      physical_window_tokens: vctxInfo.physical_tokens ?? detail.usage?.prompt_tokens ?? "Bounded",
-      compaction_applied: vctxInfo.compacted ?? false,
-      retrieved_rag_items: vctxInfo.retrieved_items ?? [],
-      token_budget: {
-        physical_limit: state?.cache_max_tokens ?? 32768,
-        reserve_tokens: 1024
-      }
-    }, null, 2);
-    note = "Virtual Context & RAG Index state for this request.";
+    const lines = debugLines(detail, (e) => e.source === "runtime" && /\b(context|kv|retrieval|memory)\b/.test(e.msg));
+    const cut = debugLines(detail, (e) => /CUT FROM THE FRONT|prompt built|reading the prompt|RESUME|REUSED/.test(e.msg));
+    value = (lines.concat(cut).join("\n")) || "The runtime recorded no context or KV events for this request.";
+    note = "What the runtime and the engine did with the context for this request (from the debug trace, not an estimate).";
   } else if (pane === "tool") {
-    const toolInfo = detail.tool_runtime || {};
-    value = JSON.stringify({
-      tool_calls: toolInfo.tool_calls ?? 0,
-      raw_tokens_produced: toolInfo.raw_tokens ?? 0,
-      emitted_tokens: toolInfo.emitted_tokens ?? 0,
-      tokens_saved_ratio: toolInfo.reduction_ratio ?? "1.0x",
-      cas_hashes: toolInfo.cas_hashes ?? []
-    }, null, 2);
-    note = "Tool execution state, observations, and Content-Addressed Storage (CAS) hashes.";
+    const lines = debugLines(detail, (e) => e.source === "runtime" && /\b(recovery|verif|claim|tool_output|math|hedge)/.test(e.msg));
+    value = lines.join("\n") || "The runtime recorded no verification or tool events for this request.";
+    note = "Verification and tool events of the runtime for this request (from the debug trace).";
   } else if (pane === "scope") {
     value = JSON.stringify(detail.scope || {
       tenant_id: "default",

@@ -8,8 +8,9 @@
 #include <random>
 #include <vector>
 
+using namespace strata::kernels;
+
 void test_basic_decode() {
-    using namespace strata::kernels;
 
     const size_t head_dim = 64;
     const size_t seq_len = 8;
@@ -357,6 +358,124 @@ void test_mha_gqa_prefill() {
     }
 }
 
+void test_cow_split_kv_attention() {
+    using namespace strata::kernels;
+
+    const size_t head_dim = 64;
+    const size_t prefix_len = 128;
+    const size_t tail_len = 32;
+    const size_t total_len = prefix_len + tail_len;
+    const size_t num_heads = 8;
+    const size_t num_kv_heads = 2;
+
+    std::mt19937 rng(1337);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+
+    // Contiguous full KV reference
+    std::vector<float> full_k(total_len * num_kv_heads * head_dim);
+    std::vector<float> full_v(total_len * num_kv_heads * head_dim);
+    for (auto& x : full_k) x = dist(rng) * 0.2f;
+    for (auto& x : full_v) x = dist(rng) * 0.2f;
+
+    // Split KV prefix & tail buffers
+    std::vector<float> prefix_k(prefix_len * num_kv_heads * head_dim);
+    std::vector<float> prefix_v(prefix_len * num_kv_heads * head_dim);
+    std::copy(full_k.begin(), full_k.begin() + prefix_k.size(), prefix_k.begin());
+    std::copy(full_v.begin(), full_v.begin() + prefix_v.size(), prefix_v.begin());
+
+    std::vector<float> tail_k(tail_len * num_kv_heads * head_dim);
+    std::vector<float> tail_v(tail_len * num_kv_heads * head_dim);
+    std::copy(full_k.begin() + prefix_k.size(), full_k.end(), tail_k.begin());
+    std::copy(full_v.begin() + prefix_v.size(), full_v.end(), tail_v.begin());
+
+    std::vector<float> q(num_heads * head_dim);
+    for (auto& x : q) x = dist(rng);
+
+    std::vector<float> out_contiguous(num_heads * head_dim, 0.0f);
+    std::vector<float> out_cow(num_heads * head_dim, 0.0f);
+
+    const float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+
+    // 1. Contiguous GQA decode reference
+    FastAttention::multi_head_scaled_dot_product_decode(
+        q.data(), full_k.data(), full_v.data(), out_contiguous.data(),
+        num_heads, num_kv_heads, total_len, head_dim, scale
+    );
+
+    // 2. COW Split-KV GQA decode
+    FastAttention::cow_multi_head_scaled_dot_product_decode(
+        q.data(), prefix_k.data(), prefix_v.data(), prefix_len,
+        tail_k.data(), tail_v.data(), tail_len, out_cow.data(),
+        num_heads, num_kv_heads, head_dim, scale
+    );
+
+    // Verify bit-exact/numerical parity between contiguous and split-KV decode
+    for (size_t i = 0; i < num_heads * head_dim; ++i) {
+        float diff = std::abs(out_contiguous[i] - out_cow[i]);
+        assert(diff < 1e-4f);
+    }
+}
+
+void test_split_k_decode() {
+    constexpr size_t seq_len = 2048;
+    constexpr size_t head_dim = 128;
+    const float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<float> dist(-0.1f, 0.1f);
+
+    std::vector<float> q(head_dim);
+    for (auto& x : q) x = dist(rng);
+
+    std::vector<float> k(seq_len * head_dim);
+    std::vector<float> v(seq_len * head_dim);
+    for (auto& x : k) x = dist(rng);
+    for (auto& x : v) x = dist(rng);
+
+    std::vector<float> out_ref(head_dim, 0.0f);
+    std::vector<float> out_split(head_dim, 0.0f);
+
+    FastAttention::scaled_dot_product_decode(q.data(), k.data(), v.data(), out_ref.data(), seq_len, head_dim, scale);
+    FastAttention::split_k_scaled_dot_product_decode(q.data(), k.data(), v.data(), out_split.data(), seq_len, head_dim, scale, 256);
+
+    for (size_t i = 0; i < head_dim; ++i) {
+        float diff = std::abs(out_ref[i] - out_split[i]);
+        assert(diff < 1e-4f);
+    }
+}
+
+void test_flash_decode_online_parity() {
+    std::mt19937 rng(1337);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+
+    const size_t head_dim = 128;
+    const size_t seq_lens[] = {1, 16, 32, 64, 127, 256, 513};
+
+    for (size_t seq_len : seq_lens) {
+        std::vector<float> q(head_dim);
+        std::vector<float> k(seq_len * head_dim);
+        std::vector<float> v(seq_len * head_dim);
+        std::vector<float> out_standard(head_dim, 0.0f);
+        std::vector<float> out_flash(head_dim, 0.0f);
+
+        for (size_t i = 0; i < head_dim; ++i) q[i] = dist(rng);
+        for (size_t i = 0; i < seq_len * head_dim; ++i) {
+            k[i] = dist(rng);
+            v[i] = dist(rng);
+        }
+
+        const float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+
+        FastAttention::scaled_dot_product_decode(q.data(), k.data(), v.data(), out_standard.data(), seq_len, head_dim, scale);
+        FastAttention::flash_decode_scaled_dot_product(q.data(), k.data(), v.data(), out_flash.data(), seq_len, head_dim, scale);
+
+        for (size_t i = 0; i < head_dim; ++i) {
+            float diff = std::abs(out_standard[i] - out_flash[i]);
+            assert(diff < 1e-4f);
+        }
+    }
+}
+
 int main() {
     std::cout << "Running Fast Attention unit tests..." << std::endl;
     test_basic_decode();
@@ -369,6 +488,9 @@ int main() {
     test_alias_and_prefill();
     test_large_sequence_tiled_prefill_parity();
     test_mha_gqa_prefill();
+    test_cow_split_kv_attention();
+    test_split_k_decode();
+    test_flash_decode_online_parity();
 
     std::cout << "test_fast_attention passed" << std::endl;
     return 0;

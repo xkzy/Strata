@@ -1371,13 +1371,26 @@ then usage/timings and `[DONE]`; failures emit an SSE error and `[DONE]` without
 
 ### API request monitor
 
-Off by default, since it keeps prompts and answers in memory: turn it on with `"api_monitor": true` in
-`strata-<model>.json` (or `serve/server.py --api-monitor`); otherwise nothing is recorded and the two endpoints below
-answer 404.
+On by default when the server listens on loopback (the default), and off when `--host` is anything else: it keeps every
+caller's prompts, answers and debug events in memory (never on disk), with no per-tenant filter. Set `"api_monitor": true`
+in `strata-<model>.json` (or `STRATA_API_MONITOR=1`) to turn it on for a network bind, where the API key then guards the
+endpoints; `"api_monitor": false` or `STRATA_API_MONITOR=0` turns it off. When it is off nothing is recorded and the two
+endpoints below answer 404.
 Open `/api-monitor` to inspect API traffic without opening a chat. It shows the model state, safe
 load/unload controls, active/queued requests, original request bodies, output, separate reasoning and
 non-stream response bodies. Total wall-clock includes FIFO waits and automatic loading; load, queue,
 first-token, prompt/output tokens and engine decode timing are shown separately.
+
+**Debug events.** Every request carries a timestamped list of what each layer did for it, shown on the Monitor's
+Debug tab (both in the chat app and on `/api-monitor`) and in `GET /api/requests?id=<id>` under `debug`. The
+list gives `ms` since the request arrived, the layer (`server`, `rtclient`, `engine`, `runtime`) and a message: the
+prompt's token count and whether it was **cut from the front** at the context limit, the engine's `GEN`, `RESUME`
+(tokens reused), `REUSED`, prompt-read progress, first token, `STOP` with its reason, `DONE`, who cancelled a generation
+(the request's context ending, or the C++ runtime), the wait for the engine when another request is running, and
+the runtime's decision trace (window, KV reuse, attempts, recovery). Up to 600 events are kept per request. The
+trace is always collected; `X-Strata-Debug: 0` or `STRATA_DEBUG=0` turns it off, and `X-Strata-Debug: 1` also returns
+the runtime's trace in the response body as `strata_trace` (as before). The Monitor's "Context & KV (runtime)" and
+"Verification (runtime)" tabs show only the runtime's own events for the request; they no longer show fixed example text.
 
 `GET /api/requests` returns compact summaries; `GET /api/requests?id=<id>` returns one retained request.
 Both use the existing API-key check. The monitor retains the newest **100 requests in memory** until restart,
@@ -1385,3 +1398,34 @@ with **262,144 characters per input/output/reasoning/response field** and visibl
 responses are unaffected. Headers are not recorded, and the monitor key is kept in this tab's session storage.
 Treat request history as sensitive input/output when exposing Strata on a network: set an API key as above.
 The page uses relative URLs and works through the existing host binding or a reverse proxy.
+
+---
+
+## Inference optimization: PagedAttention, In-Flight Batching and Speculative Decoding
+
+Strata incorporates inference optimization techniques described in NVIDIA's technical guide (*Mastering LLM Techniques: Inference Optimization*) and Hugging Face's guide (*LLM Inference Optimization*):
+
+1. **PagedAttention & KV Cache block memory management** (`FastPagedKVCache` in `include/strata/kernels/fast_paged_kv.hpp`, `FastAttention::paged_scaled_dot_product_decode` and `FastAttention::paged_gqa_decode` in `include/strata/kernels/fast_attention.hpp`).
+   - KV cache memory is allocated in fixed-size non-contiguous physical blocks ($B = 16$ or $32$ tokens per block).
+   - Sequence block tables map logical positions to physical blocks, eliminating both internal fragmentation (static max-length allocations) and external fragmentation.
+   - Physical blocks support atomic reference-counted Copy-on-Write (COW): multi-turn conversations and shared system prompts reuse the same physical blocks until modified.
+   - Paged attention decode kernels stream AVX2/AVX-512 FMA dot products directly over non-contiguous blocks without memory copy or concatenation.
+   - **Measured (this PC, AVX2/FMA, `test_fast_unified_benchmark`):**
+     - PagedAttention decode (1024 tokens, 64 physical blocks, head dim 128): **24.90 µs / head**.
+     - Numerical parity with contiguous decode: maximum absolute difference $< 1\times 10^{-7}$.
+
+2. **In-Flight Continuous Batching Engine with Chunked Prefill** (`InFlightBatcher` in `include/strata/runtime/in_flight_batcher.hpp`).
+   - Replaces static batching where short requests stall waiting for long ones.
+   - Operates at token iteration granularity: requests emitting EOS or hitting token limits are evicted immediately on that step and their physical KV blocks reclaimed.
+   - Newly queued requests are admitted dynamically whenever pool blocks are free.
+   - Chunked prefill partitions long prompt evaluations into chunks (e.g. 128 or 256 tokens), interleaving compute-bound prompt prefill with memory-bound decode iterations so ongoing streams experience no latency spikes.
+   - **Measured (this PC, `test_fast_unified_benchmark`):**
+     - Continuous scheduler iteration latency (8 concurrent streams): **0.91 µs / iteration step**.
+
+3. **Speculative Decoding & Prompt Lookup Verification** (`FastSpeculativeVerifier` in `include/strata/kernels/fast_speculative.hpp`, `SuffixDrafter` in `include/strata/spec/suffix_drafter.hpp`).
+   - Evaluates $K$ candidate draft tokens in parallel using target model logits in a single forward pass.
+   - Fast SIMD argmax and rejection sampling verification: accepts all matching draft tokens, emitting a correction token on the first mismatch or a bonus token when all $K$ are accepted.
+   - Supports prompt lookup decoding: candidate $n$-grams are extracted directly from prompt history without extra model weights.
+   - **Measured (this PC, AVX2/FMA, `test_fast_unified_benchmark`):**
+     - Greedy verification latency ($K = 4$ drafts, 32,000 vocabulary size): **8.66 µs / round**.
+

@@ -108,6 +108,57 @@ public:
     }
 
     // ------------------------------------------------------------------------
+    // Adaptive Top-K Router with Dynamic Expert Pruning:
+    // Selects up to top_k experts, but prunes any expert whose softmax weight
+    // is below min_weight_threshold or if the cumulative probability of higher
+    // ranked experts already reaches cum_prob_threshold (e.g. 0.95-0.98).
+    // Returns the number of active, non-pruned experts.
+    // ------------------------------------------------------------------------
+    static size_t route_topk_with_threshold(
+        const float* __restrict__ logits,
+        size_t num_experts,
+        size_t top_k,
+        int32_t* __restrict__ out_indices,
+        float* __restrict__ out_weights,
+        float min_weight_threshold = 0.01f,
+        float cum_prob_threshold = 0.98f,
+        const MathContext& ctx = MathContext()) {
+        if (!logits || !out_indices || !out_weights || num_experts == 0 || top_k == 0) return 0;
+        route_topk(logits, num_experts, top_k, out_indices, out_weights, ctx);
+
+        size_t active_count = 0;
+        float cum_prob = 0.0f;
+        for (size_t k = 0; k < top_k; ++k) {
+            if (out_weights[k] < min_weight_threshold && active_count > 0) {
+                out_weights[k] = 0.0f;
+                continue;
+            }
+            cum_prob += out_weights[k];
+            active_count++;
+            if (cum_prob >= cum_prob_threshold && active_count >= 1) {
+                // Prune remaining low-contribution tail experts
+                for (size_t rem = k + 1; rem < top_k; ++rem) {
+                    out_weights[rem] = 0.0f;
+                }
+                break;
+            }
+        }
+
+        // Renormalize active weights
+        float sum_active = 0.0f;
+        for (size_t k = 0; k < active_count; ++k) {
+            sum_active += out_weights[k];
+        }
+        if (sum_active > 0.0f) {
+            const float inv_active = 1.0f / sum_active;
+            for (size_t k = 0; k < active_count; ++k) {
+                out_weights[k] *= inv_active;
+            }
+        }
+        return active_count;
+    }
+
+    // ------------------------------------------------------------------------
     // Batched Top-K Router: routes multiple tokens across experts.
     // Reuses the expert scores buffer across tokens to eliminate heap allocations.
     // ------------------------------------------------------------------------

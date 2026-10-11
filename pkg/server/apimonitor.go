@@ -1,13 +1,14 @@
-// pkg/server/apimonitor.go - the standalone Monitor page (/monitor, /api-monitor): the last requests' bodies and
-// answers, kept in memory. It is off unless the run config's "api_monitor" is true (or --api-monitor, or
-// STRATA_API_MONITOR=1): the prompts and answers of every client are kept, so nothing is kept (and the page and
-// /api/requests do not exist) until the user asks for it.
+// pkg/server/apimonitor.go - the standalone Monitor page (/monitor, /api-monitor): the last requests' bodies, answers and
+// debug events (what the server, the runtime and the engine did for each), kept in memory only. It is on by default when
+// the server listens on loopback, and off when it listens beyond it, unless the run config's "api_monitor" (or
+// STRATA_API_MONITOR=1/0) says otherwise: the prompts and answers of every client are kept, with no per-tenant filter.
 package server
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"strata/pkg/engineipc"
+	"strata/pkg/reqtrace"
 	"strata/pkg/runconfig"
 )
 
@@ -42,6 +44,9 @@ type apiRecord struct {
 	Usage      interface{}            `json:"usage,omitempty"`
 	Timings    interface{}            `json:"timings,omitempty"`
 
+	Debug      []debugEvent `json:"debug,omitempty"` // what each layer did for this request, oldest first (see pkg/reqtrace)
+	DebugCount int          `json:"debug_count"`
+
 	Input      string `json:"input,omitempty"`
 	Output     string `json:"output"`
 	Reasoning  string `json:"reasoning"`
@@ -52,6 +57,33 @@ type apiRecord struct {
 	ResponseTrunc bool `json:"-"`
 
 	clock time.Time
+}
+
+// debugEvent is one step of a request: when (ms since it arrived), which layer, and what.
+type debugEvent struct {
+	MS     float64 `json:"ms"`
+	Source string  `json:"source"`
+	Msg    string  `json:"msg"`
+}
+
+const apiDebugMax = 600 // events kept per request
+
+// recSink adds a request's debug events to its record, under the monitor's lock.
+type recSink struct {
+	s   *StrataServer
+	rec *apiRecord
+}
+
+func (k recSink) Add(source, msg string) {
+	k.s.apiMon.mu.Lock()
+	defer k.s.apiMon.mu.Unlock()
+	if len(k.rec.Debug) >= apiDebugMax {
+		if len(k.rec.Debug) == apiDebugMax {
+			k.rec.Debug = append(k.rec.Debug, debugEvent{round3(time.Since(k.rec.clock).Seconds() * 1000), "server", "(more events dropped)"})
+		}
+		return
+	}
+	k.rec.Debug = append(k.rec.Debug, debugEvent{round3(time.Since(k.rec.clock).Seconds() * 1000), source, msg})
 }
 
 type apiMonitorState struct {
@@ -65,10 +97,18 @@ type apiMonitorState struct {
 // apiMonitorOn says whether the opt-in monitor is on, reading the run config once.
 func (s *StrataServer) apiMonitorOn() bool {
 	s.apiMon.once.Do(func() {
-		on := s.Config.APIMonitor || os.Getenv("STRATA_API_MONITOR") == "1"
-		if p := s.runConfigPath(); !on && p != "" {
-			if cfg, err := runconfig.LoadRaw(p); err == nil && cfg["api_monitor"] == true {
-				on = true
+		// On by default only on a loopback bind: the records hold every caller's prompts and answers, and there is no
+		// per-tenant filter, so a server open to a network keeps nothing until "api_monitor": true / STRATA_API_MONITOR=1 says so.
+		loopback := s.Config.BindHost == "" || isLoopbackHost(s.Config.BindHost)
+		on := os.Getenv("STRATA_API_MONITOR") != "0" && (loopback || s.Config.APIMonitor || os.Getenv("STRATA_API_MONITOR") == "1")
+		if p := s.runConfigPath(); p != "" {
+			if cfg, err := runconfig.LoadRaw(p); err == nil {
+				switch cfg["api_monitor"] {
+				case true:
+					on = os.Getenv("STRATA_API_MONITOR") != "0"
+				case false:
+					on = false
+				}
 			}
 		}
 		s.apiMon.on = on
@@ -171,6 +211,8 @@ func (s *StrataServer) recordAPI(next http.HandlerFunc) http.HandlerFunc {
 			s.apiMon.records = s.apiMon.records[len(s.apiMon.records)-apiRecordsKept:]
 		}
 		s.apiMon.mu.Unlock()
+		r = r.WithContext(reqtrace.With(r.Context(), recSink{s, rec}))
+		reqtrace.Add(r.Context(), "server", "%s %s stream=%v session=%s, %d bytes", r.Method, r.URL.Path, rec.Stream, sc.SessionID, len(raw))
 
 		cw := &captureWriter{ResponseWriter: w}
 		next(cw, r)
@@ -207,6 +249,7 @@ func (s *StrataServer) finishRecord(rec *apiRecord, cw *captureWriter, ctx conte
 	s.apiMon.mu.Lock()
 	defer s.apiMon.mu.Unlock()
 	rec.HTTPStatus = cw.status
+	rec.DebugCount = len(rec.Debug)
 	now := time.Now()
 	wall := round3(now.Sub(rec.clock).Seconds())
 	fin := float64(now.UnixNano()) / 1e9
@@ -222,6 +265,7 @@ func (s *StrataServer) finishRecord(rec *apiRecord, cw *captureWriter, ctx conte
 	switch {
 	case ctx.Err() != nil:
 		rec.State = "disconnected"
+		rec.Debug = append(rec.Debug, debugEvent{round3(now.Sub(rec.clock).Seconds() * 1000), "server", "request context ended: " + fmt.Sprint(context.Cause(ctx))})
 	case errObj != nil || cw.status >= 400:
 		rec.State = "error"
 		if rec.Error == nil {
@@ -358,11 +402,12 @@ func (s *StrataServer) handleAPIRequests(w http.ResponseWriter, r *http.Request)
 
 // recordView is the record as JSON; the list leaves the bodies out and gives a running request its time so far.
 func (s *StrataServer) recordView(rec *apiRecord, full bool) map[string]interface{} {
+	rec.DebugCount = len(rec.Debug)
 	b, _ := json.Marshal(rec)
 	out := map[string]interface{}{}
 	_ = json.Unmarshal(b, &out)
 	if !full {
-		for _, k := range []string{"input", "output", "reasoning", "response"} {
+		for _, k := range []string{"input", "output", "reasoning", "response", "debug"} {
 			delete(out, k)
 		}
 	}

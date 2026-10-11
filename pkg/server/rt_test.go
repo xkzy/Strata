@@ -315,3 +315,32 @@ func TestRuntimeMetricsReportsVirtualKV(t *testing.T) {
 		t.Errorf("virtual_kv must say it is modeled, got source=%v", res.Metrics.VirtualKV["source"])
 	}
 }
+
+// The engine's prompt-progress lines are not generated tokens. Forwarded as tokens they fed the runtime's loop detector
+// empty tokens: ~10 progress lines (about 22,528 prompt tokens read) read as "a generation loop", which cancelled the
+// generation, re-selected the context and restarted it - three times for one long prompt.
+func TestRuntimePromptProgressIsNotAGeneratedToken(t *testing.T) {
+	ts, _ := startRTServer(t, "Thinking.\n</think>\n\nAll good.", "STRATA_FAKE_PP=40")
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/chat/completions", strings.NewReader(`{"model":"x","messages":[{"role":"user","content":"hello there"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Strata-Debug", "1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var got map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	trace, _ := json.Marshal(got["strata_trace"])
+	if strings.Contains(string(trace), "loop") || strings.Contains(string(trace), "restart requested") {
+		t.Errorf("progress lines were taken for a generation loop: %s", trace)
+	}
+	if n := strings.Count(string(trace), "starts:"); n != 1 {
+		t.Errorf("attempts = %d, want 1: %s", n, trace)
+	}
+	if u, _ := got["usage"].(map[string]interface{}); u == nil || u["completion_tokens"] == nil {
+		t.Errorf("usage: %v", got["usage"])
+	}
+}

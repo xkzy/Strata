@@ -29,7 +29,8 @@ enum class AttentionType {
     kGroupedQueryAttn,
     kMultiHeadLatentAttn,   // DeepSeek MLA
     kSparseHybridAttn,      // QSA + GDN hybrid
-    kSlidingWindowAttn      // Interleaved SWA (e.g. MiMo-V2.6)
+    kSlidingWindowAttn,     // Interleaved SWA (e.g. MiMo-V2.6)
+    kStateSpaceModel        // Mamba SSM non-attention recurrence
 };
 
 enum class LayerType {
@@ -48,6 +49,7 @@ struct MoEModelConfig {
     int64_t n_head = 24;
     int64_t n_head_kv = 2;
     int64_t head_dim = 256;
+    int64_t head_dim_qk = 0; // If > 0, asymmetric QK dimension (e.g. MiMo-V2.6: qk=192, v=128)
 
     // MoE geometry
     int64_t n_expert = 512;
@@ -68,6 +70,7 @@ struct MoEModelConfig {
     int64_t ssm_d_conv = 0;
     int64_t ssm_conv_channels = 0;
     int64_t ssm_value_dim = 0;
+    int64_t ssm_expand = 2;
 
     // Attention parameters
     int64_t idx_q_heads = 4;

@@ -60,6 +60,8 @@ type oaRequest struct {
 	ReasoningEffort     string                 `json:"reasoning_effort"`
 	EnableThinking      *bool                  `json:"enable_thinking"`
 	MathEngine          *bool                  `json:"math_engine"`
+	Abliterate          *bool                  `json:"abliterate"`
+	AbliterationStrength *float64              `json:"abliteration_strength"`
 	ChatTemplateKwargs  map[string]interface{} `json:"chat_template_kwargs"`
 	User                string                 `json:"user"`
 	SessionID           string                 `json:"session_id"`
@@ -233,6 +235,12 @@ func (r *oaRequest) applyCommon(s *StrataServer, spec *genSpec) {
 	if r.RepetitionPenalty != nil {
 		spec.Sampling.RepetitionPenalty = *r.RepetitionPenalty
 	}
+	if r.Abliterate != nil {
+		spec.Sampling.Abliterate = *r.Abliterate
+	}
+	if r.AbliterationStrength != nil {
+		spec.Sampling.AbliterationStrength = *r.AbliterationStrength
+	}
 	if r.MaxCompletionTokens != nil && *r.MaxCompletionTokens > 0 {
 		spec.MaxTokens = *r.MaxCompletionTokens
 	} else if r.MaxTokens != nil && *r.MaxTokens > 0 {
@@ -352,7 +360,8 @@ func (s *StrataServer) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	spec.Scope = req.scope(r)
-	spec.Debug = r.Header.Get("X-Strata-Debug") == "1"
+	spec.setDebug(r)
+	spec.setAbliterate(r)
 	if h := r.Header.Get("X-Strata-Math-Engine"); h == "off" || h == "false" || h == "0" {
 		spec.DisableMath = true
 	}
@@ -367,6 +376,11 @@ func (s *StrataServer) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	model := s.Config.ModelName
+	if req.Model != "" && s.Registry != nil {
+		model = s.Registry.ResolveModel(req.Model, s.Config.ModelName)
+	} else if req.Model != "" {
+		model = req.Model
+	}
 	chunk := func(delta map[string]interface{}, finish interface{}) map[string]interface{} {
 		return map[string]interface{}{"id": reqID, "object": "chat.completion.chunk", "created": created, "model": model,
 			"choices": []map[string]interface{}{{"index": 0, "delta": delta, "finish_reason": finish}}}
@@ -471,7 +485,7 @@ func (s *StrataServer) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 		"choices": []map[string]interface{}{{"index": 0, "message": msg, "finish_reason": finish}},
 		"usage":   usage(prompt, gen),
 	}
-	if spec.Debug && len(trace) > 0 {
+	if spec.DebugEcho && len(trace) > 0 {
 		resp["strata_trace"] = trace // what the runtime did internally; only on request
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -503,6 +517,7 @@ func (s *StrataServer) handleCompletions(w http.ResponseWriter, r *http.Request)
 	}
 	spec := genSpec{Raw: true, RawPrompt: prompt, Scope: req.scope(r)}
 	req.applyCommon(s, &spec)
+	spec.setAbliterate(r)
 	reqID := fmt.Sprintf("cmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
 	ctx, done := s.registerRequest(r.Context(), reqID)
@@ -512,8 +527,14 @@ func (s *StrataServer) handleCompletions(w http.ResponseWriter, r *http.Request)
 		writeAPIError(w, err)
 		return
 	}
+	model := s.Config.ModelName
+	if req.Model != "" && s.Registry != nil {
+		model = s.Registry.ResolveModel(req.Model, s.Config.ModelName)
+	} else if req.Model != "" {
+		model = req.Model
+	}
 	mk := func(text string, finish interface{}) map[string]interface{} {
-		return map[string]interface{}{"id": reqID, "object": "text_completion", "created": created, "model": s.Config.ModelName,
+		return map[string]interface{}{"id": reqID, "object": "text_completion", "created": created, "model": model,
 			"choices": []map[string]interface{}{{"index": 0, "text": text, "finish_reason": finish}}}
 	}
 	if req.Stream {

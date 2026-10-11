@@ -564,6 +564,12 @@ function renderMonDetail() {
   renderMonPaneContent();
 }
 
+// The debug events of a request: what the server, the runtime and the engine did for it, oldest first.
+function debugLines(d, filter) {
+  return (d.debug || []).filter((e) => !filter || filter(e))
+    .map((e) => `${String(Math.round(e.ms)).padStart(8)} ms  ${String(e.source).padEnd(9)} ${e.msg}`);
+}
+
 function renderMonPaneContent() {
   if (!monDetail) return;
   const d = monDetail;
@@ -577,19 +583,19 @@ function renderMonPaneContent() {
   } else if (monPane === "reasoning") {
     text = d.reasoning || "(no reasoning content generated)";
     note = "Reasoning trajectory (<think>)";
+  } else if (monPane === "debug") {
+    const lines = debugLines(d);
+    text = lines.length ? lines.join("\n") : "No debug events were recorded for this request.";
+    note = `Debug trace: ${lines.length} events (server, rtclient, engine, runtime), time since the request arrived`;
   } else if (monPane === "vctx") {
-    text = JSON.stringify(d.virtual_context || d.vctx || {
-      working_set_pages: d.working_set_pages || "resident in L1 VRAM / L2 RAM",
-      virtual_tokens: d.virtual_tokens || "10.4M virtual context space",
-      prefetch_status: "active"
-    }, null, 2);
-    note = "Virtual Context & KV residency state";
+    const lines = debugLines(d, (e) => e.source === "runtime" && /\b(context|kv|retrieval|memory)\b/.test(e.msg))
+      .concat(debugLines(d, (e) => /CUT FROM THE FRONT|prompt built|reading the prompt|RESUME|REUSED/.test(e.msg)));
+    text = lines.join("\n") || "The runtime recorded no context or KV events for this request.";
+    note = "What the runtime and the engine did with the context for this request (from the debug trace, not an estimate)";
   } else if (monPane === "tool") {
-    text = JSON.stringify(d.tools || d.cas || {
-      verified_facts: d.verified_facts || 0,
-      cas_saved_tokens: d.cas_saved_tokens || 0
-    }, null, 2);
-    note = "Tool execution & CAS verification store";
+    text = debugLines(d, (e) => e.source === "runtime" && /\b(recovery|verif|claim|tool_output|math|hedge)/.test(e.msg)).join("\n")
+      || "The runtime recorded no verification or tool events for this request.";
+    note = "Verification and tool events of the runtime for this request (from the debug trace)";
   } else if (monPane === "scope") {
     text = JSON.stringify(d.scope || {session_id: getSessionId(), tenant_id: "default"}, null, 2);
     note = "Multi-tenant isolation & security scope";
@@ -774,7 +780,7 @@ function markdown(text) {
 }
 
 // ------------------------------------------------------------------ Chat & Multi-Session
-const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true};
+const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, abliterate: false, abliteration_strength: 1.0};
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
 let sessions = [];
 let activeSessionId = "";
@@ -1232,6 +1238,12 @@ async function send() {
   if (settings.seed) body.seed = +settings.seed;
   if (settings.max) body.max_tokens = +settings.max;
   if (projectionLoaded()) body.experimental_speed_projection = !!settings.esp;
+  if (settings.abliterate) {
+    body.abliterate = true;
+    if (settings.abliteration_strength !== undefined) {
+      body.abliteration_strength = +settings.abliteration_strength;
+    }
+  }
 
   let firstAt = null, thinkStart = null, usage = null, frame = 0;
   const paint = () => { frame = 0; updateAssistant(el, m, true); scrollDown(); };
@@ -1477,6 +1489,10 @@ function loadDrawer(s = settings) {
   $("s-show").setAttribute("aria-checked", String(!!s.show));
   $("s-esp").setAttribute("aria-checked", String(s.esp !== false));
   $("esp-row").hidden = !projectionLoaded();
+  $("s-abliterate").setAttribute("aria-checked", String(!!s.abliterate));
+  $("s-abliterate-strength").value = s.abliteration_strength !== undefined ? s.abliteration_strength : 1.0;
+  $("o-abliterate-strength").textContent = (+($("s-abliterate-strength").value)).toFixed(2);
+  $("abliterate-strength-field").hidden = !s.abliterate;
   $("s-share").setAttribute("aria-checked", String(sharedOn));
   outputs();
 }
@@ -1495,6 +1511,10 @@ function sharedDefaults(s) {
   if (s.seed) d.seed = +s.seed;
   if (s.max) d.max_tokens = +s.max;
   if (projectionLoaded()) d.experimental_speed_projection = s.esp !== false;
+  if (s.abliterate) {
+    d.abliterate = true;
+    if (s.abliteration_strength !== undefined) d.abliteration_strength = +s.abliteration_strength;
+  }
   return d;
 }
 async function saveShared(on, s) {
@@ -1525,6 +1545,14 @@ for (const b of $("s-thinking").children) b.onclick = () => { for (const x of $(
 for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = outputs;
 $("s-show").onclick = () => $("s-show").setAttribute("aria-checked", String($("s-show").getAttribute("aria-checked") !== "true"));
 $("s-esp").onclick = () => $("s-esp").setAttribute("aria-checked", String($("s-esp").getAttribute("aria-checked") !== "true"));
+$("s-abliterate").onclick = () => {
+  const on = $("s-abliterate").getAttribute("aria-checked") !== "true";
+  $("s-abliterate").setAttribute("aria-checked", String(on));
+  $("abliterate-strength-field").hidden = !on;
+};
+$("s-abliterate-strength").oninput = () => {
+  $("o-abliterate-strength").textContent = (+($("s-abliterate-strength").value)).toFixed(2);
+};
 $("s-share").onclick = () => $("s-share").setAttribute("aria-checked", String($("s-share").getAttribute("aria-checked") !== "true"));
 $("s-reset").onclick = () => loadDrawer(DEFAULTS);
 $("s-apply").onclick = async () => {
@@ -1532,7 +1560,9 @@ $("s-apply").onclick = async () => {
   settings = {thinking: sel ? sel.dataset.v : "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
               top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
               show: $("s-show").getAttribute("aria-checked") === "true",
-              esp: $("s-esp").getAttribute("aria-checked") === "true"};
+              esp: $("s-esp").getAttribute("aria-checked") === "true",
+              abliterate: $("s-abliterate").getAttribute("aria-checked") === "true",
+              abliteration_strength: +$("s-abliterate-strength").value};
   store.set("sampling", settings);
   const share = $("s-share").getAttribute("aria-checked") === "true";
   openDrawer(false);

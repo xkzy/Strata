@@ -101,6 +101,11 @@ struct VirtualContextConfig {
     double unavailable_floor = 0.04;         // an earlier-context reference is only "unavailable" when nothing reaches even this
     size_t warm_pages = 256;
     double hot_bonus = 0.15;                 // keeps the working set (and its KV prefix) stable between requests
+    // Prefix-stable window: with SelectionRequest::request_items set, pages of the last window that this request still
+    // holds are sent again in the same order and form, so the engine's cached KV prefix keeps matching.  Over budget, the
+    // OLDEST carried pages go in one chunk, down to stable_keep of the budget, so the next turns only append.
+    bool stable_window = true;
+    double stable_keep = 0.70;
     // importance weights
     RetrievalConfig retrieval;               // hybrid retrieval and its caches (retrieval.hpp)
     double w_relevance = 1.0, w_recency = 0.35, w_frequency = 0.12, w_dependents = 0.15, w_pinned = 2.0, w_tool = 0.10, w_verified = 0.20;
@@ -120,6 +125,7 @@ struct SelectionRequest {
     std::string query;                          // what the model has to answer now
     int64_t budget_tokens = 4096;               // physical budget for context (prompt minus output/evidence reserve)
     std::set<uint64_t> current_items;           // items of the present request: always materialized, never summarized
+    std::set<uint64_t> request_items;           // every item the request itself carries (empty = no prefix-stable window)
     context::SecurityScope requester;
     std::vector<std::string> extra_queries;     // e.g. recovery asks for more
 };
@@ -215,6 +221,10 @@ public:
     static std::shared_ptr<VirtualContext> load(const std::string& manifest_path, VirtualContextConfig cfg, std::shared_ptr<IPageBackend> backend,
                                                 std::shared_ptr<EmbeddingCache> embeddings = nullptr);
 
+    // The window budget counts estimated tokens; the runtime learns how far the real tokenizer is from them (>= 1 means the
+    // real prompt is longer) and scales the next budget by it, so the window fits what the server keeps.
+    double budget_scale() const;
+    void set_budget_scale(double scale);
     ContextWindowInfo window_info() const;
     VirtualContextStats stats() const;
     RetrievalMetrics retrieval_metrics() const;

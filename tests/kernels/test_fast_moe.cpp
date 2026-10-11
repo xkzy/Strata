@@ -421,6 +421,28 @@ void test_negative_indices_safety() {
     }
 }
 
+void test_adaptive_threshold_routing() {
+    using namespace strata::kernels;
+    const size_t num_experts = 8;
+    const size_t top_k = 4;
+    // Dominant expert 0 with logit 10.0, others very small
+    std::vector<float> logits = {10.0f, 0.0f, -5.0f, -10.0f, -2.0f, -3.0f, -1.0f, 0.5f};
+    std::vector<int32_t> selected_experts(top_k);
+    std::vector<float> selected_weights(top_k);
+
+    size_t active = FastMoE::route_topk_with_threshold(
+        logits.data(), num_experts, top_k,
+        selected_experts.data(), selected_weights.data(),
+        0.01f, 0.98f
+    );
+
+    // Expert 0 has >99% probability, so active count should be 1
+    assert(active == 1);
+    assert(selected_experts[0] == 0);
+    assert(std::abs(selected_weights[0] - 1.0f) < 1e-4f);
+    assert(selected_weights[1] == 0.0f);
+}
+
 int main() {
     std::cout << "Running Fast MoE unit tests..." << std::endl;
     test_basic_route_topk();
@@ -431,6 +453,7 @@ int main() {
     test_bounds_and_nan_sanitization();
     test_edge_cases();
     test_negative_indices_safety();
+    test_adaptive_threshold_routing();
 
     std::cout << "test_fast_moe passed" << std::endl;
     return 0;

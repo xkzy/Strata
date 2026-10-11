@@ -63,6 +63,7 @@
 #include "strata/spec/draft_source.hpp"
 #include "strata/spec/suffix_drafter.hpp"
 #include "strata/kernels/cvec.hpp"
+#include "strata/kernels/fast_abliteration.hpp"
 #include "strata/core/progress.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/emulate.hpp"
@@ -637,6 +638,9 @@ struct Options {
     int cvec_first = -1, cvec_last = -1;   ///< llama.cpp's defaults: 1 .. the last layer
     int cvec_mode = 1;                     ///< 0 = project, 1 = add (llama.cpp's default)
     int cvec_single = -1;                  ///< --cvec-dir single:L (project mode): layer L's direction everywhere
+    bool abliterate = false;               ///< online abliteration / uncensored intervention
+    float abliteration_strength = 1.0f;    ///< refusal suppression strength multiplier
+    std::string abliteration_vector;       ///< refusal vector file (.gguf or .ablr)
 };
 
 void usage() {
@@ -763,6 +767,11 @@ void usage() {
                  "  --control-vector-layer-range A B  the layers it follows (inclusive; default 1 .. the last)\n"
                  "  --cvec-mode add|project  h += s v (default) or h -= s (h.v) v with v unit\n"
                  "  --cvec-dir per-layer|single:L  each layer's own direction (default) or layer L's everywhere (project)\n"
+                 "  --abliterate         enable online abliteration (uncensored representation intervention).  Needs a\n"
+                 "                       measured refusal direction: --abliteration-vector FILE or --control-vector-scaled\n"
+                 "                       (there is no built-in direction)\n"
+                 "  --abliteration-strength S  refusal suppression strength multiplier (default 1.0)\n"
+                 "  --abliteration-vector FILE refusal vector file (.gguf or .ablr); auto-calibrated when omitted\n"
                  "  --no-token-graph     A/B: two graphs per layer (the host launches each) instead of one per token\n"
                  "  --no-fused-gr        A/B: the six-kernel hyper-connection read and a separate write (native)\n"
                  "  --prefill CHUNK      batched prompt processing in chunks of CHUNK tokens (needs --native); auto =\n"
@@ -1373,6 +1382,48 @@ bool load_control_vectors(const Options& o, const strata::core::ModelGeometry& g
             return false;
         }
     }
+    if (o.abliterate && o.cvec_files.empty()) {
+        if (!o.abliteration_vector.empty()) {
+            std::vector<float> ablr_data;
+            int64_t ablr_D = 0, ablr_L = 0;
+            if (strata::kernels::FastAbliteration::load_vector_file(o.abliteration_vector, ablr_data, ablr_D, ablr_L)) {
+                if (ablr_D != N) {
+                    err = o.abliteration_vector + ": vector dimension mismatch: expected " + std::to_string(N) + ", got " + std::to_string(ablr_D);
+                    return false;
+                }
+                const int first = o.cvec_first <= 0 ? 1 : o.cvec_first;
+                const int last = (o.cvec_last <= 0 || o.cvec_last >= L) ? (int) L - 1 : o.cvec_last;
+                for (int64_t l = first; l <= last && l < ablr_L; ++l) {
+                    // Unit-normalize each layer's row before applying the strength, so --abliteration-strength is
+                    // the same multiplier for every file whatever norm its rows carry (project mode's scale s_l
+                    // is the norm of what is stored here, so an unnormalized row would silently scale strength).
+                    double nrm = 0.0;
+                    for (int64_t j = 0; j < N; ++j) {
+                        const float v = ablr_data[(size_t) (l * N + j)];
+                        nrm += (double) v * v;
+                    }
+                    nrm = std::sqrt(nrm);
+                    if (nrm <= 0.0) continue;   // a zero row carries no direction; project mode would skip it too
+                    for (int64_t j = 0; j < N; ++j) {
+                        data[(size_t) (l * N + j)] = (float) (o.abliteration_strength * ablr_data[(size_t) (l * N + j)] / nrm);
+                    }
+                    have[(size_t) l] = true;
+                }
+            } else {
+                err = o.abliteration_vector + ": unable to load refusal vector file";
+                return false;
+            }            } else {
+                // There is no built-in refusal direction.  Without a file this branch used to fill the tables with
+                // a synthetic sine/cosine basis ("canonical" direction) that no measurement ever tied to refusal:
+                // projecting it out perturbed the model but could not uncensor it (docs/ABLITERATION_PLAN.md, G1).
+                // The direction must come from measured activations (a file like data/experimental-speed-projection/
+                // or one's own), so refuse instead of steering by a fabricated vector.
+                err = "--abliterate needs a measured refusal direction: pass --abliteration-vector FILE or "
+                      "--control-vector-scaled FILE:1.0 with --cvec-mode project (for example "
+                      "data/experimental-speed-projection/Qwen3.8-Flash-Next-experimental-speed-projection.gguf)";
+                return false;
+            }
+    }
     const int first = o.cvec_first <= 0 ? 1 : o.cvec_first;
     const int last = (o.cvec_last <= 0 || o.cvec_last >= L) ? (int) L - 1 : o.cvec_last;
     const int single = o.cvec_mode == 0 ? o.cvec_single : -1;
@@ -1778,6 +1829,16 @@ int main(int argc, char** argv) {
             else if (d.rfind("single:", 0) == 0) o.cvec_single = std::atoi(d.c_str() + 7);
             else { std::fprintf(stderr, "--cvec-dir: per-layer or single:L, got '%s'\n", d.c_str()); return 2; }
         }
+        else if (a == "--abliterate") {
+            o.abliterate = true;
+            o.cvec_mode = 0; // project mode
+        }
+        else if (a == "--abliteration-strength") {
+            o.abliteration_strength = std::strtof(next("--abliteration-strength"), nullptr);
+        }
+        else if (a == "--abliteration-vector") {
+            o.abliteration_vector = next("--abliteration-vector");
+        }
         else if (a == "--no-spec-split") o.spec_split = false;
         else if (a == "--eos-ids") {
             std::string e;
@@ -2103,16 +2164,25 @@ int main(int argc, char** argv) {
             o.native_shards = strata::gguf_split_paths(o.native_preset);
             // --ple-gguf defaults to the shard that holds the PLE table, found by name: shard 2 of the ISTA files
             // and of Unsloth's UD-Q4_K_XL, shard 1 of Swift's
+            bool has_ple = false;
             if (o.ple_gguf.empty() && !o.no_ple) {
                 const strata::GgufModel model(o.native_shards);
                 size_t at = 0;
-                if (model.find("per_layer_token_embd.weight", &at) != nullptr) o.ple_gguf = o.native_shards[at];
+                if (model.find("per_layer_token_embd.weight", &at) != nullptr) {
+                    o.ple_gguf = o.native_shards[at];
+                    has_ple = true;
+                }
+            } else if (!o.ple_gguf.empty()) {
+                has_ple = true;
+            }
+            if (!has_ple) {
+                o.no_ple = true;
             }
         } catch (const std::exception& e) {
             std::fprintf(stderr, "strata generate: --native %s: %s\n", o.native_preset.c_str(), e.what());
             return 2;
         }
-        if (o.no_ple || o.ple_gguf.empty()) {
+        if (!o.no_ple && o.ple_gguf.empty()) {
             std::fprintf(stderr, "strata generate: --native requires --ple-gguf (the PLE key is native too), and no "
                                  "shard of the model holds per_layer_token_embd.weight\n");
             return 2;
@@ -2120,22 +2190,25 @@ int main(int argc, char** argv) {
         o.stream_token = true;
         o.gr_native_mmvf = true;
         o.native_bf16 = o.native_bf16_extra = true;
-        o.native_ple_key = o.native_moe_combine = o.native_gdn = o.native_router = true;
-        o.native_qsa = o.native_qsa_indexer = o.native_rope = o.native_ple_postops = true;
+        o.native_moe_combine = o.native_gdn = o.native_router = true;
+        o.native_qsa = o.native_qsa_indexer = o.native_rope = true;
+        o.native_ple_key = o.native_ple_postops = !o.no_ple;
         if (o.native_head_gguf.empty()) o.native_head_gguf = o.native_preset;
         if (o.native_dense_gguf.empty()) {
             // every shard of the model (<name>-0000N-of-0000M.gguf beside --native), then the PLE shard: a split
             // may put any layer in any shard (Swift's GGUFs: layers 13-47 in shard 2, the PLE table in shard 1)
             o.native_dense_gguf = o.native_shards;
-            // a PLE-only table (tools/ple_fp8_pack.py: architecture strata-ple) holds no projections
-            bool ple_only = false;
-            try {
-                strata::GgufFile pg(o.ple_gguf);
-                if (const strata::MetaValue* v = pg.get("general.architecture")) ple_only = v->s == "strata-ple";
-            } catch (const std::exception&) {}
-            if (!ple_only &&
-                std::find(o.native_dense_gguf.begin(), o.native_dense_gguf.end(), o.ple_gguf) == o.native_dense_gguf.end())
-                o.native_dense_gguf.push_back(o.ple_gguf);
+            if (!o.ple_gguf.empty()) {
+                // a PLE-only table (tools/ple_fp8_pack.py: architecture strata-ple) holds no projections
+                bool ple_only = false;
+                try {
+                    strata::GgufFile pg(o.ple_gguf);
+                    if (const strata::MetaValue* v = pg.get("general.architecture")) ple_only = v->s == "strata-ple";
+                } catch (const std::exception&) {}
+                if (!ple_only &&
+                    std::find(o.native_dense_gguf.begin(), o.native_dense_gguf.end(), o.ple_gguf) == o.native_dense_gguf.end())
+                    o.native_dense_gguf.push_back(o.ple_gguf);
+            }
         }
         // Plan v0.3 (24 Sep): the CPU experts stay on the VNNI kernel.  The llama.cpp-CPU-exact q8_0 contract
         // cost 27.0 vs 17.2 ms/token of pool time and G-C does not need it; `--cpu-oracle-q8-0` still selects it.
@@ -2651,10 +2724,10 @@ int main(int argc, char** argv) {
     // before session_init: every graph captured from here on has the vector's kernels where it applies
     std::string cvec_summary = "0";
     uint64_t cvec_digest = 0;   // a session file is bound to the loaded vector (0: none)
-    if (!o.cvec_files.empty()) {
+    if (!o.cvec_files.empty() || o.abliterate) {
         std::string ce;
         if (!load_control_vectors(o, g, cvec_summary, cvec_digest, ce)) {
-            std::fprintf(stderr, "strata generate: control vector: %s\n", ce.c_str());
+            std::fprintf(stderr, "strata generate: control vector / abliteration: %s\n", ce.c_str());
             return 2;
         }
     }
@@ -8055,7 +8128,7 @@ int main(int argc, char** argv) {
                     if (eq == std::string::npos) { endp = const_cast<char*>(start); break; }
                     const std::string key = tok.substr(0, eq);
                     const float fv = std::strtof(tok.c_str() + eq + 1, nullptr);
-                    if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
+                    if (key == "cvec" || key == "abliterate") req_cvec = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "ckpt") req_ckpt = std::atoi(tok.c_str() + eq + 1) != 0;
                     else if (key == "temperature") req_temperature = fv;
                     else if (key == "top_p") req_top_p = fv;

@@ -9,6 +9,7 @@
 
 #include "strata/kernels/fast_activations.hpp"
 #include "strata/kernels/fast_parallel.hpp"
+#include "strata/kernels/fast_quant.hpp"
 #include <cmath>
 #include <cstdint>
 #include <cstddef>
@@ -56,6 +57,142 @@ private:
         return hsum256_ps(sum256);
     }
 #endif
+
+    // Xenolith-style fast single-block Q4_0 x Q8_0 dot-product (32 elements per block)
+    static inline float dot_q4_0_q8_0_block(const FastQuant::BlockQ4_0& w, const FastQuant::BlockQ8_0& a) {
+        int32_t int_sum = 0;
+#if defined(__AVX2__)
+        __m128i qw = _mm_loadu_si128(reinterpret_cast<const __m128i*>(w.qs));
+        __m128i qw_lo = _mm_and_si128(qw, _mm_set1_epi8(0x0F));
+        __m128i qw_hi = _mm_and_si128(_mm_srli_epi16(qw, 4), _mm_set1_epi8(0x0F));
+
+        __m128i qw_unpacked_lo = _mm_unpacklo_epi8(qw_lo, qw_hi);
+        __m128i qw_unpacked_hi = _mm_unpackhi_epi8(qw_lo, qw_hi);
+
+        __m128i qa_lo = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a.qs));
+        __m128i qa_hi = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a.qs + 16));
+
+        __m128i p_lo = _mm_maddubs_epi16(qw_unpacked_lo, qa_lo);
+        __m128i p_hi = _mm_maddubs_epi16(qw_unpacked_hi, qa_hi);
+
+        __m128i s_lo = _mm_madd_epi16(p_lo, _mm_set1_epi16(1));
+        __m128i s_hi = _mm_madd_epi16(p_hi, _mm_set1_epi16(1));
+
+        __m128i total = _mm_add_epi32(s_lo, s_hi);
+        total = _mm_add_epi32(total, _mm_shuffle_epi32(total, 0x4E));
+        total = _mm_add_epi32(total, _mm_shuffle_epi32(total, 0xB1));
+        int_sum = _mm_cvtsi128_si32(total);
+#else
+        for (int j = 0; j < 16; ++j) {
+            uint8_t byte = w.qs[j];
+            int32_t n0 = static_cast<int32_t>(byte & 0x0F);
+            int32_t n1 = static_cast<int32_t>((byte >> 4) & 0x0F);
+            int_sum += n0 * static_cast<int32_t>(a.qs[j * 2 + 0]);
+            int_sum += n1 * static_cast<int32_t>(a.qs[j * 2 + 1]);
+        }
+#endif
+        int32_t corrected = int_sum - (8 * static_cast<int32_t>(a.sigma));
+        return static_cast<float>(corrected) * (w.d * a.d);
+    }
+
+    // Xenolith-style fast single-block Q4_1 x Q8_1 dot-product (32 elements per block)
+    static inline float dot_q4_1_q8_1_block(const FastQuant::BlockQ4_1& w, const FastQuant::BlockQ8_1& a) {
+        int32_t int_sum = 0;
+#if defined(__AVX2__)
+        __m128i qw = _mm_loadu_si128(reinterpret_cast<const __m128i*>(w.qs));
+        __m128i qw_lo = _mm_and_si128(qw, _mm_set1_epi8(0x0F));
+        __m128i qw_hi = _mm_and_si128(_mm_srli_epi16(qw, 4), _mm_set1_epi8(0x0F));
+
+        __m128i qw_unpacked_lo = _mm_unpacklo_epi8(qw_lo, qw_hi);
+        __m128i qw_unpacked_hi = _mm_unpackhi_epi8(qw_lo, qw_hi);
+
+        __m128i qa_lo = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a.qs));
+        __m128i qa_hi = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a.qs + 16));
+
+        __m128i p_lo = _mm_maddubs_epi16(qw_unpacked_lo, qa_lo);
+        __m128i p_hi = _mm_maddubs_epi16(qw_unpacked_hi, qa_hi);
+
+        __m128i s_lo = _mm_madd_epi16(p_lo, _mm_set1_epi16(1));
+        __m128i s_hi = _mm_madd_epi16(p_hi, _mm_set1_epi16(1));
+
+        __m128i total = _mm_add_epi32(s_lo, s_hi);
+        total = _mm_add_epi32(total, _mm_shuffle_epi32(total, 0x4E));
+        total = _mm_add_epi32(total, _mm_shuffle_epi32(total, 0xB1));
+        int_sum = _mm_cvtsi128_si32(total);
+#else
+        for (int j = 0; j < 16; ++j) {
+            uint8_t byte = w.qs[j];
+            int32_t n0 = static_cast<int32_t>(byte & 0x0F);
+            int32_t n1 = static_cast<int32_t>((byte >> 4) & 0x0F);
+            int_sum += n0 * static_cast<int32_t>(a.qs[j * 2 + 0]);
+            int_sum += n1 * static_cast<int32_t>(a.qs[j * 2 + 1]);
+        }
+#endif
+        return (w.d * a.d) * static_cast<float>(int_sum) + (w.m * a.s);
+    }
+
+    // Xenolith-style fast single-block Q5_0 x Q8_0 dot-product (32 elements per block)
+    static inline float dot_q5_0_q8_0_block(const FastQuant::BlockQ5_0& w, const FastQuant::BlockQ8_0& a) {
+        int32_t int_sum = 0;
+#if defined(__AVX2__)
+        __m128i qw = _mm_loadu_si128(reinterpret_cast<const __m128i*>(w.qs));
+        __m128i qw_lo = _mm_and_si128(qw, _mm_set1_epi8(0x0F));
+        __m128i qw_hi = _mm_and_si128(_mm_srli_epi16(qw, 4), _mm_set1_epi8(0x0F));
+
+        __m128i qw_unpacked_lo = _mm_unpacklo_epi8(qw_lo, qw_hi);
+        __m128i qw_unpacked_hi = _mm_unpackhi_epi8(qw_lo, qw_hi);
+
+        uint32_t qh_bits = 0;
+        std::memcpy(&qh_bits, w.qh, 4);
+
+        const uint16_t qh_lo_16 = static_cast<uint16_t>(qh_bits & 0xFFFF);
+        const uint16_t qh_hi_16 = static_cast<uint16_t>((qh_bits >> 16) & 0xFFFF);
+        const __m128i bit_masks = _mm_setr_epi16(1<<0, 1<<1, 1<<2, 1<<3, 1<<4, 1<<5, 1<<6, 1<<7);
+
+        __m128i v0 = _mm_set1_epi16(qh_lo_16 & 0xFF);
+        __m128i b0 = _mm_cmpeq_epi16(_mm_and_si128(v0, bit_masks), bit_masks);
+        __m128i v1 = _mm_set1_epi16((qh_lo_16 >> 8) & 0xFF);
+        __m128i b1 = _mm_cmpeq_epi16(_mm_and_si128(v1, bit_masks), bit_masks);
+        __m128i qh_vec_lo = _mm_and_si128(_mm_packs_epi16(b0, b1), _mm_set1_epi8(0x10));
+
+        __m128i v2 = _mm_set1_epi16(qh_hi_16 & 0xFF);
+        __m128i b2 = _mm_cmpeq_epi16(_mm_and_si128(v2, bit_masks), bit_masks);
+        __m128i v3 = _mm_set1_epi16((qh_hi_16 >> 8) & 0xFF);
+        __m128i b3 = _mm_cmpeq_epi16(_mm_and_si128(v3, bit_masks), bit_masks);
+        __m128i qh_vec_hi = _mm_and_si128(_mm_packs_epi16(b2, b3), _mm_set1_epi8(0x10));
+
+        __m128i qw_full_lo = _mm_or_si128(qw_unpacked_lo, qh_vec_lo);
+        __m128i qw_full_hi = _mm_or_si128(qw_unpacked_hi, qh_vec_hi);
+
+        __m128i qa_lo = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a.qs));
+        __m128i qa_hi = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a.qs + 16));
+
+        __m128i p_lo = _mm_maddubs_epi16(qw_full_lo, qa_lo);
+        __m128i p_hi = _mm_maddubs_epi16(qw_full_hi, qa_hi);
+
+        __m128i s_lo = _mm_madd_epi16(p_lo, _mm_set1_epi16(1));
+        __m128i s_hi = _mm_madd_epi16(p_hi, _mm_set1_epi16(1));
+
+        __m128i total = _mm_add_epi32(s_lo, s_hi);
+        total = _mm_add_epi32(total, _mm_shuffle_epi32(total, 0x4E));
+        total = _mm_add_epi32(total, _mm_shuffle_epi32(total, 0xB1));
+        int_sum = _mm_cvtsi128_si32(total);
+#else
+        uint32_t qh_bits = 0;
+        std::memcpy(&qh_bits, w.qh, 4);
+        for (int j = 0; j < 16; ++j) {
+            uint8_t byte = w.qs[j];
+            uint8_t b0 = static_cast<uint8_t>((qh_bits >> (j * 2 + 0)) & 1);
+            uint8_t b1 = static_cast<uint8_t>((qh_bits >> (j * 2 + 1)) & 1);
+            int32_t n0 = static_cast<int32_t>((byte & 0x0F) | (b0 << 4));
+            int32_t n1 = static_cast<int32_t>(((byte >> 4) & 0x0F) | (b1 << 4));
+            int_sum += n0 * static_cast<int32_t>(a.qs[j * 2 + 0]);
+            int_sum += n1 * static_cast<int32_t>(a.qs[j * 2 + 1]);
+        }
+#endif
+        int32_t corrected = int_sum - (16 * static_cast<int32_t>(a.sigma));
+        return static_cast<float>(corrected) * (w.d * a.d);
+    }
 
 public:
     // ------------------------------------------------------------------------
@@ -374,6 +511,258 @@ public:
                 Out[m * N + n] = fast_math::fast_swiglu(g_sum, u_sum);
             }
         }
+    }
+
+    // ------------------------------------------------------------------------
+    // Fast Quantized Matrix-Vector Multiplication (Q4_0 weights x Q8_0 vector):
+    // y = alpha * A * x + beta * y
+    // A: [M, K/32] BlockQ4_0, x: [K/32] BlockQ8_0, y: [M] float
+    // ------------------------------------------------------------------------
+    static void gemv_q4_0_q8_0(const FastQuant::BlockQ4_0* __restrict__ A,
+                              const FastQuant::BlockQ8_0* __restrict__ x,
+                              float* __restrict__ y,
+                              int64_t M, int64_t K,
+                              float alpha = 1.0f, float beta = 0.0f,
+                              ActivationType act = ActivationType::kNone) {
+        if (M <= 0 || K <= 0) return;
+        const int64_t num_blocks = (K + 31) / 32;
+
+        #pragma omp parallel for schedule(static) if (M * K >= fast_parallel::kGemvMinMacs)
+        for (int64_t i = 0; i < (M & ~3); i += 4) {
+            const FastQuant::BlockQ4_0* r0 = A + (i + 0) * num_blocks;
+            const FastQuant::BlockQ4_0* r1 = A + (i + 1) * num_blocks;
+            const FastQuant::BlockQ4_0* r2 = A + (i + 2) * num_blocks;
+            const FastQuant::BlockQ4_0* r3 = A + (i + 3) * num_blocks;
+
+            float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
+            for (int64_t b = 0; b < num_blocks; ++b) {
+#if defined(__AVX2__)
+                const auto& ab = x[b];
+                __m128i qa_lo = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ab.qs));
+                __m128i qa_hi = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ab.qs + 16));
+                const __m128i mask_0f = _mm_set1_epi8(0x0F);
+                const __m128i ones = _mm_set1_epi16(1);
+
+                auto eval_wb = [&](const FastQuant::BlockQ4_0& wb) -> float {
+                    __m128i qw = _mm_loadu_si128(reinterpret_cast<const __m128i*>(wb.qs));
+                    __m128i qw_lo = _mm_and_si128(qw, mask_0f);
+                    __m128i qw_hi = _mm_and_si128(_mm_srli_epi16(qw, 4), mask_0f);
+                    __m128i p_lo = _mm_maddubs_epi16(_mm_unpacklo_epi8(qw_lo, qw_hi), qa_lo);
+                    __m128i p_hi = _mm_maddubs_epi16(_mm_unpackhi_epi8(qw_lo, qw_hi), qa_hi);
+                    __m128i tot = _mm_add_epi32(_mm_madd_epi16(p_lo, ones), _mm_madd_epi16(p_hi, ones));
+                    tot = _mm_add_epi32(tot, _mm_shuffle_epi32(tot, 0x4E));
+                    tot = _mm_add_epi32(tot, _mm_shuffle_epi32(tot, 0xB1));
+                    int32_t isum = _mm_cvtsi128_si32(tot);
+                    int32_t corrected = isum - (8 * static_cast<int32_t>(ab.sigma));
+                    return static_cast<float>(corrected) * (wb.d * ab.d);
+                };
+                acc0 += eval_wb(r0[b]);
+                acc1 += eval_wb(r1[b]);
+                acc2 += eval_wb(r2[b]);
+                acc3 += eval_wb(r3[b]);
+#else
+                acc0 += dot_q4_0_q8_0_block(r0[b], x[b]);
+                acc1 += dot_q4_0_q8_0_block(r1[b], x[b]);
+                acc2 += dot_q4_0_q8_0_block(r2[b], x[b]);
+                acc3 += dot_q4_0_q8_0_block(r3[b], x[b]);
+#endif
+            }
+
+            float v0 = alpha * acc0, v1 = alpha * acc1, v2 = alpha * acc2, v3 = alpha * acc3;
+            if (beta != 0.0f) {
+                v0 += beta * y[i + 0];
+                v1 += beta * y[i + 1];
+                v2 += beta * y[i + 2];
+                v3 += beta * y[i + 3];
+            }
+            if (act != ActivationType::kNone) {
+                v0 = fast_math::fast_activate(act, v0);
+                v1 = fast_math::fast_activate(act, v1);
+                v2 = fast_math::fast_activate(act, v2);
+                v3 = fast_math::fast_activate(act, v3);
+            }
+            y[i + 0] = v0;
+            y[i + 1] = v1;
+            y[i + 2] = v2;
+            y[i + 3] = v3;
+        }
+
+        // Remainder loop
+        for (int64_t i = (M & ~3); i < M; ++i) {
+            const FastQuant::BlockQ4_0* row = A + i * num_blocks;
+            float acc = 0.0f;
+            for (int64_t b = 0; b < num_blocks; ++b) {
+                acc += dot_q4_0_q8_0_block(row[b], x[b]);
+            }
+            float val = alpha * acc;
+            if (beta != 0.0f) val += beta * y[i];
+            if (act != ActivationType::kNone) val = fast_math::fast_activate(act, val);
+            y[i] = val;
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Fast Quantized Matrix-Vector Multiplication (Q4_0 weights x FP32 vector):
+    // Performs on-the-fly stack-buffered Q8_0 quantization of x followed by
+    // SIMD integer dot products, delivering massive memory bandwidth savings.
+    // ------------------------------------------------------------------------
+    static void gemv_q4_0_fp32(const FastQuant::BlockQ4_0* __restrict__ A,
+                              const float* __restrict__ x,
+                              float* __restrict__ y,
+                              int64_t M, int64_t K,
+                              float alpha = 1.0f, float beta = 0.0f,
+                              ActivationType act = ActivationType::kNone) {
+        if (M <= 0 || K <= 0) return;
+        const size_t num_blocks = (K + 31) / 32;
+
+        FastQuant::BlockQ8_0 stack_q8[256];
+        std::vector<FastQuant::BlockQ8_0> heap_q8;
+        FastQuant::BlockQ8_0* q8_vec = (num_blocks <= 256)
+            ? stack_q8
+            : (heap_q8.resize(num_blocks), heap_q8.data());
+
+        FastQuant::quantize_q8_0_with_sum(x, q8_vec, num_blocks);
+        gemv_q4_0_q8_0(A, q8_vec, y, M, K, alpha, beta, act);
+    }
+
+    // ------------------------------------------------------------------------
+    // Multi-Token Batched Matrix Multiplication (Q4_0 weights x Q8_0 activations):
+    // Out: [T, M] row-major, A: [M, K/32], X: [T, K/32]
+    // ------------------------------------------------------------------------
+    static void gemm_q4_0_q8_0(const FastQuant::BlockQ4_0* __restrict__ A,
+                              const FastQuant::BlockQ8_0* __restrict__ X,
+                              float* __restrict__ Out,
+                              int64_t M, int64_t T, int64_t K,
+                              ActivationType act = ActivationType::kNone) {
+        if (M <= 0 || T <= 0 || K <= 0) return;
+        const int64_t num_blocks = (K + 31) / 32;
+
+        #pragma omp parallel for collapse(2) schedule(static)
+        for (int64_t t = 0; t < T; ++t) {
+            for (int64_t m = 0; m < M; ++m) {
+                const FastQuant::BlockQ8_0* x_row = X + t * num_blocks;
+                const FastQuant::BlockQ4_0* a_row = A + m * num_blocks;
+
+                float acc = 0.0f;
+                for (int64_t b = 0; b < num_blocks; ++b) {
+                    acc += dot_q4_0_q8_0_block(a_row[b], x_row[b]);
+                }
+                if (act != ActivationType::kNone) {
+                    acc = fast_math::fast_activate(act, acc);
+                }
+                Out[t * M + m] = acc;
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Fast Quantized Matrix-Vector Multiplication (Q4_1 weights x Q8_1 activations):
+    // A: [M, K/32] BlockQ4_1, x: [K/32] BlockQ8_1, y: [M] float
+    // ------------------------------------------------------------------------
+    static void gemv_q4_1_q8_1(const FastQuant::BlockQ4_1* __restrict__ A,
+                              const FastQuant::BlockQ8_1* __restrict__ x,
+                              float* __restrict__ y,
+                              int64_t M, int64_t K,
+                              float alpha = 1.0f, float beta = 0.0f,
+                              ActivationType act = ActivationType::kNone) {
+        if (M <= 0 || K <= 0) return;
+        const int64_t num_blocks = (K + 31) / 32;
+
+        #pragma omp parallel for schedule(static) if (M * K >= fast_parallel::kGemvMinMacs)
+        for (int64_t i = 0; i < M; ++i) {
+            const FastQuant::BlockQ4_1* row = A + i * num_blocks;
+            float acc = 0.0f;
+
+            for (int64_t b = 0; b < num_blocks; ++b) {
+                acc += dot_q4_1_q8_1_block(row[b], x[b]);
+            }
+
+            float val = alpha * acc;
+            if (beta != 0.0f) {
+                val += beta * y[i];
+            }
+            if (act != ActivationType::kNone) {
+                val = fast_math::fast_activate(act, val);
+            }
+            y[i] = val;
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Fast Quantized Matrix-Vector Multiplication (Q4_1 weights x FP32 vector):
+    // ------------------------------------------------------------------------
+    static void gemv_q4_1_fp32(const FastQuant::BlockQ4_1* __restrict__ A,
+                              const float* __restrict__ x,
+                              float* __restrict__ y,
+                              int64_t M, int64_t K,
+                              float alpha = 1.0f, float beta = 0.0f,
+                              ActivationType act = ActivationType::kNone) {
+        if (M <= 0 || K <= 0) return;
+        const size_t num_blocks = (K + 31) / 32;
+
+        FastQuant::BlockQ8_1 stack_q8[256];
+        std::vector<FastQuant::BlockQ8_1> heap_q8;
+        FastQuant::BlockQ8_1* q8_vec = (num_blocks <= 256)
+            ? stack_q8
+            : (heap_q8.resize(num_blocks), heap_q8.data());
+
+        FastQuant::quantize_q8_1(x, q8_vec, num_blocks);
+        gemv_q4_1_q8_1(A, q8_vec, y, M, K, alpha, beta, act);
+    }
+
+    // ------------------------------------------------------------------------
+    // Fast Quantized Matrix-Vector Multiplication (Q5_0 weights x Q8_0 activations):
+    // A: [M, K/32] BlockQ5_0, x: [K/32] BlockQ8_0, y: [M] float
+    // ------------------------------------------------------------------------
+    static void gemv_q5_0_q8_0(const FastQuant::BlockQ5_0* __restrict__ A,
+                              const FastQuant::BlockQ8_0* __restrict__ x,
+                              float* __restrict__ y,
+                              int64_t M, int64_t K,
+                              float alpha = 1.0f, float beta = 0.0f,
+                              ActivationType act = ActivationType::kNone) {
+        if (M <= 0 || K <= 0) return;
+        const int64_t num_blocks = (K + 31) / 32;
+
+        #pragma omp parallel for schedule(static) if (M * K >= fast_parallel::kGemvMinMacs)
+        for (int64_t i = 0; i < M; ++i) {
+            const FastQuant::BlockQ5_0* row = A + i * num_blocks;
+            float acc = 0.0f;
+
+            for (int64_t b = 0; b < num_blocks; ++b) {
+                acc += dot_q5_0_q8_0_block(row[b], x[b]);
+            }
+
+            float val = alpha * acc;
+            if (beta != 0.0f) {
+                val += beta * y[i];
+            }
+            if (act != ActivationType::kNone) {
+                val = fast_math::fast_activate(act, val);
+            }
+            y[i] = val;
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Fast Quantized Matrix-Vector Multiplication (Q5_0 weights x FP32 vector):
+    // ------------------------------------------------------------------------
+    static void gemv_q5_0_fp32(const FastQuant::BlockQ5_0* __restrict__ A,
+                              const float* __restrict__ x,
+                              float* __restrict__ y,
+                              int64_t M, int64_t K,
+                              float alpha = 1.0f, float beta = 0.0f,
+                              ActivationType act = ActivationType::kNone) {
+        if (M <= 0 || K <= 0) return;
+        const size_t num_blocks = (K + 31) / 32;
+
+        FastQuant::BlockQ8_0 stack_q8[256];
+        std::vector<FastQuant::BlockQ8_0> heap_q8;
+        FastQuant::BlockQ8_0* q8_vec = (num_blocks <= 256)
+            ? stack_q8
+            : (heap_q8.resize(num_blocks), heap_q8.data());
+
+        FastQuant::quantize_q8_0_with_sum(x, q8_vec, num_blocks);
+        gemv_q5_0_q8_0(A, q8_vec, y, M, K, alpha, beta, act);
     }
 };
 

@@ -325,3 +325,29 @@ func TestStaleProcessDoesNotFailARestartedEngine(t *testing.T) {
 		t.Fatalf("a stale process's READY made the engine %v", st)
 	}
 }
+
+func TestSamplingKeysAbliterate(t *testing.T) {
+	s := SamplingParams{
+		Temperature:          0.7,
+		Abliterate:           true,
+		AbliterationStrength: 1.5,
+	}
+	keys := samplingKeys(s)
+	if !strings.Contains(keys, "abliterate=1") {
+		t.Fatalf("expected keys to contain 'abliterate=1', got %q", keys)
+	}
+	if !strings.Contains(keys, "abliteration_strength=1.5") {
+		t.Fatalf("expected keys to contain 'abliteration_strength=1.5', got %q", keys)
+	}
+
+	// When disabled, abliterate keys must not be present
+	sOff := SamplingParams{
+		Temperature: 0.7,
+		Abliterate:  false,
+	}
+	keysOff := samplingKeys(sOff)
+	if strings.Contains(keysOff, "abliterate") {
+		t.Fatalf("expected keys to not contain abliterate when off, got %q", keysOff)
+	}
+}
+

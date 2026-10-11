@@ -15,6 +15,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"strata/pkg/reqtrace"
 )
 
 type Message struct {
@@ -328,6 +330,7 @@ func (c *Client) Run(ctx context.Context, req Request, be Backend, sink func(tex
 		case <-done:
 			done = nil
 			if !cancelSent {
+				reqtrace.Add(ctx, "rtclient", "the request's context ended (%v): cancel sent to the runtime", context.Cause(ctx))
 				cancelSent = true
 				_ = c.send(map[string]any{"op": "cancel", "id": id})
 				drainDeadline = time.After(c.cfg.DrainTimeout)
@@ -397,7 +400,8 @@ func (c *Client) Run(ctx context.Context, req Request, be Backend, sink func(tex
 				}
 				s.Stop = req.Sampling.Stop
 				maxTok := asInt(m["max_tokens"])
-				gctx, gcancel := context.WithCancel(context.Background())
+				reqtrace.Add(ctx, "rtclient", "the runtime asked for a generation (gid %d, %d prompt ids, max_tokens %d)", gid, len(ids), maxTok)
+				gctx, gcancel := context.WithCancel(context.WithoutCancel(ctx)) // keeps the request's values (its debug sink), not its cancellation
 				gmu.Lock()
 				gens[gid] = &gen{cancel: gcancel}
 				gmu.Unlock()
@@ -428,6 +432,7 @@ func (c *Client) Run(ctx context.Context, req Request, be Backend, sink func(tex
 				}()
 			case "gen_cancel":
 				gid := asInt(m["gid"])
+				reqtrace.Add(ctx, "rtclient", "the RUNTIME (C++ sidecar) cancelled generation gid %d", gid)
 				gmu.Lock()
 				if g := gens[gid]; g != nil {
 					g.cancel()

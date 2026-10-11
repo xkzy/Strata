@@ -226,6 +226,56 @@ int main() {
         auto stats = vc.kv_page_table()->stats();
         CHECK(stats.total_pages >= 3, "all pages registered in KV page table");
     }
+    {   std::printf("[13] prefix-stable window: an agent history that outgrows the window keeps its KV prefix\n");
+        auto render = [](const WorkingSet& w) { std::string t; for (const auto& m : w.messages) t += "<" + m.role + ">" + m.content + "\n"; return t; };
+        auto prefix_share = [&](const WorkingSet& a, const WorkingSet& b) {   // the part of a's rendered window b repeats from the start
+            const std::string x = render(a), y = render(b);               // (what the engine's KV prefix cache can reuse)
+            size_t n = 0; while (n < x.size() && n < y.size() && x[n] == y[n]) ++n;
+            return x.empty() ? 1.0 : static_cast<double>(n) / static_cast<double>(x.size());
+        };
+        auto run = [&](bool stable, int* rebuilds, size_t* leaked, double* fork_share) {
+            auto cfg = small_cfg(); cfg.stable_window = stable;
+            VirtualContext vc(stable ? "c13s" : "c13o", me, cfg);
+            std::vector<Message> hist;
+            hist.push_back({"system", "You are an agent. Follow the instructions in the task.", ""});
+            WorkingSet prev; bool have_prev = false;
+            *rebuilds = 0; *leaked = 0; *fork_share = 1.0;
+            auto turn = [&](const std::vector<Message>& msgs) {
+                std::set<uint64_t> fresh; auto ids = vc.ingest(msgs, &fresh);
+                SelectionRequest r; r.query = msgs.back().content; r.budget_tokens = 3000; r.requester = me;
+                size_t first = 0;
+                for (size_t i = msgs.size(); i-- > 0;) if (msgs[i].role == "assistant") { first = i + 1; break; }
+                for (size_t i = first; i < ids.size(); ++i) if (ids[i]) r.current_items.insert(ids[i]);
+                if (stable) for (uint64_t id : ids) if (id) r.request_items.insert(id);
+                return vc.select(r);
+            };
+            for (int t = 0; t < 70; ++t) {
+                hist.push_back({"assistant", "step " + std::to_string(t) + " " + filler(t * 2) + std::string(300, 'y'), ""});
+                hist.push_back({"user", "tool result " + std::to_string(t) + " " + filler(t * 2 + 1) + std::string(300, 'z'), ""});
+                auto main_msgs = hist; main_msgs.push_back({"user", "continue", ""});
+                WorkingSet w = turn(main_msgs);
+                if (std::getenv("VW_DEBUG") && t >= 20) std::printf("    %s t=%d tokens=%lld pages=%zu share=%.2f\n", stable ? "stable" : "old   ", t, (long long)w.tokens, w.page_ids.size(), have_prev ? prefix_share(prev, w) : 1.0);
+                if (have_prev && t >= 20 && prefix_share(prev, w) < 0.5) ++*rebuilds;
+                prev = w; have_prev = true;
+                if (t % 3 == 2) {   // a second caller on the same session: the same history plus its own instruction
+                    auto fork_msgs = hist; fork_msgs.push_back({"user", "FORKREVIEW update the skill library now", ""});
+                    WorkingSet f = turn(fork_msgs);
+                    if (t > 30) *fork_share = std::min(*fork_share, prefix_share(prev, f) * 1.0);
+                    WorkingSet back = turn(main_msgs);   // the main caller comes back: the fork's page must not be in its window
+                    if (has(back, "FORKREVIEW")) ++*leaked;
+                    prev = back;
+                }
+            }
+        };
+        int rb_old = 0, rb_new = 0; size_t leak_old = 0, leak_new = 0; double fs_old = 0, fs_new = 0;
+        run(false, &rb_old, &leak_old, &fs_old);
+        run(true, &rb_new, &leak_new, &fs_new);
+        std::printf("  turns that re-read most of the window: old %d, stable %d of 70; fork keeps %.2f of the prefix (old %.2f)\n", rb_old, rb_new, fs_new, fs_old);
+        CHECK(rb_new * 3 <= rb_old, "the stable window re-reads the window at least 3x less often");
+        CHECK(rb_new <= 70 / 4, "a rebuild happens in chunks, not every turn");
+        CHECK(fs_new > 0.8, "a second caller on the same history shares the KV prefix");
+        CHECK(leak_new == 0, "a caller's page never enters another caller's window");
+    }
     std::printf(g_fail ? "%d FAILED\n" : "ALL PASSED\n", g_fail);
     return g_fail ? 1 : 0;
 }

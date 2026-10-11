@@ -15,12 +15,28 @@ type SamplingConfig struct {
 	MinP        float64 `json:"min_p"`
 }
 
+type ModelEntry struct {
+	ID                   string          `json:"id,omitempty"`
+	Name                 string          `json:"name,omitempty"`
+	ModelPath            string          `json:"model_path"`
+	EngineBinary         string          `json:"engine_binary,omitempty"`
+	MaxContext           int             `json:"max_context,omitempty"`
+	VirtualLimit         int             `json:"virtual_limit,omitempty"`
+	Abliterate           bool            `json:"abliterate,omitempty"`
+	AbliterationStrength float64         `json:"abliteration_strength,omitempty"`
+	AbliterationVector   string          `json:"abliteration_vector,omitempty"`
+	Sampling             *SamplingConfig `json:"sampling,omitempty"`
+	Enabled              bool            `json:"enabled,omitempty"`
+}
+
 type StrataConfig struct {
 	Host                  string                 `json:"host"`
 	Port                  int                    `json:"port"`
 	APIKey                string                 `json:"api_key"`
 	Model                 string                 `json:"model"`
 	ModelPath             string                 `json:"model_path"`
+	DefaultModel          string                 `json:"default_model,omitempty"`
+	Models                map[string]ModelEntry  `json:"models,omitempty"`
 	EngineBinary          string                 `json:"engine_binary"`
 	MaxContext            int                    `json:"max_context"`
 	VirtualLimit          int                    `json:"virtual_limit"`
@@ -33,10 +49,102 @@ type StrataConfig struct {
 	PcieFrac              float64                `json:"pcie_frac,omitempty"`
 	GPUs                  string                 `json:"gpus,omitempty"`
 	Threads               int                    `json:"threads,omitempty"`
+	Abliterate            bool                   `json:"abliterate,omitempty"`
+	AbliterationStrength  float64                `json:"abliteration_strength,omitempty"`
+	AbliterationVector    string                 `json:"abliteration_vector,omitempty"`
 	Sampling              SamplingConfig         `json:"sampling"`
 	MCPServers            map[string]interface{} `json:"mcp_servers,omitempty"`
 	AllowedHosts          []string               `json:"allowed_hosts,omitempty"`
 	CORSOrigins           []string               `json:"cors_origins,omitempty"`
+}
+
+// GetActiveModel returns the active model ID and model path with multi-model fallback
+func (c StrataConfig) GetActiveModel() (string, string) {
+	if c.DefaultModel != "" && c.Models != nil {
+		if entry, ok := c.Models[c.DefaultModel]; ok {
+			id := entry.ID
+			if id == "" {
+				id = c.DefaultModel
+			}
+			return id, entry.ModelPath
+		}
+	}
+	if c.Model != "" || c.ModelPath != "" {
+		m := c.Model
+		if m == "" {
+			m = "Qwen3.8-Flash-Next"
+		}
+		return m, c.ModelPath
+	}
+	if len(c.Models) > 0 {
+		for key, entry := range c.Models {
+			id := entry.ID
+			if id == "" {
+				id = key
+			}
+			return id, entry.ModelPath
+		}
+	}
+	return "Qwen3.8-Flash-Next", ""
+}
+
+// GetModelEntry returns a ModelEntry by ID or falls back to legacy configuration
+func (c StrataConfig) GetModelEntry(id string) (ModelEntry, bool) {
+	if c.Models != nil {
+		if entry, ok := c.Models[id]; ok {
+			if entry.ID == "" {
+				entry.ID = id
+			}
+			return entry, true
+		}
+	}
+	if id == "" || id == c.Model || id == "default" {
+		return ModelEntry{
+			ID:                   c.Model,
+			ModelPath:            c.ModelPath,
+			EngineBinary:         c.EngineBinary,
+			MaxContext:           c.MaxContext,
+			VirtualLimit:         c.VirtualLimit,
+			Abliterate:           c.Abliterate,
+			AbliterationStrength: c.AbliterationStrength,
+			AbliterationVector:   c.AbliterationVector,
+			Sampling:             &c.Sampling,
+			Enabled:              true,
+		}, true
+	}
+	return ModelEntry{}, false
+}
+
+// AllModels returns all configured models as a map
+func (c StrataConfig) AllModels() map[string]ModelEntry {
+	res := make(map[string]ModelEntry)
+	if c.Models != nil {
+		for k, v := range c.Models {
+			if v.ID == "" {
+				v.ID = k
+			}
+			res[k] = v
+		}
+	}
+	if len(res) == 0 && (c.Model != "" || c.ModelPath != "") {
+		id := c.Model
+		if id == "" {
+			id = "Qwen3.8-Flash-Next"
+		}
+		res[id] = ModelEntry{
+			ID:                   id,
+			ModelPath:            c.ModelPath,
+			EngineBinary:         c.EngineBinary,
+			MaxContext:           c.MaxContext,
+			VirtualLimit:         c.VirtualLimit,
+			Abliterate:           c.Abliterate,
+			AbliterationStrength: c.AbliterationStrength,
+			AbliterationVector:   c.AbliterationVector,
+			Sampling:             &c.Sampling,
+			Enabled:              true,
+		}
+	}
+	return res
 }
 
 func DefaultConfig() StrataConfig {

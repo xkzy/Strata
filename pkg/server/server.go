@@ -23,6 +23,7 @@ import (
 	"strata/pkg/installer"
 	"strata/pkg/logicverifier"
 	"strata/pkg/mathruntime"
+	"strata/pkg/modelschema"
 	"strata/pkg/multitenant"
 	"strata/pkg/processjob"
 	"strata/pkg/resourcemanager"
@@ -51,6 +52,7 @@ type ServerConfig struct {
 
 type StrataServer struct {
 	Config          ServerConfig
+	Registry        *modelschema.ModelRegistry
 	MathRuntime     *mathruntime.MathRuntime
 	LogicVerifier   *logicverifier.LogicVerifier
 	Structured      *structured.StructuredValidator
@@ -110,15 +112,48 @@ func NewStrataServer(cfg ServerConfig) *StrataServer {
 
 	hr := hallucination.NewRuntime(".", hallucination.DefaultSafetyControllerOptions())
 
+	cm := runconfig.NewConfigManager(cfg.ConfigFile)
+	reg := modelschema.NewRegistry()
+	primaryID := cfg.ModelName
+	if primaryID == "" {
+		primaryID = "Qwen3.8-Flash-Next"
+	}
+	_ = reg.RegisterRuntime(modelschema.ModelRuntimeProfile{
+		ID:           primaryID,
+		ModelPath:    cfg.ModelPath,
+		EngineBinary: cfg.BinaryPath,
+		MaxContext:   cfg.MaxContext,
+		VirtualLimit: cfg.VirtualLimit,
+		Enabled:      true,
+		Status:       "ready",
+	})
+	if cm != nil {
+		for _, m := range cm.Get().AllModels() {
+			_ = reg.RegisterRuntime(modelschema.ModelRuntimeProfile{
+				ID:                   m.ID,
+				ModelPath:            m.ModelPath,
+				EngineBinary:         m.EngineBinary,
+				MaxContext:           m.MaxContext,
+				VirtualLimit:         m.VirtualLimit,
+				Abliterate:           m.Abliterate,
+				AbliterationStrength: m.AbliterationStrength,
+				AbliterationVector:   m.AbliterationVector,
+				Enabled:              m.Enabled,
+				Status:               "ready",
+			})
+		}
+	}
+
 	s := &StrataServer{
 		Config:          cfg,
+		Registry:        reg,
 		MathRuntime:     mr,
 		LogicVerifier:   lv,
 		Structured:      structured.NewStructuredValidator(),
 		EngineIPC:       orchestrator,
 		Telemetry:       tc,
 		Responses:       responses.NewResponsesHandler(),
-		ConfigManager:   runconfig.NewConfigManager(cfg.ConfigFile),
+		ConfigManager:   cm,
 		ProcessJob:      processjob.GlobalJob(),
 		Frontend:        frontend.NewFrontendHandler(),
 		MultiTenant:     multitenant.NewMultiTenantManager(),
@@ -395,7 +430,7 @@ func (s *StrataServer) activeCancelIDs() []string {
 func (s *StrataServer) modelEntry(id string) map[string]interface{} {
 	ctx := s.Config.MaxContext
 	if ctx <= 0 {
-		ctx = 65536
+		ctx = 32768
 	}
 	virt := s.Config.VirtualLimit
 	if virt < ctx {
@@ -404,6 +439,9 @@ func (s *StrataServer) modelEntry(id string) map[string]interface{} {
 	created := s.started.Unix()
 	if created <= 0 {
 		created = time.Now().Unix()
+	}
+	if s.Registry != nil {
+		return s.Registry.OpenAIEntry(id, created, ctx, virt)
 	}
 	return map[string]interface{}{
 		"id":                      id,
@@ -444,31 +482,21 @@ func (s *StrataServer) handleModels(w http.ResponseWriter, r *http.Request) {
 	path = strings.TrimPrefix(path, "/models")
 	path = strings.TrimPrefix(path, "/")
 
-	primaryID := s.Config.ModelName
-	if primaryID == "" {
-		primaryID = "qwen3.8-flash-next-coder-iq1_m"
-	}
-
 	if path != "" {
 		writeJSON(w, http.StatusOK, s.modelEntry(path))
 		return
 	}
 
-	seen := make(map[string]bool)
 	var data []map[string]interface{}
-	addModel := func(id string) {
-		id = strings.TrimSpace(id)
-		if id != "" && !seen[id] {
-			seen[id] = true
-			data = append(data, s.modelEntry(id))
+	if s.Registry != nil {
+		data = s.Registry.OpenAIList(s.started.Unix(), s.Config.VirtualLimit)
+	} else {
+		primaryID := s.Config.ModelName
+		if primaryID == "" {
+			primaryID = "qwen3.8-flash-next"
 		}
+		data = append(data, s.modelEntry(primaryID))
 	}
-
-	addModel(primaryID)
-	addModel("strata")
-	addModel("qwen3.8-flash-next")
-	addModel("qwen3.8-flash-next-coder")
-	addModel("coder")
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"object": "list",

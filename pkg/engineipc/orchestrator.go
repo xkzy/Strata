@@ -26,6 +26,8 @@ import (
 	"time"
 
 	"strata/pkg/tokenizer"
+
+	"strata/pkg/reqtrace"
 )
 
 // ByteTokenizer is a stand-in tokenizer for tests without a pack: one id per UTF-8 byte, specials as ids >= 256.
@@ -176,6 +178,8 @@ type SamplingParams struct {
 	FrequencyPenalty  float64 `json:"frequency_penalty"`
 	PresencePenalty   float64 `json:"presence_penalty"`
 	Seed              int64   `json:"seed"`
+	Abliterate        bool    `json:"abliterate,omitempty"`
+	AbliterationStrength float64 `json:"abliteration_strength,omitempty"`
 }
 
 type TokenEvent struct {
@@ -549,6 +553,12 @@ func samplingKeys(s SamplingParams) string {
 	if s.Seed != 0 {
 		b.WriteString(" seed=" + strconv.FormatInt(s.Seed, 10))
 	}
+	if s.Abliterate {
+		b.WriteString(" abliterate=1")
+		if s.AbliterationStrength > 0 {
+			b.WriteString(" abliteration_strength=" + f(s.AbliterationStrength))
+		}
+	}
 	return b.String()
 }
 
@@ -571,12 +581,21 @@ func (eo *EngineOrchestrator) GenerateIDs(ctx context.Context, ids []int, sampli
 		return
 	}
 	// one request at a time
+	waited := time.Now()
 	select {
 	case eo.reqSem <- struct{}{}:
 		defer func() { <-eo.reqSem }()
-	case <-ctx.Done():
-		out <- TokenEvent{IsEnd: true, FinishReason: "cancel"}
-		return
+	default:
+		reqtrace.Add(ctx, "engine", "waiting for the engine: another request is running")
+		select {
+		case eo.reqSem <- struct{}{}:
+			defer func() { <-eo.reqSem }()
+			reqtrace.Add(ctx, "engine", "got the engine after waiting %.1f s", time.Since(waited).Seconds())
+		case <-ctx.Done():
+			reqtrace.Add(ctx, "engine", "cancelled while waiting for the engine (%v)", context.Cause(ctx))
+			out <- TokenEvent{IsEnd: true, FinishReason: "cancel"}
+			return
+		}
 	}
 	if maxNew <= 0 {
 		maxNew = 2048
@@ -585,6 +604,7 @@ func (eo *EngineOrchestrator) GenerateIDs(ctx context.Context, ids []int, sampli
 	for i, id := range ids {
 		idStrs[i] = strconv.Itoa(id)
 	}
+	reqtrace.Add(ctx, "engine", "GEN sent: %d prompt tokens, max_new %d", len(ids), maxNew)
 	if _, err := io.WriteString(stdin, fmt.Sprintf("GEN %d%s %s\n", maxNew, samplingKeys(sampling), strings.Join(idStrs, ","))); err != nil {
 		out <- TokenEvent{Error: fmt.Errorf("the engine stopped unexpectedly: %w", err), IsEnd: true, FinishReason: "error"}
 		return
@@ -597,10 +617,12 @@ func (eo *EngineOrchestrator) GenerateIDs(ctx context.Context, ids []int, sampli
 	stopped := false // STOP sent
 	sendStop := func() {
 		if !stopped && canStop {
+			reqtrace.Add(ctx, "engine", "STOP sent to the engine (reason: %s)", finish)
 			_, _ = io.WriteString(stdin, "STOP\n")
 		}
 		stopped = true
 	}
+	lastPPLog := 0
 	curID := -1
 	emit := func(s string) {
 		if s != "" {
@@ -616,6 +638,7 @@ func (eo *EngineOrchestrator) GenerateIDs(ctx context.Context, ids []int, sampli
 			done = nil
 			if finish == "" {
 				finish = "cancel"
+				reqtrace.Add(ctx, "engine", "the request's context ended (%v)", context.Cause(ctx))
 			}
 			sendStop()
 			continue
@@ -640,6 +663,9 @@ func (eo *EngineOrchestrator) GenerateIDs(ctx context.Context, ids []int, sampli
 				sendStop()
 				continue
 			}
+			if genCount == 0 {
+				reqtrace.Add(ctx, "engine", "first token")
+			}
 			genCount++
 			curID = id
 			safe := matcher.Push(detok.Push(id))
@@ -649,6 +675,7 @@ func (eo *EngineOrchestrator) GenerateIDs(ctx context.Context, ids []int, sampli
 				sendStop()
 			}
 		case strings.HasPrefix(line, "DONE"):
+			reqtrace.Add(ctx, "engine", "%s", line)
 			emit(matcher.Flush()) // text held back as a possible stop string that never completed
 			emit(detok.Flush())
 			f := strings.Fields(line)
@@ -685,10 +712,20 @@ func (eo *EngineOrchestrator) GenerateIDs(ctx context.Context, ids []int, sampli
 				if len(fields) >= 5 {
 					speed, _ = strconv.ParseFloat(fields[4], 64)
 				}
+				if read-lastPPLog >= 8192 || (lastPPLog == 0 && read > 0) {
+					lastPPLog = read
+					reqtrace.Add(ctx, "engine", "reading the prompt: %d of %d tokens (%.0f tok/s)", read, total, speed)
+				}
 				out <- TokenEvent{IsProgress: true, PromptRead: read, PromptTotal: total, TokPerSec: speed}
 			}
 		}
-		// RESUME / REUSED / INFO lines are progress; ignored here
+		// RESUME / REUSED / INFO lines are progress: not events of the reply, but the Monitor shows them
+		if strings.HasPrefix(line, "RESUME") || strings.HasPrefix(line, "REUSED") || strings.HasPrefix(line, "INFO") {
+			if len(line) > 200 {
+				line = line[:200]
+			}
+			reqtrace.Add(ctx, "engine", "%s", line)
+		}
 	}
 }
 

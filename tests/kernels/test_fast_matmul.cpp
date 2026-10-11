@@ -173,11 +173,164 @@ void test_fused_swiglu_gemm() {
     std::printf("  Passed. Fused SwiGLU GEMM validated.\n");
 }
 
+void test_quantized_q4_q8_gemv() {
+    std::printf("[Test 6/7] Testing Fast Quantized Q4_0 x Q8_0 & Q4_0 x FP32 GEMV / GEMM (Xenolith SIMD Engine)...\n");
+    constexpr int64_t M = 128;
+    constexpr int64_t K = 256;
+    const size_t num_blocks = K / 32;
+
+    std::vector<float> A_f32(M * K), x_f32(K), y_ref(M), y_q4q8(M), y_q4fp32(M);
+    for (int64_t i = 0; i < M * K; ++i) A_f32[i] = ((float)(i % 20) - 10.0f) * 0.05f;
+    for (int64_t k = 0; k < K; ++k) x_f32[k] = ((float)(k % 30) - 15.0f) * 0.04f;
+
+    // Quantize matrix A to Q4_0 blocks
+    std::vector<FastQuant::BlockQ4_0> A_q4(M * num_blocks);
+    for (int64_t i = 0; i < M; ++i) {
+        FastQuant::quantize_q4_0(A_f32.data() + i * K, A_q4.data() + i * num_blocks, num_blocks);
+    }
+
+    // Quantize vector x to Q8_0 blocks
+    std::vector<FastQuant::BlockQ8_0> x_q8(num_blocks);
+    FastQuant::quantize_q8_0_with_sum(x_f32.data(), x_q8.data(), num_blocks);
+
+    // Compute direct Q4_0 x Q8_0 GEMV
+    FastMatMul::gemv_q4_0_q8_0(A_q4.data(), x_q8.data(), y_q4q8.data(), M, K);
+
+    // Compute Q4_0 x FP32 GEMV (auto on-the-fly Q8_0 quantization)
+    FastMatMul::gemv_q4_0_fp32(A_q4.data(), x_f32.data(), y_q4fp32.data(), M, K);
+
+    // Dequantize and compute exact reference on quantized weights & activations
+    std::vector<float> A_deq(M * K), x_deq(K);
+    for (int64_t i = 0; i < M; ++i) {
+        for (size_t b = 0; b < num_blocks; ++b) {
+            FastQuant::dequantize_q4_0(A_q4[i * num_blocks + b].qs, A_q4[i * num_blocks + b].d, A_deq.data() + i * K + b * 32, 32);
+        }
+    }
+    for (size_t b = 0; b < num_blocks; ++b) {
+        for (size_t j = 0; j < 32; ++j) {
+            x_deq[b * 32 + j] = static_cast<float>(x_q8[b].qs[j]) * x_q8[b].d;
+        }
+    }
+
+    for (int64_t i = 0; i < M; ++i) {
+        float sum = 0.0f;
+        for (int64_t k = 0; k < K; ++k) {
+            sum += A_deq[i * K + k] * x_deq[k];
+        }
+        y_ref[i] = sum;
+    }
+
+    for (int64_t i = 0; i < M; ++i) {
+        CHECK_NEAR(y_q4q8[i], y_ref[i], 1e-4f, "gemv_q4_0_q8_0 matches quantized reference");
+        CHECK_NEAR(y_q4fp32[i], y_ref[i], 1e-4f, "gemv_q4_0_fp32 matches quantized reference");
+    }
+
+    // Test multi-token batched Q4_0 x Q8_0 GEMM
+    constexpr int64_t T = 4;
+    std::vector<FastQuant::BlockQ8_0> X_q8(T * num_blocks);
+    std::vector<float> Out_q4q8(T * M);
+    for (int64_t t = 0; t < T; ++t) {
+        for (size_t b = 0; b < num_blocks; ++b) {
+            X_q8[t * num_blocks + b] = x_q8[b];
+        }
+    }
+    FastMatMul::gemm_q4_0_q8_0(A_q4.data(), X_q8.data(), Out_q4q8.data(), M, T, K);
+    for (int64_t t = 0; t < T; ++t) {
+        for (int64_t i = 0; i < M; ++i) {
+            CHECK_NEAR(Out_q4q8[t * M + i], y_ref[i], 1e-4f, "gemm_q4_0_q8_0 matches reference");
+        }
+    }
+
+    std::printf("  Passed. Quantized Q4_0 x Q8_0 & Q4_0 x FP32 GEMV/GEMM validated.\n");
+}
+
+void test_quantized_q4_1_and_q5_0_gemv() {
+    std::printf("[Test 7/8] Testing Quantized Q4_1 x Q8_1 & Q5_0 x Q8_0 Fast GEMV...\n");
+    constexpr int64_t M = 16;
+    constexpr int64_t K = 64;
+    const size_t num_blocks = K / 32;
+
+    std::vector<float> A_f32(M * K), x_f32(K);
+    for (size_t i = 0; i < A_f32.size(); ++i) {
+        A_f32[i] = ((float)(i % 50) - 25.0f) * 0.05f;
+    }
+    for (size_t i = 0; i < x_f32.size(); ++i) {
+        x_f32[i] = ((float)(i % 30) - 15.0f) * 0.1f;
+    }
+
+    // 1. Test Q4_1 x Q8_1
+    std::vector<FastQuant::BlockQ4_1> A_q4_1(M * num_blocks);
+    std::vector<FastQuant::BlockQ8_1> x_q8_1(num_blocks);
+    for (int64_t i = 0; i < M; ++i) {
+        FastQuant::quantize_q4_1(A_f32.data() + i * K, A_q4_1.data() + i * num_blocks, num_blocks);
+    }
+    FastQuant::quantize_q8_1(x_f32.data(), x_q8_1.data(), num_blocks);
+
+    std::vector<float> y_q41_q81(M), y_q41_fp32(M), y_ref_41(M);
+    FastMatMul::gemv_q4_1_q8_1(A_q4_1.data(), x_q8_1.data(), y_q41_q81.data(), M, K);
+    FastMatMul::gemv_q4_1_fp32(A_q4_1.data(), x_f32.data(), y_q41_fp32.data(), M, K);
+
+    std::vector<float> A_deq_41(M * K), x_deq_81(K);
+    for (int64_t i = 0; i < M; ++i) {
+        for (size_t b = 0; b < num_blocks; ++b) {
+            FastQuant::dequantize_q4_1(A_q4_1[i * num_blocks + b], A_deq_41.data() + i * K + b * 32, 32);
+        }
+    }
+    for (size_t b = 0; b < num_blocks; ++b) {
+        FastQuant::dequantize_q8_1(x_q8_1[b], x_deq_81.data() + b * 32, 32);
+    }
+    for (int64_t i = 0; i < M; ++i) {
+        float sum = 0.0f;
+        for (int64_t k = 0; k < K; ++k) sum += A_deq_41[i * K + k] * x_deq_81[k];
+        y_ref_41[i] = sum;
+    }
+    for (int64_t i = 0; i < M; ++i) {
+        CHECK_NEAR(y_q41_q81[i], y_ref_41[i], 1e-3f, "gemv_q4_1_q8_1 matches reference");
+        CHECK_NEAR(y_q41_fp32[i], y_ref_41[i], 1e-3f, "gemv_q4_1_fp32 matches reference");
+    }
+
+    // 2. Test Q5_0 x Q8_0
+    std::vector<FastQuant::BlockQ5_0> A_q5_0(M * num_blocks);
+    std::vector<FastQuant::BlockQ8_0> x_q8_0(num_blocks);
+    for (int64_t i = 0; i < M; ++i) {
+        FastQuant::quantize_q5_0(A_f32.data() + i * K, A_q5_0.data() + i * num_blocks, num_blocks);
+    }
+    FastQuant::quantize_q8_0_with_sum(x_f32.data(), x_q8_0.data(), num_blocks);
+
+    std::vector<float> y_q50_q80(M), y_q50_fp32(M), y_ref_50(M);
+    FastMatMul::gemv_q5_0_q8_0(A_q5_0.data(), x_q8_0.data(), y_q50_q80.data(), M, K);
+    FastMatMul::gemv_q5_0_fp32(A_q5_0.data(), x_f32.data(), y_q50_fp32.data(), M, K);
+
+    std::vector<float> A_deq_50(M * K), x_deq_80(K);
+    for (int64_t i = 0; i < M; ++i) {
+        for (size_t b = 0; b < num_blocks; ++b) {
+            FastQuant::dequantize_q5_0(A_q5_0[i * num_blocks + b], A_deq_50.data() + i * K + b * 32, 32);
+        }
+    }
+    for (size_t b = 0; b < num_blocks; ++b) {
+        for (size_t j = 0; j < 32; ++j) {
+            x_deq_80[b * 32 + j] = static_cast<float>(x_q8_0[b].qs[j]) * x_q8_0[b].d;
+        }
+    }
+    for (int64_t i = 0; i < M; ++i) {
+        float sum = 0.0f;
+        for (int64_t k = 0; k < K; ++k) sum += A_deq_50[i * K + k] * x_deq_80[k];
+        y_ref_50[i] = sum;
+    }
+    for (int64_t i = 0; i < M; ++i) {
+        CHECK_NEAR(y_q50_q80[i], y_ref_50[i], 1e-3f, "gemv_q5_0_q8_0 matches reference");
+        CHECK_NEAR(y_q50_fp32[i], y_ref_50[i], 1e-3f, "gemv_q5_0_fp32 matches reference");
+    }
+
+    std::printf("  Passed. Quantized Q4_1 x Q8_1 & Q5_0 x Q8_0 fast GEMVs validated.\n");
+}
+
 void test_matmul_benchmark_gflops() {
-    std::printf("[Test 6/6] Benchmark Throughput & GFLOPS...\n");
+    std::printf("[Test 8/8] Benchmark Throughput & GFLOPS (FP32 vs Quantized Q4_0/Q4_1/Q5_0)...\n");
     constexpr int64_t M = 256;
     constexpr int64_t N = 256;
     constexpr int64_t K = 256;
+    const size_t num_blocks = K / 32;
 
     std::vector<float> A(M * K, 0.01f), B(K * N, 0.02f), C(M * N, 0.0f);
 
@@ -193,8 +346,27 @@ void test_matmul_benchmark_gflops() {
     double ops = 2.0 * (double)M * (double)N * (double)K;
     double gflops = (ops / (avg_ms * 1e-3)) / 1e9;
 
-    std::printf("  Matrix Shape: [%ld x %ld] * [%ld x %ld]\n", (long)M, (long)K, (long)K, (long)N);
-    std::printf("  Avg Compute Time: %.3f ms per GEMM (%.2f GFLOPS)\n", avg_ms, gflops);
+    std::printf("  FP32 GEMM [%ld x %ld]: %.3f ms (%.2f GFLOPS)\n", (long)M, (long)K, avg_ms, gflops);
+
+    // Benchmark Q4_0 x Q8_0 GEMV
+    std::vector<FastQuant::BlockQ4_0> A_q4(M * num_blocks);
+    std::vector<FastQuant::BlockQ8_0> x_q8(num_blocks);
+    std::vector<float> y(M);
+    for (int64_t i = 0; i < M; ++i) {
+        FastQuant::quantize_q4_0(A.data() + i * K, A_q4.data() + i * num_blocks, num_blocks);
+    }
+    FastQuant::quantize_q8_0_with_sum(B.data(), x_q8.data(), num_blocks);
+
+    auto t2 = std::chrono::high_resolution_clock::now();
+    constexpr int Q_ITERS = 1000;
+    for (int iter = 0; iter < Q_ITERS; ++iter) {
+        FastMatMul::gemv_q4_0_q8_0(A_q4.data(), x_q8.data(), y.data(), M, K);
+    }
+    auto t3 = std::chrono::high_resolution_clock::now();
+    double q_total_ms = std::chrono::duration<double, std::milli>(t3 - t2).count();
+    double q_avg_us = (q_total_ms / Q_ITERS) * 1000.0;
+    std::printf("  Q4_0xQ8_0 GEMV [%ld x %ld]: %.2f us / step\n", (long)M, (long)K, q_avg_us);
+
     std::printf("  Passed. Throughput benchmark validated.\n");
 }
 
@@ -208,11 +380,13 @@ int main() {
     test_tiled_gemm();
     test_fused_matmul_activation();
     test_fused_swiglu_gemm();
+    test_quantized_q4_q8_gemv();
+    test_quantized_q4_1_and_q5_0_gemv();
     test_matmul_benchmark_gflops();
 
     std::printf("=================================================================\n");
     if (g_failed == 0) {
-        std::printf("   ALL FAST MATMUL TESTS PASSED (6/6)                            \n");
+        std::printf("   ALL FAST MATMUL TESTS PASSED (8/8)                            \n");
         std::printf("=================================================================\n");
         return 0;
     } else {

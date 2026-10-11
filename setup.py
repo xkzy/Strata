@@ -67,6 +67,7 @@ HF_REVISIONS = {
     "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF": "b22d729eae29b5796f76fb70f91aef549b9fc52c",   # 2026-09-24
     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF": "5348543e0147355ac9cbcb031184a3546350988e",  # 2026-09-29
     "unsloth/Qwen3.8-Flash-Next-GGUF": "38bb39ee97821de2c9009abb7e93950eec396e66",                   # 2026-09-30
+    "ggml-org/MiMo-V2.6-Flash-RL-GGUF": "a5d1269fdcf9c3346934411f700038e9cd9d5102",                  # 2026-10-10
 }
 
 
@@ -151,6 +152,11 @@ MODELS = {
                   "download_gb": 93.7, "ram_gb": 48, "arena_gb": 59.5, "families": ("unsloth",), "budget": True,
                   "shards": 3, "file": "Qwen3.8-Flash-Next-{q}-0000{i}-of-00003.gguf", "engine": (0, 1, 38),
                   "vision": True},
+    # Xiaomi MiMo-V2.6-Flash-RL: 48 layers, 256 MoE experts (8 active), 1M context, RL reasoning
+    "Q2_K": {"about": "2-bit K-quant, Xiaomi MiMo-V2.6-Flash-RL with ChatML reasoning", "download_gb": 126.2, "ram_gb": 64,
+             "arena_gb": 96.0, "families": ("mimo",), "budget": True},
+    "MXFP4": {"about": "4-bit microscaling format, high fidelity MiMo-V2.6-Flash-RL", "download_gb": 167.4, "ram_gb": 64,
+              "arena_gb": 128.0, "families": ("mimo",), "budget": True},
 }
 # The experimental Unsloth file's four shards at the pinned revision: name -> (bytes, sha256), checked after the
 # download (setup trusts no other model file by name and size alone either: check_shards reads their directories).
@@ -172,6 +178,19 @@ UNSLOTH_IQ4_XS_SHARDS = {
         (49835229856, "577a38a2392b40ca2193cea502e1d92f60b8cd370675d308e0ec21885d9daaa7"),
     "Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf":
         (43836407744, "d4634e6d84f0ebb0940be15c90d3790bf6464e3dea3a1cddc567dc0e83ad8833"),
+}
+# Xiaomi MiMo-V2.6-Flash-RL shards and mmproj at pinned revision
+MIMO_SHARDS = {
+    "MiMo-V2.6-Flash-RL-Q2_K-00001-of-00002.gguf":
+        (5948640, "a34f63df32086bba7a14aa8a2f6c2f111f6e626ad7b10be18957e42d14d84738"),
+    "MiMo-V2.6-Flash-RL-Q2_K-00002-of-00002.gguf":
+        (126208645216, "383c6e508cf1d4f125bcd63ace01763debf4f9111ece46eb45ce868f6a56f1e8"),
+    "MiMo-V2.6-Flash-RL-MXFP4-00001-of-00002.gguf":
+        (5948640, "a34f63df32086bba7a14aa8a2f6c2f111f6e626ad7b10be18957e42d14d84738"),
+    "MiMo-V2.6-Flash-RL-MXFP4-00002-of-00002.gguf":
+        (167363516512, "10b74ff85577de18b336718c19905a50bcbccfee9cae7b9edd446667084f623c"),
+    "mmproj-MiMo-V2.6-Flash-RL-BF16.gguf":
+        (2748509792, "2e8e28450b9218c0f1f7f9e208a3f6884be82a067361bff070828a68344415b0"),
 }
 UNSLOTH_ENGINE = (0, 1, 32)     # the first engine setup configures for UD-Q4_K_XL (0.1.31 ran it by hand)
 UNSLOTH_RAM_LEFT_GB = 24        # RAM beside the budget: the OS, the engine, and the file cache the rest is read through
@@ -218,6 +237,14 @@ FAMILIES = {
                 "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf", "name": "qwen3.8-flash-next-unsloth",
                 "vision": False, "pack_args": ["--compat-bf16"],
                 "sha256": {**UNSLOTH_SHARDS, **UNSLOTH_IQ4_XS_SHARDS}},
+    "mimo": {"title": "MiMo-V2.6-Flash-RL", "by": "Xiaomi MiMo; GGUF quants by ggml-org",
+             "about": "Xiaomi's 48-layer 256-expert MoE model with native RL reasoning",
+             "hf": hf("ggml-org/MiMo-V2.6-Flash-RL-GGUF"),
+             "file": "MiMo-V2.6-Flash-RL-{q}-0000{i}-of-00002.gguf", "tag": "mimo-",
+             "mmproj_hf": hf("ggml-org/MiMo-V2.6-Flash-RL-GGUF"),
+             "mmproj": "mmproj-MiMo-V2.6-Flash-RL-BF16.gguf", "name": "mimo-v2.6-flash-rl",
+             "profile": "expert-profile-coder.bin",
+             "sha256": MIMO_SHARDS},
 }
 MMPROJ = "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
 # EXPERIMENTAL, off by default (setup asks): a control vector shipped with the repository, see its README
@@ -1264,12 +1291,12 @@ def gguf_dir_shards(folder: Path, fam: dict, model: str) -> list[Path]:
 
 
 # #444: the quantization in a GGUF's name (Unsloth's UD-IQ3_XXS, a K-quant's Q2_K_XL, a GSQ-RCO IQ3_S, ...)
-GGUF_QUANT = re.compile(r"(?<![A-Za-z0-9])((?:UD-)?(?:I?Q\d+(?:_[A-Za-z0-9]+)*|BF16|F16|F32))"
+GGUF_QUANT = re.compile(r"(?<![A-Za-z0-9])((?:UD-)?(?:I?Q\d+(?:_[A-Za-z0-9]+)*|BF16|F16|F32|MXFP\d+))"
                         r"(?=-\d{5}-of-\d{5}\.gguf$|\.gguf$)", re.I)
 SUPPORTED_GGUFS = ("Strata runs ISTA-DASLab's GSQ-RCO files (Qwen3.8-Flash-Next Q2_0, IQ2_XS, IQ3_XXS, IQ3_S; Swift "
-                   "1.5's; the Coder's IQ1_M) and Unsloth's UD-Q4_K_XL and UD-IQ4_XS only: other GGUFs (Unsloth's "
-                   "UD-IQ3_XXS or "
-                   "UD-Q2_K_XL, K-quants) cannot be used")
+                   "1.5's; the Coder's IQ1_M), Xiaomi MiMo-V2.6-Flash-RL (Q2_K, MXFP4), and "
+                   "Unsloth's UD-Q4_K_XL and UD-IQ4_XS only: other GGUFs (Unsloth's UD-IQ3_XXS or "
+                   "UD-Q2_K_XL) cannot be used")
 
 
 def gguf_unsupported(name: str) -> str | None:
@@ -3591,14 +3618,7 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
     cfg_path.touch()                                     # the most recently used model
     if "--mtp" in cfg["args"][:-1]:
         refresh_draft_vocab(Path(cfg["args"][cfg["args"].index("--mtp") + 1]), cfg.get("draft_vocab", "cjk"))
-    srv_bin = ROOT / "bin" / ("strata-server.exe" if WIN else "strata-server")
-    use_go = cfg.get("server") == "go" or os.environ.get("STRATA_SERVER") == "go"
-    if use_go and srv_bin.exists():
-        cmd = [str(srv_bin), "--engine", "strata", "--config", str(cfg_path),
-               "--port", str(port or cfg.get("port", 8080))]
-    else:
-        cmd = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
-               "--port", str(port or cfg.get("port", 8080))]
+    cmd = server_command(cfg_path, port or cfg.get("port", 8080))
     if cfg.get("backend") == "hip":                    # AMD, numbered as HIP numbers them (setup's KFD order)
         if WIN:
             hip_runtime_beside_exe(Path(cfg["exe"]).parent)   # #468 #461: also fixes a 0.1.34 install
@@ -3616,7 +3636,7 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
             write_config(cfg_path, cfg)
             gpu = None
         elif gpu is not None:
-            cmd += ["--gpu", str(gpu)]
+            pass                                       # --gpu N: the device variables below (this start only)
         found = []
         use = gpu if gpu is not None else cfg.get("gpu")
         if isinstance(use, list):
@@ -3646,7 +3666,6 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
         gpu = None
     elif gpu is not None:                              # --gpu N: this start only, on that card
         check_gpus([gpu], found)
-        cmd += ["--gpu", str(gpu)]
     else:
         cfg = offer_together(cfg_path, cfg, yes)
     use = gpu if gpu is not None else cfg.get("gpu")
@@ -3667,8 +3686,6 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
             cfg = ensure_engine_for([g], cfg_path, cfg, yes)
             ok("GPU: " + gpu_name(g))
     browser = open_browser and cfg.get("open_browser") is not False   # #609: "open_browser": false, --no-browser
-    if browser:
-        cmd.append("--open")
     gb = 0.0
     if "--native" in cfg["args"]:
         try:
@@ -3698,8 +3715,11 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
         # Replace this process instead of spawning a child. The Docker image sets STRATA_EXECV=1,
         # so there the server is PID 1 and docker stop's SIGTERM reaches the process that can
         # answer the engine with QUIT. Normal Linux starts keep spawning the server as a child.
+        os.environ.update(gpu_env(cfg, gpu))
         os.execv(cmd[0], cmd)
-    return subprocess.call(cmd)
+    if browser:
+        open_when_ready(port or cfg.get("port", 8080))
+    return subprocess.call(cmd, env={**os.environ, **gpu_env(cfg, gpu)})
 
 
 # the draft subsets setup copied before (sha256): replaced by the current one, a subset made by hand is kept
@@ -4003,23 +4023,67 @@ def use_cuda12(cards, cfg_path: Path, cfg: dict, yes: bool) -> dict:
     return cfg
 
 
+def server_command(cfg_path, port):
+    """The Go server (bin/strata-server, or `bin/strata serve`) with this config. The Python server is gone."""
+    srv = ROOT / "bin" / ("strata-server.exe" if WIN else "strata-server")
+    if srv.exists():
+        return [str(srv), "--config", str(cfg_path), "--port", str(port)]
+    return [str(ROOT / "bin" / ("strata.exe" if WIN else "strata")), "serve", "-config", str(cfg_path),
+            "-port", str(port)]
+
+
+def gpu_env(cfg, gpu):
+    """The device variables for the engine: `gpu` (--gpu, this start only) else the config's "gpu" (one card or a
+    list), numbered as nvidia-smi / HIP number them.  The server passes its environment on to the engine."""
+    g = gpu if gpu is not None else cfg.get("gpu")
+    if g is None:
+        return {}
+    ids = [int(x) for x in (g if isinstance(g, list) else str(g).split(",")) if str(x).strip() != ""]
+    if not ids:
+        return {}
+    ids_s = ",".join(str(i) for i in ids)
+    if cfg.get("backend") == "hip":
+        return {"HIP_VISIBLE_DEVICES": ids_s}
+    return {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": ids_s}
+
+
+def open_when_ready(port, timeout=1800):
+    """Opens the browser once the server answers /health with the engine loaded (what --open did)."""
+    import threading
+    import webbrowser
+
+    def wait():
+        end = time.time() + timeout
+        while time.time() < end:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as r:
+                    if b'"loaded":true' in r.read().replace(b" ", b""):
+                        webbrowser.open(f"http://127.0.0.1:{port}/")
+                        return
+            except OSError:
+                pass
+            time.sleep(2)
+    threading.Thread(target=wait, daemon=True).start()
+
+
 def write_run_script(model, cfg_path, port, open_browser=True, server_kind=None):
-    """run-<model>.bat / .sh: the server with this config; `open_browser` False (#609: --no-browser) leaves --open out."""
-    srv_bin = ROOT / "bin" / ("strata-server.exe" if WIN else "strata-server")
-    if server_kind == "go" and srv_bin.exists():
-        serve = [str(srv_bin), "--engine", "strata", "--config", str(cfg_path),
-                 "--port", str(port)] + (["--open"] if open_browser else [])
-    else:
-        serve = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
-                 "--port", str(port)] + (["--open"] if open_browser else [])
+    """run-<model>.bat / .sh: the Go server with this config (the browser is opened by `start`, not by this script; `open_browser` is kept for callers)."""
+    serve = server_command(cfg_path, port)
+    try:
+        cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cfg = {}
+    gpus = gpu_env(cfg, None)                          # the config's card(s): the Go server does not read "gpu"
     if WIN:
         script = ROOT / f"run-{model.lower()}.bat"
         script.write_text("@echo off\r\ntitle Strata " + model + "\r\ncd /d \"" + str(ROOT) + "\"\r\n" +
+                          "".join(f"set {k}={v}\r\n" for k, v in gpus.items()) +
                           " ".join(f'"{x}"' for x in serve) + "\r\nif errorlevel 1 pause\r\n", encoding="utf-8")
     else:
         script = ROOT / f"run-{model.lower()}.sh"
-        script.write_text("#!/bin/sh\ncd \"" + str(ROOT) + "\"\nexec " + " ".join(f'"{x}"' for x in serve) + "\n",
-                          encoding="utf-8")
+        script.write_text("#!/bin/sh\ncd \"" + str(ROOT) + "\"\n" +
+                          "".join(f'export {k}="{v}"\n' for k, v in gpus.items()) +
+                          "exec " + " ".join(f'"{x}"' for x in serve) + "\n", encoding="utf-8")
         script.chmod(0o755)
     return script
 
@@ -4830,10 +4894,10 @@ def main() -> int:
     sys.path.insert(0, str(ROOT / "tools"))
     from gguf_reader import GGUFFile                   # the PLE table's shard: shard 2 (original) or 1 (Swift)
     ple = next((s for s in shards if any(t.name == "per_layer_token_embd.weight" for t in GGUFFile(s).tensors)), None)
-    if ple is None:
+    if ple is None and family != "mimo":
         fail("the model has no per_layer_token_embd tensor (is this a Qwen3.8-Flash-Next GGUF?)")
     # (a 4-shard file: the engine finds the PLE table's shard itself from shard 1, the measured setup)
-    args = ["--pack", str(pack), "--native", str(shards[0]), *(["--ple-gguf", str(ple)] if len(shards) <= 2 else []),
+    args = ["--pack", str(pack), "--native", str(shards[0]), *(["--ple-gguf", str(ple)] if (ple and len(shards) <= 2) else []),
             "--expert-profile", str(ROOT / "data" / fam.get("profile", "expert-profile.bin")), "--expert-cache", "auto",
             "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt),
             "--max-context", str(ctx)]
@@ -4847,8 +4911,8 @@ def main() -> int:
            "the OS file cache (run setup again after the next engine update)")
     if low_ram:   # the experts from the pack's experts.bin: the ones the GPU does not hold copied into RAM, or mapped
         args += ["--resident-experts" if resident else "--mmap-experts"]
-    disk = None if is_wsl() else rotational_disk(ple)  # #605 (WSL's virtual disk says rotational)
-    if disk:
+    disk = None if (is_wsl() or not ple) else rotational_disk(ple)  # #605 (WSL's virtual disk says rotational)
+    if disk and ple:
         tensor = next((t for t in GGUFFile(ple).tensors if t.name == "per_layer_token_embd.weight"), None)
         size = getattr(tensor, "expected_bytes", lambda: None)()
         table_gb = size / 1e9 if size else 28.8

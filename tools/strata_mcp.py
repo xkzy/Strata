@@ -66,6 +66,11 @@ FALLBACK_MODELS = {
                            "less than ~80 GB of RAM part of its experts are read from the SSD",
                   "download_gb": 93.7, "ram_gb": 48, "arena_gb": 59.5, "families": ("unsloth",), "budget": True,
                   "vision": True},
+    # Xiaomi MiMo-V2.6-Flash-RL: 48 layers, 256 MoE experts (8 active), 1M context, RL reasoning
+    "Q2_K": {"about": "2-bit K-quant, Xiaomi MiMo-V2.6-Flash-RL with ChatML reasoning", "download_gb": 126.2, "ram_gb": 64,
+             "arena_gb": 96.0, "families": ("mimo",), "budget": True},
+    "MXFP4": {"about": "4-bit microscaling format, high fidelity MiMo-V2.6-Flash-RL", "download_gb": 167.4, "ram_gb": 64,
+              "arena_gb": 128.0, "families": ("mimo",), "budget": True},
 }
 FALLBACK_FAMILIES = {
     "qwen": {"title": "Qwen3.8-Flash-Next", "about": "the original model", "tag": ""},
@@ -77,6 +82,8 @@ FALLBACK_FAMILIES = {
                                                                   "of RAM part of its experts are read from the SSD "
                                                                   "(UD-Q4_K_XL, 111 GB: experimental)",
                 "tag": "unsloth-", "vision": False},
+    "mimo": {"title": "MiMo-V2.6-Flash-RL", "about": "Xiaomi's 48-layer 256-expert MoE model with native RL reasoning",
+             "tag": "mimo-"},
 }
 FALLBACK_CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288]
 BENCH_PROMPT = ("Write a short story (about 300 words) about a lighthouse keeper who finds a message in a bottle. "

@@ -3,6 +3,8 @@
 
 #include "strata/rt/retrieval.hpp"
 
+#include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -192,6 +194,8 @@ struct VirtualContext::Impl {
     std::vector<uint32_t> dependents;                          // per page idx
     std::unordered_map<std::string, std::vector<uint64_t>> msg_index;   // role|hash -> item ids
     std::set<uint64_t> prev_hot;
+    double budget_scale = 1.0;                            // window budget multiplier learned from the real token count
+    std::vector<std::pair<uint64_t, bool>> prev_order;   // the last window: page id, sent as summary - in the order it was sent
     int64_t last_resident_tokens = 0;
     uint64_t logical_tokens = 0, content_bytes = 0;
     mutable VirtualContextStats st;
@@ -519,6 +523,7 @@ WorkingSet VirtualContext::select(const SelectionRequest& req) {
     ws.references_earlier = references_earlier_context(req.query);
 
     std::map<uint64_t, bool> chosen;      // page id -> as_summary
+    std::set<uint64_t> locked;            // carried pages: their form (original / summary) must not change, or the KV prefix breaks
     int64_t used = 0;
     auto cost = [&](const ContextPage& p, bool summary) -> int64_t { return static_cast<int64_t>(summary ? est_tokens(p.summary) : p.tokens) + 4; };
     auto authorized = [&](const ContextPage& p) { return req.requester.can_access(p.owner, p.sharing); };
@@ -527,6 +532,7 @@ WorkingSet VirtualContext::select(const SelectionRequest& req) {
         if (!authorized(p)) return false;
         auto it = chosen.find(pid);
         if (it != chosen.end()) {
+            if (locked.count(pid)) return true;
             if (!it->second || summary) return true;           // already there in an equal or better form
             used -= cost(p, true); used += cost(p, false); it->second = false;   // upgrade summary -> original
             return true;
@@ -570,10 +576,49 @@ WorkingSet VirtualContext::select(const SelectionRequest& req) {
                 else ws.trace.push_back("pinned page " + std::to_string(pid) + " does not fit");
             }
     }
+    // S: prefix-stable window.  The pages of the last window that this request still holds keep their order and form (the
+    // engine reuses the KV of an identical token prefix); what arrived since is appended; when the window overflows, the
+    // oldest carried pages go in one chunk (down to stable_keep of the budget) so the next turns only append.
+    const bool stable = m.cfg.stable_window && !req.request_items.empty() && !m.prev_order.empty();
+    std::set<uint64_t> carried;
+    int64_t keep_limit = budget;
+    if (stable) {
+        keep_limit = static_cast<int64_t>(budget * m.cfg.stable_keep);
+        uint64_t max_prev = 0;
+        std::set<uint64_t> prev_set;
+        for (const auto& pr : m.prev_order) { prev_set.insert(pr.first); max_prev = std::max(max_prev, m.pg(pr.first).sequence_position); }
+        auto in_request = [&](uint64_t pid) { return req.request_items.count(m.pg(pid).item_id) > 0; };
+        // the new tail: items of this request appended after the last window, newest first
+        for (size_t k = m.items.size(); k-- > 0;) {
+            const auto& it = m.items[k];
+            if (!req.request_items.count(it.id) || it.pages.empty() || static_cast<int64_t>(it.tokens) > huge) continue;
+            if (m.pg(it.pages.front()).sequence_position <= max_prev) break;
+            bool all = true;
+            for (uint64_t pid : it.pages) if (!chosen.count(pid) && !fits(m.pg(pid), false, keep_limit)) all = false;
+            if (!all) break;
+            for (uint64_t pid : it.pages) take(pid, false);
+        }
+        // the carried prefix, oldest first in the order it was sent
+        std::vector<std::pair<uint64_t, bool>> carry;
+        int64_t carry_cost = 0;
+        for (const auto& pr : m.prev_order) {
+            if (chosen.count(pr.first) || !in_request(pr.first) || !authorized(m.pg(pr.first))) continue;
+            carry.push_back(pr);
+            carry_cost += cost(m.pg(pr.first), pr.second);
+        }
+        size_t start = 0;
+        if (used + carry_cost > budget) {
+            while (start < carry.size() && used + carry_cost > keep_limit) { carry_cost -= cost(m.pg(carry[start].first), carry[start].second); ++start; }
+            ws.trace.push_back("window full: " + std::to_string(start) + " oldest carried page(s) leave in one step");
+        }
+        for (size_t k = start; k < carry.size(); ++k) { take(carry[k].first, carry[k].second); locked.insert(carry[k].first); carried.insert(carry[k].first); }
+        ws.trace.push_back("stable window: " + std::to_string(carried.size()) + " pages carried, " + std::to_string(start) + " evicted");
+    }
+
     // C: recent tail, newest first, until its share of the budget is used
     {
-        const int64_t limit = used + static_cast<int64_t>(budget * m.cfg.recent_fraction);
-        for (size_t k = m.items.size(); k-- > 0;) {
+        const int64_t limit = std::min(used + static_cast<int64_t>(budget * m.cfg.recent_fraction), stable ? keep_limit : budget);
+        for (size_t k = m.items.size(); k-- > 0 && !stable;) {
             const auto& it = m.items[k];
             if (req.current_items.count(it.id) || static_cast<int64_t>(it.tokens) > huge) continue;
             bool all = true;
@@ -582,7 +627,8 @@ WorkingSet VirtualContext::select(const SelectionRequest& req) {
             for (uint64_t pid : it.pages) take(pid, false);
         }
     }
-    // D: relevant older pages (+ their dependencies), strongest first
+    // D: relevant older pages (+ their dependencies), strongest first (a stable window leaves the room it freed for appends)
+    const int64_t d_limit = stable ? std::max<int64_t>(used, keep_limit) : budget;
     {
         std::vector<std::pair<double, uint64_t>> cand;
         for (auto& kv : rel) {
@@ -612,11 +658,11 @@ WorkingSet VirtualContext::select(const SelectionRequest& req) {
             }
             int64_t unit_cost = 0;
             for (uint64_t u : unit) unit_cost += cost(m.pg(u), false);
-            if (used + unit_cost <= budget) { for (uint64_t u : unit) take(u, false); ws.retrieved += unit.size(); }
-            else if (fits(p, false, budget)) {
+            if (used + unit_cost <= d_limit) { for (uint64_t u : unit) take(u, false); ws.retrieved += unit.size(); }
+            else if (fits(p, false, d_limit)) {
                 take(p.page_id, false); ++ws.retrieved;
-                for (size_t k = 1; k < unit.size(); ++k) if (fits(m.pg(unit[k]), true, budget)) take(unit[k], true);   // dependencies as summaries
-            } else if (fits(p, true, budget)) { take(p.page_id, true); ++ws.retrieved; }
+                for (size_t k = 1; k < unit.size(); ++k) if (fits(m.pg(unit[k]), true, d_limit)) take(unit[k], true);   // dependencies as summaries
+            } else if (fits(p, true, d_limit)) { take(p.page_id, true); ++ws.retrieved; }
         }
         {   // usefulness feedback: the retrievers that produced pages that made it into the working set
             std::vector<Candidate> used_c;
@@ -651,8 +697,12 @@ WorkingSet VirtualContext::select(const SelectionRequest& req) {
 
     // materialize in logical order; pages whose original cannot be read are dropped and reported, never replaced by guesses
     std::vector<uint64_t> order;
-    for (auto& c : chosen) order.push_back(c.first);
-    std::sort(order.begin(), order.end(), [&](uint64_t a, uint64_t b) { return m.pg(a).sequence_position < m.pg(b).sequence_position; });
+    std::set<uint64_t> in_prefix;
+    if (stable)   // every chosen page the last window had (pinned ones included), where it was
+        for (const auto& pr : m.prev_order) if (chosen.count(pr.first)) { order.push_back(pr.first); in_prefix.insert(pr.first); }
+    const size_t prefix_len = order.size();
+    for (auto& c : chosen) if (!in_prefix.count(c.first)) order.push_back(c.first);
+    std::sort(order.begin() + static_cast<std::ptrdiff_t>(prefix_len), order.end(), [&](uint64_t a, uint64_t b) { return m.pg(a).sequence_position < m.pg(b).sequence_position; });
     std::set<uint64_t> now_hot;
     int64_t tokens = 0;
     uint64_t last_item = 0;
@@ -704,6 +754,8 @@ WorkingSet VirtualContext::select(const SelectionRequest& req) {
         }
     }
     m.prev_hot = std::move(now_hot);
+    m.prev_order.clear();
+    for (uint64_t pid : ws.page_ids) m.prev_order.push_back({pid, ws.page_hashes[m.prev_order.size()].compare(0, 2, "s:") == 0});
     m.last_resident_tokens = tokens;
     ws.trace.push_back("working set: " + std::to_string(ws.page_ids.size()) + " pages, " + std::to_string(tokens) + " tokens; in " + std::to_string(ws.paged_in) +
                        ", out " + std::to_string(ws.paged_out) + ", retrieved " + std::to_string(ws.retrieved));
@@ -714,6 +766,9 @@ size_t VirtualContext::compact() {
     std::lock_guard<std::mutex> lock(impl_->mu);
     return impl_->compact_locked();
 }
+
+double VirtualContext::budget_scale() const { std::lock_guard<std::mutex> lock(impl_->mu); return impl_->budget_scale; }
+void VirtualContext::set_budget_scale(double scale) { std::lock_guard<std::mutex> lock(impl_->mu); impl_->budget_scale = std::min(1.0, std::max(0.2, scale)); }
 
 ContextWindowInfo VirtualContext::window_info() const {
     std::lock_guard<std::mutex> lock(impl_->mu);
