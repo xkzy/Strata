@@ -202,8 +202,11 @@ func (s *StrataServer) Router() http.Handler {
 
 	// OpenAI / Anthropic APIs
 	mux.HandleFunc("/v1/chat/completions", s.recordAPI(s.handleChatCompletions))
+	mux.HandleFunc("/chat/completions", s.recordAPI(s.handleChatCompletions))
 	mux.HandleFunc("/v1/completions", s.recordAPI(s.handleCompletions))
+	mux.HandleFunc("/completions", s.recordAPI(s.handleCompletions))
 	mux.HandleFunc("/v1/messages", s.recordAPI(s.handleAnthropicMessages))
+	mux.HandleFunc("/messages", s.recordAPI(s.handleAnthropicMessages))
 	mux.HandleFunc("/v1/responses", s.recordAPI(s.handleResponsesAPI))
 	mux.HandleFunc("/v1/models", s.handleModels)
 	mux.HandleFunc("/v1/models/", s.handleModels)
@@ -389,9 +392,17 @@ func (s *StrataServer) corsMiddleware(next http.Handler) http.Handler {
 		}
 
 		if s.Config.APIKey != "" && !publicPath(r) {
-			got := []byte(r.Header.Get("Authorization"))
-			want := []byte("Bearer " + s.Config.APIKey)
-			if subtle.ConstantTimeCompare(got, want) != 1 {
+			gotAuth := []byte(r.Header.Get("Authorization"))
+			wantAuth := []byte("Bearer " + s.Config.APIKey)
+			gotKey := []byte(r.Header.Get("X-Api-Key"))
+			if len(gotKey) == 0 {
+				gotKey = []byte(r.Header.Get("x-api-key"))
+			}
+			wantKey := []byte(s.Config.APIKey)
+
+			authOK := subtle.ConstantTimeCompare(gotAuth, wantAuth) == 1
+			keyOK := subtle.ConstantTimeCompare(gotKey, wantKey) == 1
+			if !authOK && !keyOK {
 				http.Error(w, `{"error":{"message":"Unauthorized","type":"authentication_error"}}`, http.StatusUnauthorized)
 				return
 			}
@@ -412,7 +423,7 @@ func (s *StrataServer) corsMiddleware(next http.Handler) http.Handler {
 // request could use as much memory as its sender cared to send.
 func bodyLimit(path string) int64 {
 	switch {
-	case path == "/v1/chat/completions", path == "/v1/completions", path == "/v1/messages",
+	case path == "/v1/chat/completions", path == "/chat/completions", path == "/v1/completions", path == "/completions", path == "/v1/messages", path == "/messages",
 		path == "/v1/messages/count_tokens", strings.HasPrefix(path, "/v1/responses"):
 		return 0
 	}

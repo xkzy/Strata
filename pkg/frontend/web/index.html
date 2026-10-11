@@ -419,6 +419,27 @@
         <span class="card-title">Connect your tools</span>
         <p class="muted">Any OpenAI- or Anthropic-compatible client works with these addresses.</p>
         <dl class="facts" id="facts-api"></dl>
+
+        <div class="tool-connect-block">
+          <div class="tool-connect-header">
+            <span class="tool-connect-title"><svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-tool"/></svg>Launch Claude Code</span>
+            <div class="tool-os-tabs" id="claude-os-tabs">
+              <button type="button" class="st-pill active" data-os="bash">Bash / Zsh</button>
+              <button type="button" class="st-pill" data-os="npx">npx</button>
+              <button type="button" class="st-pill" data-os="pwsh">PowerShell</button>
+              <button type="button" class="st-pill" data-os="cmd">CMD</button>
+            </div>
+          </div>
+          <div class="tool-cmd-box">
+            <code id="claude-code-cmd">ANTHROPIC_BASE_URL="http://127.0.0.1:8080" ANTHROPIC_API_KEY="strata" claude</code>
+            <button class="st-btn st-btn--secondary st-btn--sm" id="claude-copy-btn" type="button" title="Copy full command">
+              <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-copy"/></svg>Copy Command
+            </button>
+          </div>
+          <p class="muted small" style="margin-top: 6px;">
+            Runs Anthropic's Claude Code CLI pointing directly to Strata's native Anthropic <code>/v1/messages</code> endpoint.
+          </p>
+        </div>
       </div>
       <div class="st-card">
         <span class="card-title">Settings</span>

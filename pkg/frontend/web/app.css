@@ -244,6 +244,14 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-toast { animation: toast-in 180ms var(--st-ease); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
 
+/* ---------------------------------------------------------------- Connect Tools */
+.tool-connect-block { margin-top: var(--st-s-4); padding-top: var(--st-s-4); border-top: 1px solid var(--st-line); display: flex; flex-direction: column; gap: var(--st-s-2); }
+.tool-connect-header { display: flex; justify-content: space-between; align-items: center; gap: var(--st-s-2); flex-wrap: wrap; }
+.tool-connect-title { font-weight: var(--st-fw-bold); font-size: var(--st-fs-base); color: var(--st-ink); display: flex; align-items: center; gap: 6px; }
+.tool-os-tabs { display: flex; gap: 4px; }
+.tool-cmd-box { background: var(--st-surface-2); border: 1.5px solid var(--st-line); border-radius: var(--st-r-md); padding: var(--st-s-2) var(--st-s-3); display: flex; align-items: center; justify-content: space-between; gap: var(--st-s-3); margin-top: 4px; }
+.tool-cmd-box code { font: 400 13px/1.4 var(--st-font-mono); color: var(--st-ink); word-break: break-all; flex: 1; user-select: all; }
+
 /* ---------------------------------------------------------------- narrow screens */
 @media (max-width: 1000px) {
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }

@@ -116,7 +116,12 @@ function headers(json = false) {
   return h;
 }
 $("api-key").value = secret.get();
-$("api-key").onchange = () => { secret.set($("api-key").value.trim()); toast("success", "API key saved", "Kept for this tab only; enter it again after closing the tab."); };
+$("api-key").onchange = () => {
+  secret.set($("api-key").value.trim());
+  toast("success", "API key saved", "Kept for this tab only; enter it again after closing the tab.");
+  if (typeof updateClaudeCodeBlock === "function") updateClaudeCodeBlock();
+  if (lastMetrics) render(lastMetrics);
+};
 
 let health = {model: "strata", images: false, max_context: 0, models: []};
 
@@ -645,12 +650,58 @@ function renderAbout(eng, hw, st) {
     ["RAM", hw.ram_total ? `${gb(hw.ram_total, 0)} GB` : null],
   ]);
   const base = location.origin;
+  const key = secret.get();
+  const claudeDefaultCmd = getClaudeCommand("bash", base, key);
   facts($("facts-api"), [
     ["OpenAI base URL", `${base}/v1`, true],
     ["Anthropic base URL", base, true],
     ["Model name", eng.model, true],
+    ["Claude Code (Bash)", claudeDefaultCmd, true],
   ]);
+  updateClaudeCodeBlock();
 }
+
+let activeClaudeOS = "bash";
+
+function getClaudeCommand(os, base, key) {
+  const k = key || "strata";
+  switch (os) {
+    case "npx":
+      return `ANTHROPIC_BASE_URL="${base}" ANTHROPIC_API_KEY="${k}" npx @anthropic-ai/claude-code`;
+    case "pwsh":
+      return `$env:ANTHROPIC_BASE_URL="${base}"; $env:ANTHROPIC_API_KEY="${k}"; claude`;
+    case "cmd":
+      return `set ANTHROPIC_BASE_URL=${base}&& set ANTHROPIC_API_KEY=${k}&& claude`;
+    case "bash":
+    default:
+      return `ANTHROPIC_BASE_URL="${base}" ANTHROPIC_API_KEY="${k}" claude`;
+  }
+}
+
+function updateClaudeCodeBlock() {
+  const base = location.origin;
+  const key = secret.get();
+  const cmd = getClaudeCommand(activeClaudeOS, base, key);
+  const el = $("claude-code-cmd");
+  if (el) el.textContent = cmd;
+}
+
+document.querySelectorAll("#claude-os-tabs .st-pill").forEach((pill) => {
+  pill.onclick = () => {
+    activeClaudeOS = pill.dataset.os || "bash";
+    document.querySelectorAll("#claude-os-tabs .st-pill").forEach((p) => p.classList.remove("active"));
+    pill.classList.add("active");
+    updateClaudeCodeBlock();
+  };
+});
+
+if ($("claude-copy-btn")) {
+  $("claude-copy-btn").onclick = () => {
+    const el = $("claude-code-cmd");
+    if (el) copyText(el.textContent, $("claude-copy-btn"));
+  };
+}
+
 document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-copy]");
   if (b) copyText(b.dataset.copy, b);
