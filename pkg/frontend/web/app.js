@@ -1596,11 +1596,22 @@ if ($("sidebar-new-btn")) $("sidebar-new-btn").onclick = () => createNewSession(
 function updateSidebarToggleBtn() {
   const sb = $("chat-sidebar");
   const btn = $("sidebar-open-btn");
-  if (!sb || !btn) return;
+  const chevron = $("sidebar-chevron");
+  const edgeTab = $("sidebar-edge-tab");
+  if (!sb) return;
   const isCollapsed = sb.classList.contains("collapsed");
-  btn.classList.toggle("active", !isCollapsed);
-  btn.setAttribute("aria-expanded", String(!isCollapsed));
-  btn.title = isCollapsed ? "Show chat history sidebar (Ctrl+B)" : "Hide chat history sidebar (Ctrl+B)";
+  if (btn) {
+    btn.classList.toggle("collapsed", isCollapsed);
+    btn.classList.toggle("active", !isCollapsed);
+    btn.setAttribute("aria-expanded", String(!isCollapsed));
+    btn.title = isCollapsed ? "Expand sidebar (Ctrl+B)" : "Minimize sidebar (Ctrl+B)";
+  }
+  if (chevron) {
+    chevron.style.transform = isCollapsed ? "rotate(-90deg)" : "rotate(90deg)";
+  }
+  if (edgeTab) {
+    edgeTab.style.display = isCollapsed ? "flex" : "none";
+  }
 }
 
 if ($("sidebar-close-btn")) {
@@ -1620,6 +1631,17 @@ if ($("sidebar-open-btn")) {
     if (sb) {
       sb.classList.toggle("collapsed");
       store.set("sidebar_collapsed", sb.classList.contains("collapsed"));
+      updateSidebarToggleBtn();
+    }
+  };
+}
+
+if ($("sidebar-edge-tab")) {
+  $("sidebar-edge-tab").onclick = () => {
+    const sb = $("chat-sidebar");
+    if (sb) {
+      sb.classList.remove("collapsed");
+      store.set("sidebar_collapsed", false);
       updateSidebarToggleBtn();
     }
   };

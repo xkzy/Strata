@@ -71,9 +71,12 @@
 
       <!-- Main Chat Area -->
       <div class="chat-main" id="chat-main">
+        <button type="button" class="sidebar-edge-tab" id="sidebar-edge-tab" title="Expand sidebar (Ctrl+B)" aria-label="Expand sidebar">
+          <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-chevron"/></svg>
+        </button>
         <div class="chat-topbar" id="chat-topbar">
-          <button type="button" class="st-btn st-btn--sm sidebar-toggle-btn" id="sidebar-open-btn" title="Toggle chat history (Ctrl+B)" aria-label="Toggle chat history">
-            <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-layers"/></svg>
+          <button type="button" class="st-btn st-btn--sm sidebar-toggle-btn" id="sidebar-open-btn" title="Minimize or expand sidebar (Ctrl+B)" aria-label="Minimize or expand sidebar">
+            <svg class="st-icon st-icon--sm sidebar-chevron-icon" id="sidebar-chevron"><use href="web/sprite.svg#i-chevron"/></svg>
             <span class="sidebar-toggle-text">Chats</span>
           </button>
           <div class="active-session-info">
