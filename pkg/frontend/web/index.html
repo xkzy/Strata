@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Strata</title>
-<link rel="stylesheet" href="web/tokens.css">
-<link rel="stylesheet" href="web/components.css">
-<link rel="stylesheet" href="web/app.css">
+<link rel="stylesheet" href="web/tokens.css?v=2">
+<link rel="stylesheet" href="web/components.css?v=2">
+<link rel="stylesheet" href="web/app.css?v=2">
 <script>
   // the theme before the first paint: the saved choice, else the system's
   try {
@@ -51,8 +51,8 @@
           <button type="button" class="sidebar-new-btn" id="sidebar-new-btn">
             <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-new-chat"/></svg>New chat
           </button>
-          <button type="button" class="st-btn st-btn--icon st-btn--sm" id="sidebar-close-btn" title="Collapse sidebar" aria-label="Collapse sidebar">
-            <svg class="st-icon st-icon--sm" style="transform: rotate(90deg);"><use href="web/sprite.svg#i-chevron"/></svg>
+          <button type="button" class="st-btn st-btn--icon st-btn--sm" id="sidebar-close-btn" title="Collapse sidebar (Ctrl+B)" aria-label="Collapse sidebar">
+            <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-chevron-left"/></svg>
           </button>
         </div>
         <div class="chat-sidebar__search">
@@ -72,11 +72,11 @@
       <!-- Main Chat Area -->
       <div class="chat-main" id="chat-main">
         <button type="button" class="sidebar-edge-tab" id="sidebar-edge-tab" title="Expand sidebar (Ctrl+B)" aria-label="Expand sidebar">
-          <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-chevron"/></svg>
+          <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-chevron-right"/></svg>
         </button>
         <div class="chat-topbar" id="chat-topbar">
           <button type="button" class="st-btn st-btn--sm sidebar-toggle-btn" id="sidebar-open-btn" title="Minimize or expand sidebar (Ctrl+B)" aria-label="Minimize or expand sidebar">
-            <svg class="st-icon st-icon--sm sidebar-chevron-icon" id="sidebar-chevron"><use href="web/sprite.svg#i-chevron"/></svg>
+            <svg class="st-icon st-icon--sm sidebar-chevron-icon" id="sidebar-chevron"><use href="web/sprite.svg#i-chevron-left"/></svg>
             <span class="sidebar-toggle-text">Chats</span>
           </button>
           <div class="active-session-info">
@@ -533,6 +533,6 @@
 </aside>
 <div class="scrim" id="scrim" hidden></div>
 <div class="st-toasts" id="toasts" aria-live="polite"></div>
-<script src="web/app.js"></script>
+<script src="web/app.js?v=2"></script>
 </body>
 </html>

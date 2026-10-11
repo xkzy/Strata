@@ -1607,7 +1607,10 @@ function updateSidebarToggleBtn() {
     btn.title = isCollapsed ? "Expand sidebar (Ctrl+B)" : "Minimize sidebar (Ctrl+B)";
   }
   if (chevron) {
-    chevron.style.transform = isCollapsed ? "rotate(-90deg)" : "rotate(90deg)";
+    const use = chevron.querySelector("use");
+    if (use) {
+      use.setAttribute("href", isCollapsed ? "web/sprite.svg#i-chevron-right" : "web/sprite.svg#i-chevron-left");
+    }
   }
   if (edgeTab) {
     edgeTab.style.display = isCollapsed ? "flex" : "none";

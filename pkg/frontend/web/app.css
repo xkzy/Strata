@@ -48,11 +48,10 @@ main { flex: 1; min-height: 0; display: flex; }
 .active-session-title { font-size: var(--st-fs-sm); font-weight: var(--st-fw-bold); color: var(--st-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .active-session-title:hover { color: var(--st-accent); }
 
-.sidebar-chevron-icon { width: 14px; height: 14px; transition: transform 0.2s ease; transform: rotate(90deg); }
-.sidebar-toggle-btn.collapsed .sidebar-chevron-icon { transform: rotate(-90deg); }
-.sidebar-edge-tab { display: none; position: absolute; top: 50%; left: 0; transform: translateY(-50%); z-index: 25; width: 18px; height: 48px; background: var(--st-surface-2); border: 1px solid var(--st-line); border-left: none; border-radius: 0 6px 6px 0; cursor: pointer; align-items: center; justify-content: center; color: var(--st-ink-muted); box-shadow: 2px 0 8px rgba(0,0,0,0.08); transition: all 0.15s ease; padding: 0; }
-.sidebar-edge-tab:hover { width: 22px; background: color-mix(in srgb, var(--st-accent) 15%, var(--st-surface-2)); color: var(--st-accent); border-color: var(--st-accent); }
-.sidebar-edge-tab .st-icon { width: 14px; height: 14px; transform: rotate(-90deg); }
+.sidebar-chevron-icon { width: 14px; height: 14px; flex: none; }
+.sidebar-edge-tab { display: none; position: absolute; top: 50%; left: 0; transform: translateY(-50%); z-index: 25; width: 22px; height: 52px; background: var(--st-surface-2); border: 1px solid var(--st-line); border-left: none; border-radius: 0 6px 6px 0; cursor: pointer; align-items: center; justify-content: center; color: var(--st-ink-muted); box-shadow: 2px 0 8px rgba(0,0,0,0.12); transition: all 0.15s ease; padding: 0; }
+.sidebar-edge-tab:hover { width: 26px; background: color-mix(in srgb, var(--st-accent) 15%, var(--st-surface-2)); color: var(--st-accent); border-color: var(--st-accent); }
+.sidebar-edge-tab .st-icon { width: 14px; height: 14px; }
 
 @media (max-width: 768px) {
   .chat-sidebar { position: absolute; top: 0; bottom: 0; left: 0; z-index: 30; box-shadow: 4px 0 20px rgba(0,0,0,0.2); }

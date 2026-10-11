@@ -74,6 +74,7 @@ func (h *FrontendHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		data, err := readWebFile(relPath)
 		if err == nil {
 			setMimeType(w, relPath)
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			w.WriteHeader(http.StatusOK)
 			w.Write(data)
 			return
@@ -96,6 +97,7 @@ func (h *FrontendHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	data, err := readWebFile(cleanPath)
 	if err == nil {
 		setMimeType(w, cleanPath)
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		w.WriteHeader(http.StatusOK)
 		w.Write(data)
 		return
