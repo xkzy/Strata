@@ -296,6 +296,7 @@
           <div class="setup-filter-pills" id="setup-cat-filters">
             <button class="st-pill active" data-cat="all" type="button">All Models</button>
             <button class="st-pill" data-cat="recommended" type="button">⭐ Recommended</button>
+            <button class="st-pill" data-cat="installed" type="button">💾 Installed</button>
             <button class="st-pill" data-cat="mimo" type="button">🚀 Xiaomi MiMo</button>
             <button class="st-pill" data-cat="huggingface" type="button">🤗 Hugging Face</button>
             <button class="st-pill" data-cat="ollama" type="button">🦙 Ollama</button>
@@ -376,6 +377,9 @@
           </button>
           <button class="st-btn st-btn--secondary" id="setup-save-btn" type="button">
             <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-check"/></svg>Save Config Only
+          </button>
+          <button class="st-btn st-btn--danger" id="setup-delete-btn" type="button" hidden>
+            <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-trash"/></svg>Delete Model Files
           </button>
           <button class="st-btn st-btn--secondary" id="setup-cancel-btn" type="button" hidden>
             <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-stop"/></svg>Cancel Download

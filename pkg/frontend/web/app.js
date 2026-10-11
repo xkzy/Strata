@@ -1622,6 +1622,7 @@ function filterAndRenderModels(recommended) {
   const filtered = allSetupModels.filter((m) => {
     // 1. Category Filter
     if (activeSetupCat === "recommended" && !m.recommended) return false;
+    if (activeSetupCat === "installed" && !m.installed && !m.has_files && m.source !== "local") return false;
     if (activeSetupCat === "mimo" && m.category !== "mimo" && !(m.name || "").toLowerCase().includes("mimo") && !(m.tags || []).some((t) => t.toLowerCase() === "mimo")) return false;
     if (activeSetupCat === "huggingface" && m.source !== "huggingface") return false;
     if (activeSetupCat === "ollama" && m.source !== "ollama") return false;
@@ -1685,13 +1686,18 @@ function filterAndRenderModels(recommended) {
       .map((t) => `<span class="model-tag">${esc(t)}</span>`)
       .join("");
 
+    const hasFiles = Boolean(m.installed || m.has_files || m.source === "local");
+    const isInstalled = Boolean(m.installed || m.source === "local");
+
     card.innerHTML = `
       <div class="model-card-top">
         <span class="model-source-badge" data-source="${esc(m.source || 'huggingface')}">
           ${sourceIcon} ${sourceLabel}
         </span>
+        ${isInstalled ? `<span class="model-installed-badge">💾 Installed</span>` : ""}
         ${isRec ? `<span class="model-rec-badge">★ Recommended</span>` : ""}
         ${m.category === "mimo" || (m.tags || []).includes("MiMo") ? `<span class="model-rec-badge" style="background:linear-gradient(135deg,#ff6900,#ff8a3d);color:#fff;">🚀 MiMo RL</span>` : ""}
+        ${hasFiles ? `<button class="model-card-delete-btn" title="Delete model files from disk" type="button"><svg class="st-icon st-icon--sm" style="width:14px;height:14px;pointer-events:none;"><use href="web/sprite.svg#i-trash"/></svg></button>` : ""}
       </div>
       <div class="model-card-name">${esc(m.name)}</div>
       <div class="model-tags-row">${tagsHtml}</div>
@@ -1703,6 +1709,13 @@ function filterAndRenderModels(recommended) {
     `;
 
     card.onclick = () => selectSetupModel(m);
+    const delBtn = card.querySelector(".model-card-delete-btn");
+    if (delBtn) {
+      delBtn.onclick = (e) => {
+        e.stopPropagation();
+        deleteSetupModel(m);
+      };
+    }
     container.appendChild(card);
   });
 
@@ -1739,10 +1752,16 @@ function selectSetupModel(m) {
     }
   }
 
+  // Show or hide delete button based on local/installed status
+  const deleteBtn = $("setup-delete-btn");
+  if (deleteBtn) {
+    deleteBtn.hidden = !(m.installed || m.has_files || m.source === "local");
+  }
+
   // Update download button label depending on local vs remote
   const btn = $("setup-download-btn");
   if (btn) {
-    if (m.download_url === "" || m.source === "ollama" || m.source === "local") {
+    if (m.download_url === "" || m.source === "ollama" || m.source === "local" || m.installed) {
       btn.innerHTML = `<svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-check"/></svg>Activate Local Model (Instant)`;
     } else {
       btn.innerHTML = `<svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-download"/></svg>Download & Activate (${fmt(m.size_gb, 1)} GB)`;
@@ -1933,9 +1952,51 @@ async function checkSetupStatus() {
   } catch (e) {}
 }
 
+async function deleteSetupModel(m) {
+  const modelToDel = m || selectedModelOpt;
+  if (!modelToDel) return;
+  const name = modelToDel.name || modelToDel.filename || "selected model";
+  const confirmed = confirm(`Are you sure you want to delete "${name}"?\n\nThis will remove all downloaded model weights and shard files from disk to free storage space.`);
+  if (!confirmed) return;
+
+  const btn = $("setup-delete-btn");
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-refresh"/></svg>Deleting...`;
+  }
+
+  try {
+    const r = await fetch("api/setup/delete", {
+      method: "POST",
+      headers: headers(true),
+      body: JSON.stringify({
+        model_name: modelToDel.name,
+        filename: modelToDel.filename,
+        path: modelToDel.filename
+      })
+    });
+    const data = await r.json();
+    if (r.ok) {
+      const freed = data.freed_gb ? `${data.freed_gb} GB` : `${data.freed_bytes || 0} bytes`;
+      alert(`Model files deleted successfully.\nFreed ${freed} of disk space.`);
+      await loadSetup();
+    } else {
+      alert(`Failed to delete model: ${(data.error && data.error.message) || "Unknown error"}`);
+    }
+  } catch (err) {
+    alert(`Failed to delete model: ${err.message}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `<svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-trash"/></svg>Delete Model Files`;
+    }
+  }
+}
+
 if ($("hw-refresh-btn")) $("hw-refresh-btn").onclick = loadSetup;
 if ($("setup-download-btn")) $("setup-download-btn").onclick = startSetupDownload;
 if ($("setup-save-btn")) $("setup-save-btn").onclick = saveSetupConfig;
+if ($("setup-delete-btn")) $("setup-delete-btn").onclick = () => deleteSetupModel(selectedModelOpt);
 if ($("setup-cancel-btn")) $("setup-cancel-btn").onclick = cancelSetupDownload;
 if ($("setup-import-btn")) $("setup-import-btn").onclick = importCustomSetupModel;
 if ($("setup-import-input")) {

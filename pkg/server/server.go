@@ -210,6 +210,7 @@ func (s *StrataServer) Router() http.Handler {
 	mux.HandleFunc("/api/setup/download", s.handleSetupDownload)
 	mux.HandleFunc("/api/setup/status", s.handleSetupStatus)
 	mux.HandleFunc("/api/setup/cancel", s.handleSetupCancel)
+	mux.HandleFunc("/api/setup/delete", s.handleSetupDelete)
 
 	// Config Settings (#564)
 	mux.HandleFunc("/config", s.handleRunConfig)
@@ -1158,7 +1159,8 @@ func (s *StrataServer) handleSetupDownload(w http.ResponseWriter, r *http.Reques
 	}
 
 	// If the file or pack already exists locally and has all shards, activate it immediately
-	if installer.AllShardsExist(req.DestPath) {
+	existingGB := installer.TotalShardsSizeGB(req.DestPath)
+	if installer.AllShardsExist(req.DestPath) && (choice.SizeGB == 0 || existingGB >= choice.SizeGB*0.95) {
 		s.Config.ModelName = req.ModelName
 		s.Config.ModelPath = req.DestPath
 		if s.ConfigManager != nil {
@@ -1224,6 +1226,97 @@ func (s *StrataServer) handleSetupCancel(w http.ResponseWriter, r *http.Request)
 		"status": "download_cancelled",
 	})
 }
+
+type SetupDeleteRequest struct {
+	ModelName string `json:"model_name"`
+	Filename  string `json:"filename"`
+	Path      string `json:"path"`
+}
+
+func (s *StrataServer) handleSetupDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req SetupDeleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		http.Error(w, fmt.Sprintf(`{"error":{"message":"invalid JSON: %v"}}`, err), http.StatusBadRequest)
+		return
+	}
+
+	target := req.Path
+	if target == "" {
+		target = req.Filename
+	}
+
+	var matchedName string = req.ModelName
+	if target == "" && req.ModelName != "" {
+		for _, m := range installer.GetAvailableModels() {
+			if strings.EqualFold(m.Name, req.ModelName) || strings.EqualFold(m.RepoID, req.ModelName) {
+				target = m.Filename
+				matchedName = m.Name
+				break
+			}
+		}
+	}
+
+	if target == "" {
+		http.Error(w, `{"error":{"message":"model target path or name required"}}`, http.StatusBadRequest)
+		return
+	}
+
+	// If download is currently in progress for this model or file, cancel it first
+	status := s.SetupManager.GetStatus()
+	if status.Status == installer.StatusDownloading {
+		isTargetDownload := false
+		if req.ModelName != "" && strings.EqualFold(status.ModelName, req.ModelName) {
+			isTargetDownload = true
+		}
+		if target != "" && (strings.Contains(status.DestPath, target) || strings.Contains(target, filepath.Base(status.DestPath))) {
+			isTargetDownload = true
+		}
+		if isTargetDownload {
+			s.SetupManager.CancelDownload()
+			time.Sleep(150 * time.Millisecond)
+		}
+	}
+
+	freedBytes, deletedFiles, err := installer.DeleteModelFiles(target)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error": map[string]interface{}{
+				"message": err.Error(),
+			},
+		})
+		return
+	}
+
+	wasActive := false
+	if s.Config.ModelName == matchedName || s.Config.ModelPath == target || (target != "" && strings.Contains(s.Config.ModelPath, filepath.Base(target))) {
+		wasActive = true
+		s.Config.ModelName = ""
+		s.Config.ModelPath = ""
+		if s.ConfigManager != nil {
+			cfg := s.ConfigManager.Get()
+			cfg.Model = ""
+			cfg.ModelPath = ""
+			s.ConfigManager.Update(cfg)
+			_ = s.ConfigManager.SaveToFile("")
+		}
+	}
+
+	freedGB := float64(freedBytes) / (1024 * 1024 * 1024)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":        "deleted",
+		"model_name":    matchedName,
+		"deleted_files": deletedFiles,
+		"freed_bytes":   freedBytes,
+		"freed_gb":      float64(int(freedGB*100+0.5)) / 100.0,
+		"was_active":    wasActive,
+	})
+}
+
 
 // Hallucination Runtime Handlers
 

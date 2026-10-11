@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -340,6 +341,29 @@ func TestSetupEndpoints(t *testing.T) {
 	resp6, err := http.Post(ts.URL+"/api/setup/cancel", "application/json", strings.NewReader("{}"))
 	if err != nil || resp6.StatusCode != http.StatusOK {
 		t.Fatalf("failed POST /api/setup/cancel: %v", err)
+	}
+
+	// 7. POST /api/setup/delete security rejection
+	badDelete, err := http.Post(ts.URL+"/api/setup/delete", "application/json", strings.NewReader(`{"path": "/etc/passwd"}`))
+	if err != nil || badDelete.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for unsafe delete path, got %v", badDelete.StatusCode)
+	}
+
+	// 8. POST /api/setup/delete valid deletion
+	os.MkdirAll("models", 0755)
+	testModelFile := "models/test_server_delete.gguf"
+	os.WriteFile(testModelFile, []byte("model payload bytes"), 0644)
+	validDelete, err := http.Post(ts.URL+"/api/setup/delete", "application/json", strings.NewReader(`{"filename": "test_server_delete.gguf"}`))
+	if err != nil || validDelete.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK for valid delete, got %v", validDelete.StatusCode)
+	}
+	var delRes map[string]interface{}
+	json.NewDecoder(validDelete.Body).Decode(&delRes)
+	if delRes["status"] != "deleted" {
+		t.Errorf("expected status deleted, got %v", delRes["status"])
+	}
+	if _, err := os.Stat(testModelFile); !os.IsNotExist(err) {
+		t.Errorf("expected test model file to be removed")
 	}
 }
 

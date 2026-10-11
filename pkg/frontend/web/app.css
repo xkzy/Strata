@@ -212,6 +212,9 @@ main { flex: 1; min-height: 0; display: flex; }
 .model-source-badge[data-source="custom"] { background: rgba(59, 130, 246, 0.15); color: #2563eb; border: 1px solid rgba(59, 130, 246, 0.3); }
 
 .model-rec-badge { background: var(--st-accent); color: white; font-size: 10px; font-weight: var(--st-fw-bold); padding: 2px 8px; border-radius: var(--st-r-pill); }
+.model-installed-badge { background: rgba(16, 185, 129, 0.2); color: #059669; font-size: 10px; font-weight: var(--st-fw-bold); padding: 2px 8px; border-radius: var(--st-r-pill); border: 1px solid rgba(16, 185, 129, 0.4); display: inline-flex; align-items: center; gap: 3px; }
+.model-card-delete-btn { width: 24px; height: 24px; padding: 0; border: none; background: transparent; color: var(--st-ink-muted); border-radius: 4px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; transition: all var(--st-dur); margin-left: auto; }
+.model-card-delete-btn:hover { background: rgba(220, 38, 38, 0.15); color: #dc2626; transform: scale(1.1); }
 .model-card-name { font-weight: var(--st-fw-bold); font-size: var(--st-fs-base); color: var(--st-ink); word-break: break-word; }
 .model-tags-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
 .model-tag { font-size: 10px; padding: 1px 6px; border-radius: 4px; background: rgba(0, 0, 0, 0.05); color: var(--st-ink-muted); font-weight: var(--st-fw-medium); }
@@ -223,6 +226,8 @@ main { flex: 1; min-height: 0; display: flex; }
 
 .selected-model-banner { background: var(--st-surface-2); border: 1px solid var(--st-line); border-radius: var(--st-r-md); padding: var(--st-s-3); display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--st-s-3); }
 .setup-actions { display: flex; align-items: center; gap: var(--st-s-3); margin-top: var(--st-s-4); flex-wrap: wrap; }
+.st-btn--danger { background: #dc2626; color: #fff; box-shadow: 0 4px 12px rgba(220, 38, 38, 0.25); }
+.st-btn--danger:hover { background: #b91c1c; }
 .dl-card { background: var(--st-surface-2); border: 1px solid var(--st-line); border-radius: var(--st-r-md); padding: var(--st-s-4); display: flex; flex-direction: column; gap: var(--st-s-3); margin-top: var(--st-s-3); }
 .dl-meta { display: flex; justify-content: space-between; font-size: var(--st-fs-xs); color: var(--st-ink-muted); }
 

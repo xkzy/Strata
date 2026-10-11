@@ -64,6 +64,8 @@ type ModelOption struct {
 	Quantization  string      `json:"quantization,omitempty"`
 	ParamSize     string      `json:"param_size,omitempty"`
 	ContextLength int         `json:"context_length,omitempty"`
+	Installed     bool        `json:"installed,omitempty"`
+	HasFiles      bool        `json:"has_files,omitempty"`
 }
 
 // DetectHardware inspects CPU, RAM, and GPU hardware on the host
@@ -239,6 +241,8 @@ func ScanLocalOllamaModels() []ModelOption {
 							Quantization:  tag,
 							ParamSize:     extractParamSize(modelName + " " + tag),
 							ContextLength: 32768,
+							Installed:     true,
+							HasFiles:      true,
 						})
 					}
 				}
@@ -303,21 +307,39 @@ func ScanLocalCustomModels() []ModelOption {
 				Quantization:  "IQ1_M",
 				ParamSize:     "MoE",
 				ContextLength: 32768,
+				Installed:     true,
+				HasFiles:      true,
 			})
 		}
 	}
 
 	// Scan local models/ directory for downloaded .gguf files
 	if entries, err := os.ReadDir("models"); err == nil {
+		reShard := regexp.MustCompile(`-(\d{5})-of-(\d{5})\.gguf$`)
 		for _, e := range entries {
 			if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), ".gguf") {
-				filePath := filepath.Join("models", e.Name())
-				fi, _ := e.Info()
-				sizeGB := 0.0
-				if fi != nil {
-					sizeGB = float64(fi.Size()) / (1024 * 1024 * 1024)
+				// If this is a shard > 1, do not list as a separate broken model
+				sm := reShard.FindStringSubmatch(e.Name())
+				if len(sm) == 3 {
+					idx, _ := strconv.Atoi(sm[1])
+					if idx > 1 {
+						continue
+					}
 				}
+
+				filePath := filepath.Join("models", e.Name())
+				shards := FindAllShardPaths(filePath)
+				var totalBytes int64
+				for _, s := range shards {
+					if fi, err := os.Stat(s); err == nil {
+						totalBytes += fi.Size()
+					}
+				}
+				sizeGB := float64(totalBytes) / (1024 * 1024 * 1024)
 				name := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
+				if len(sm) == 3 {
+					name = strings.TrimSuffix(name, "-"+sm[1]+"-of-"+sm[2])
+				}
 				results = append(results, ModelOption{
 					Name:          name + " (Local)",
 					RepoID:        "local/models/" + e.Name(),
@@ -332,6 +354,8 @@ func ScanLocalCustomModels() []ModelOption {
 					Quantization:  extractQuant(e.Name()),
 					ParamSize:     extractParamSize(e.Name()),
 					ContextLength: 32768,
+					Installed:     AllShardsExist(filePath),
+					HasFiles:      true,
 				})
 			}
 		}
@@ -620,14 +644,35 @@ func GetCuratedHuggingFaceModels() []ModelOption {
 func GetAvailableModels() []ModelOption {
 	var models []ModelOption
 
-	// 1. Local packs and downloaded files
-	models = append(models, ScanLocalCustomModels()...)
+	curated := GetCuratedHuggingFaceModels()
+	curatedFiles := make(map[string]bool)
+	for i := range curated {
+		curatedFiles[curated[i].Filename] = true
+		curatedFiles[filepath.Base(curated[i].Filename)] = true
+		dest := filepath.Join("models", curated[i].Filename)
+		totalGB := TotalShardsSizeGB(dest)
+		if totalGB > 0 || HasAnyShardOrPart(dest) {
+			curated[i].HasFiles = true
+		}
+		if AllShardsExist(dest) && (curated[i].SizeGB == 0 || totalGB >= curated[i].SizeGB*0.95) {
+			curated[i].Installed = true
+		}
+	}
+
+	// 1. Local packs and downloaded files (avoid duplicates already represented in curated catalog)
+	for _, local := range ScanLocalCustomModels() {
+		base := filepath.Base(local.Filename)
+		if curatedFiles[base] {
+			continue
+		}
+		models = append(models, local)
+	}
 
 	// 2. Local Ollama models
 	models = append(models, ScanLocalOllamaModels()...)
 
 	// 3. Online downloadable Hugging Face catalog
-	models = append(models, GetCuratedHuggingFaceModels()...)
+	models = append(models, curated...)
 
 	return models
 }
@@ -855,6 +900,18 @@ func FindAllShardPaths(primaryPath string) []string {
 		}
 	}
 	return []string{primaryPath}
+}
+
+// TotalShardsSizeGB calculates total size in GB across all shards of a model path
+func TotalShardsSizeGB(primaryPath string) float64 {
+	shards := FindAllShardPaths(primaryPath)
+	var total int64
+	for _, s := range shards {
+		if fi, err := os.Stat(s); err == nil {
+			total += fi.Size()
+		}
+	}
+	return float64(total) / (1024 * 1024 * 1024)
 }
 
 // ResolveShardURLs returns all shard URLs for a multi-shard model download
@@ -1153,3 +1210,184 @@ func VerifyFileSHA256(filePath, expectedSHA256 string) (bool, error) {
 	computed := hex.EncodeToString(h.Sum(nil))
 	return strings.EqualFold(computed, expectedSHA256), nil
 }
+
+func mustAbs(p string) string {
+	a, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	return a
+}
+
+// HasAnyShardOrPart checks whether any shard or partial download file exists for the primaryPath
+func HasAnyShardOrPart(primaryPath string) bool {
+	if _, err := os.Stat(primaryPath); err == nil {
+		return true
+	}
+	if _, err := os.Stat(primaryPath + ".part"); err == nil {
+		return true
+	}
+	shards := FindAllShardPaths(primaryPath)
+	for _, s := range shards {
+		if _, err := os.Stat(s); err == nil {
+			return true
+		}
+		if _, err := os.Stat(s + ".part"); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// IsSafeModelPath validates that target path is confined within allowed model or pack directories
+func IsSafeModelPath(target string) bool {
+	if strings.TrimSpace(target) == "" {
+		return false
+	}
+	abs, err := filepath.Abs(target)
+	if err != nil {
+		return false
+	}
+	abs = filepath.Clean(abs)
+
+	allowedDirs := []string{
+		mustAbs("models"),
+		mustAbs("packs"),
+	}
+
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		allowedDirs = append(allowedDirs,
+			filepath.Join(home, "Downloads", "Strata-data", "models"),
+			filepath.Join(home, "Downloads", "Strata-data", "packs"),
+			filepath.Join(home, ".strata"),
+		)
+	}
+
+	for _, allowed := range allowedDirs {
+		cleanAllowed := filepath.Clean(allowed)
+		if abs == cleanAllowed {
+			// Never permit deleting the root container directory itself
+			return false
+		}
+		if strings.HasPrefix(abs, cleanAllowed+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// DeleteModelFiles securely deletes all model weights, shards, and partial download files
+// for a given model path or filename. Returns total bytes freed, deleted file paths, and error.
+func DeleteModelFiles(target string) (int64, []string, error) {
+	if strings.TrimSpace(target) == "" {
+		return 0, nil, fmt.Errorf("empty model target path")
+	}
+
+	// Resolve path candidate
+	candidates := []string{target}
+	if !filepath.IsAbs(target) && !strings.HasPrefix(target, "models/") && !strings.HasPrefix(target, "packs/") {
+		candidates = append([]string{filepath.Join("models", target)}, candidates...)
+	}
+
+	var resolvedPath string
+	for _, cand := range candidates {
+		if _, err := os.Stat(cand); err == nil {
+			resolvedPath = cand
+			break
+		}
+		// Check if part file exists
+		if _, err := os.Stat(cand + ".part"); err == nil {
+			resolvedPath = cand
+			break
+		}
+		// Check if any shard exists
+		for _, s := range FindAllShardPaths(cand) {
+			if _, err := os.Stat(s); err == nil {
+				resolvedPath = cand
+				break
+			}
+			if _, err := os.Stat(s + ".part"); err == nil {
+				resolvedPath = cand
+				break
+			}
+		}
+		if resolvedPath != "" {
+			break
+		}
+	}
+
+	if resolvedPath == "" {
+		resolvedPath = candidates[0]
+	}
+
+	if !IsSafeModelPath(resolvedPath) {
+		return 0, nil, fmt.Errorf("security violation: path %q is outside allowed model directories", target)
+	}
+
+	var deletedPaths []string
+	var freedBytes int64
+
+	// If it's a directory (e.g. a local pack directory inside packs/ or Strata-data/packs/)
+	fi, statErr := os.Stat(resolvedPath)
+	if statErr == nil && fi.IsDir() {
+		_ = filepath.Walk(resolvedPath, func(path string, info os.FileInfo, err error) error {
+			if err == nil && !info.IsDir() {
+				freedBytes += info.Size()
+			}
+			return nil
+		})
+		if err := os.RemoveAll(resolvedPath); err != nil {
+			return freedBytes, nil, fmt.Errorf("failed to remove directory %s: %w", resolvedPath, err)
+		}
+		deletedPaths = append(deletedPaths, resolvedPath)
+		return freedBytes, deletedPaths, nil
+	}
+
+	// Otherwise, find all potential shard paths and .part files
+	shards := FindAllShardPaths(resolvedPath)
+	seen := make(map[string]bool)
+
+	var filesToDelete []string
+	for _, s := range shards {
+		if !seen[s] {
+			seen[s] = true
+			filesToDelete = append(filesToDelete, s)
+		}
+		partPath := s + ".part"
+		if !seen[partPath] {
+			seen[partPath] = true
+			filesToDelete = append(filesToDelete, partPath)
+		}
+		offsetPath := s + ".part.offset"
+		if !seen[offsetPath] {
+			seen[offsetPath] = true
+			filesToDelete = append(filesToDelete, offsetPath)
+		}
+	}
+
+	// Also check base path .part and .part.offset
+	basePart := resolvedPath + ".part"
+	if !seen[basePart] {
+		seen[basePart] = true
+		filesToDelete = append(filesToDelete, basePart)
+	}
+
+	for _, f := range filesToDelete {
+		if info, err := os.Stat(f); err == nil {
+			size := info.Size()
+			if err := os.Remove(f); err == nil {
+				freedBytes += size
+				deletedPaths = append(deletedPaths, f)
+			} else {
+				return freedBytes, deletedPaths, fmt.Errorf("failed to delete file %s: %w", f, err)
+			}
+		}
+	}
+
+	if len(deletedPaths) == 0 {
+		return 0, nil, fmt.Errorf("no model files found to delete for %s", target)
+	}
+
+	return freedBytes, deletedPaths, nil
+}
+

@@ -235,3 +235,72 @@ func TestMultiShardResolutionAndDisk(t *testing.T) {
 		t.Errorf("expected true when all shards exist and have weight data")
 	}
 }
+
+func TestDeleteModelFilesAndSecurity(t *testing.T) {
+	// 1. Security rejection of paths outside models/packs
+	unsafePaths := []string{
+		"/etc/passwd",
+		"../../../../etc/shadow",
+		"/tmp/random_file.gguf",
+		"",
+	}
+	for _, p := range unsafePaths {
+		if IsSafeModelPath(p) {
+			t.Errorf("expected IsSafeModelPath to reject %q", p)
+		}
+		if _, _, err := DeleteModelFiles(p); err == nil {
+			t.Errorf("expected DeleteModelFiles to reject unsafe path %q", p)
+		}
+	}
+
+	// 2. Allowed model directory safety
+	if !IsSafeModelPath("models/test.gguf") {
+		t.Errorf("expected IsSafeModelPath to allow models/test.gguf")
+	}
+	if !IsSafeModelPath("packs/test_pack") {
+		t.Errorf("expected IsSafeModelPath to allow packs/test_pack")
+	}
+	// Container roots themselves must not be deletable
+	if IsSafeModelPath("models") || IsSafeModelPath("models/") {
+		t.Errorf("root models directory should not be considered deletable target")
+	}
+
+	// 3. Test deleting files inside models/
+	os.MkdirAll("models", 0755)
+	testShard1 := "models/TestDelete-00001-of-00002.gguf"
+	testShard2 := "models/TestDelete-00002-of-00002.gguf"
+	testPart := "models/TestDelete-00002-of-00002.gguf.part"
+
+	os.WriteFile(testShard1, []byte("12345"), 0644)
+	os.WriteFile(testShard2, []byte("6789012345"), 0644)
+	os.WriteFile(testPart, []byte("part_content"), 0644)
+
+	if !HasAnyShardOrPart(testShard1) {
+		t.Errorf("expected HasAnyShardOrPart to be true for testShard1")
+	}
+
+	freedBytes, deleted, err := DeleteModelFiles("TestDelete-00001-of-00002.gguf")
+	if err != nil {
+		t.Fatalf("DeleteModelFiles failed: %v", err)
+	}
+
+	expectedBytes := int64(5 + 10 + 12)
+	if freedBytes != expectedBytes {
+		t.Errorf("expected %d freed bytes, got %d", expectedBytes, freedBytes)
+	}
+	if len(deleted) != 3 {
+		t.Errorf("expected 3 deleted files, got %d: %v", len(deleted), deleted)
+	}
+
+	// Verify files actually removed
+	if _, err := os.Stat(testShard1); !os.IsNotExist(err) {
+		t.Errorf("testShard1 was not deleted")
+	}
+	if _, err := os.Stat(testShard2); !os.IsNotExist(err) {
+		t.Errorf("testShard2 was not deleted")
+	}
+	if _, err := os.Stat(testPart); !os.IsNotExist(err) {
+		t.Errorf("testPart was not deleted")
+	}
+}
+
