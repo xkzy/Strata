@@ -325,20 +325,8 @@
       <div class="st-card runtime-config-card">
         <span class="card-title">Runtime Configuration</span>
         <form class="cfg-form" id="setup-form" onsubmit="return false;">
-          <label for="setup-ctx">Context Window<code>--max-context</code></label>
-          <select class="st-input" id="setup-ctx">
-            <option value="16384">16,384 (16K)</option>
-            <option value="32768" selected>32,768 (32K - Default)</option>
-            <option value="65536">65,536 (64K)</option>
-            <option value="131072">131,072 (128K)</option>
-          </select>
-
-          <label for="setup-virt-ctx">Virtual Extended Limit<code>--virtual-limit</code></label>
-          <select class="st-input" id="setup-virt-ctx">
-            <option value="524288">524,288 (512K)</option>
-            <option value="1048576">1,048,576 (1M)</option>
-            <option value="2097152" selected>2,097,152 (2M - Default)</option>
-          </select>
+          <label>Context Window<code>always the model's longest</code></label>
+          <div class="st-input" id="setup-ctx-note">262,144 tokens (the model's full context; no smaller pick, no extension)</div>
 
           <label for="setup-pool-workers">CPU Worker Threads<code>--pool-workers</code></label>
           <select class="st-input" id="setup-pool-workers">

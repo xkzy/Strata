@@ -21,7 +21,6 @@ type ModelEntry struct {
 	ModelPath            string          `json:"model_path"`
 	EngineBinary         string          `json:"engine_binary,omitempty"`
 	MaxContext           int             `json:"max_context,omitempty"`
-	VirtualLimit         int             `json:"virtual_limit,omitempty"`
 	Abliterate           bool            `json:"abliterate,omitempty"`
 	AbliterationStrength float64         `json:"abliteration_strength,omitempty"`
 	AbliterationVector   string          `json:"abliteration_vector,omitempty"`
@@ -39,7 +38,6 @@ type StrataConfig struct {
 	Models                map[string]ModelEntry  `json:"models,omitempty"`
 	EngineBinary          string                 `json:"engine_binary"`
 	MaxContext            int                    `json:"max_context"`
-	VirtualLimit          int                    `json:"virtual_limit"`
 	FitMaxTokens          bool                   `json:"fit_max_tokens"`
 	ReasoningBudgetTokens int                    `json:"reasoning_budget_tokens"`
 	AnthropicThinking     string                 `json:"anthropic_thinking"` // "model" or "on_request"
@@ -104,7 +102,6 @@ func (c StrataConfig) GetModelEntry(id string) (ModelEntry, bool) {
 			ModelPath:            c.ModelPath,
 			EngineBinary:         c.EngineBinary,
 			MaxContext:           c.MaxContext,
-			VirtualLimit:         c.VirtualLimit,
 			Abliterate:           c.Abliterate,
 			AbliterationStrength: c.AbliterationStrength,
 			AbliterationVector:   c.AbliterationVector,
@@ -136,7 +133,6 @@ func (c StrataConfig) AllModels() map[string]ModelEntry {
 			ModelPath:            c.ModelPath,
 			EngineBinary:         c.EngineBinary,
 			MaxContext:           c.MaxContext,
-			VirtualLimit:         c.VirtualLimit,
 			Abliterate:           c.Abliterate,
 			AbliterationStrength: c.AbliterationStrength,
 			AbliterationVector:   c.AbliterationVector,
@@ -152,8 +148,7 @@ func DefaultConfig() StrataConfig {
 		Host:                  "127.0.0.1",
 		Port:                  8080,
 		Model:                 "Qwen3.8-Flash-Next",
-		MaxContext:            32768,
-		VirtualLimit:          0, // unset: the server uses the engine's max context, no extension
+		MaxContext:            262144, // the longest window the model supports
 		FitMaxTokens:          true,
 		ReasoningBudgetTokens: 0,
 		AnthropicThinking:     "model",

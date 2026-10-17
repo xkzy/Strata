@@ -224,31 +224,31 @@ class Main(Base):
         self.assertNotIn("--experts-bin", packs[0])
         self.assertTrue(packs[0][packs[0].index("--gguf") + 1].endswith("UD-Q4_K_XL-00001-of-00004.gguf"))
         args = cfg["args"]
-        self.assertEqual(args[args.index("--resident-budget-gib") + 1], "40")
+        self.assertEqual(args[args.index("--resident-budget-gib") + 1], "36")   # 40 less 4 GB of KV at 256K
         self.assertTrue(args[args.index("--native") + 1].endswith("-00001-of-00004.gguf"))
-        for flag in ("--ple-gguf", "--mmap-experts", "--resident-experts", "--vision", "--control-vector-scaled",
-                     "--kv-resident"):
+        for flag in ("--ple-gguf", "--mmap-experts", "--resident-experts", "--vision", "--control-vector-scaled"):
             self.assertNotIn(flag, args)
-        self.assertEqual(args[args.index("--max-context") + 1], "8192")
+        self.assertIn("--kv-resident", args)                                       # 256K is streamed
+        self.assertEqual(args[args.index("--max-context") + 1], "262144")
         self.assertEqual(cfg["model_name"], "qwen3.8-flash-next-unsloth-ud-q4_k_xl")
         self.assertNotIn("vision", cfg)
 
-    def test_recommended_context_on_12_gb(self):
+    def test_context_is_always_the_longest(self):
         code, out, cfg = self.main([])
         self.assertEqual(code, 0, out)
-        self.assertEqual(cfg["args"][cfg["args"].index("--max-context") + 1], "8192")
+        self.assertEqual(cfg["args"][cfg["args"].index("--max-context") + 1], "262144")
 
     def test_more_ram_bigger_budget(self):
         code, out, cfg = self.main(["--context", "8192"], ram=95.8)
         self.assertEqual(code, 0, out)
-        self.assertEqual(cfg["args"][cfg["args"].index("--resident-budget-gib") + 1], "71")
+        self.assertEqual(cfg["args"][cfg["args"].index("--resident-budget-gib") + 1], "68")
 
     def test_kv_streaming_comes_out_of_the_budget(self):
-        code, out, cfg = self.main(["--context", "131072"])
+        code, out, cfg = self.main([])
         self.assertEqual(code, 0, out)
         args = cfg["args"]
         self.assertIn("--kv-resident", args)
-        kv_gb = 131072 * 13 * 1056 / 1e9
+        kv_gb = 262144 * 13 * 1056 / 1e9
         self.assertEqual(args[args.index("--resident-budget-gib") + 1], str(40 - int(-(-kv_gb // 1))))
 
     def test_old_engine_stops_before_the_download(self):
@@ -432,7 +432,7 @@ class IQ4XS(Base):
         self.assertNotIn("--experts-bin", packs[0])
         self.assertTrue(packs[0][packs[0].index("--gguf") + 1].endswith("UD-IQ4_XS-00001-of-00003.gguf"))
         args = cfg["args"]
-        self.assertEqual(args[args.index("--resident-budget-gib") + 1], "40")
+        self.assertEqual(args[args.index("--resident-budget-gib") + 1], "36")
         self.assertTrue(args[args.index("--native") + 1].endswith("UD-IQ4_XS-00001-of-00003.gguf"))
         for flag in ("--ple-gguf", "--mmap-experts", "--resident-experts", "--vision"):
             self.assertNotIn(flag, args)

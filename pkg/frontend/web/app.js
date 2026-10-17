@@ -1904,8 +1904,6 @@ async function saveSetupConfig() {
   const payload = {
     model_name: selectedModelOpt ? selectedModelOpt.name : "",
     model_path: ($("setup-dest-path") && $("setup-dest-path").value.trim()) || "",
-    max_context: +($("setup-ctx") ? $("setup-ctx").value : 32768),
-    virtual_limit: +($("setup-virt-ctx") ? $("setup-virt-ctx").value : 2097152),
     pool_workers: +($("setup-pool-workers") ? $("setup-pool-workers").value : 16),
     pcie_frac: +($("setup-pcie-frac") ? $("setup-pcie-frac").value : 0.5),
     gpus: ($("setup-gpus") && $("setup-gpus").value.trim()) || "",

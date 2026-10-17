@@ -1054,12 +1054,10 @@ noise. Needle tests do not tell the arms apart: the unscaled model also finds a 
 Q&A worked with `yarn` 2 at 421K and `yarn` 4 at 714K (8/8 each), and a 1M-token `yarn` 4 run read end to end.
 Taken together, use **yarn**. It is still experimental: the numbers come from one machine and one quant.
 
-- setup: `START-HERE.bat --setup --context 393216` asks nothing extra - it picks the method (yarn; one
-  question when run interactively) and derives the factor from the final context for you (final context /
-  262,144, at least 1: 1.5 at 393K, 2 at 512K, 1 inside the trained range; `--rope-scaling`/`--rope-scale`
-  override; an explicit `--rope-scale` is kept as given even when it is too small for the context actually
-  served, so check it if you set one). An explicit `--rope-scaling none` for a context past
-  262,144 is refused: the setup will not configure a run with the stock angles past the trained range. If
+- setup: **removed.** Setup (and the server's `--max-context` / `--virtual-limit`, and the Settings
+  selectors) no longer offer a context past 262,144: the model is always served with its trained length, so
+  setup ignores `--context`, `--rope-scaling` and `--rope-scale` with a warning. The engine's own
+  `--rope-scaling`/`--rope-scale` flags below still exist. The older description follows for the record: if
   the RAM check reduces a chosen 384K/512K back inside the trained range, an omitted method adds no
   scaling, and an explicitly chosen one stays at factor 1 - the trained angles, no expansion (not a
   switch for rope as a whole: explicitly supplied rope settings keep their behavior).

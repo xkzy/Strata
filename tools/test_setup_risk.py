@@ -112,26 +112,24 @@ class Context(unittest.TestCase):
         self.assertIn("this PC has 64. Kept as you chose: it may be slower or run out of RAM under load. 128K is the "
                       "recommended size.", out)
 
-    def test_a_picked_256k_is_kept_and_the_menu_says_the_risk(self):
-        code, out, cfg, asked = install(self.RAM64, self.GPU32, ["--family", "qwen", "--model", "IQ3_S", "--no-start"],
-                                        answers={"Context?": "6"})
+    def test_there_is_no_context_menu_and_it_is_always_the_longest(self):
+        code, out, cfg, asked = install(self.RAM64, self.GPU32, ["--family", "qwen", "--model", "IQ3_S", "--no-start"])
         self.assertEqual(code, 0, out)
         self.assertEqual(arg(cfg, "--max-context"), "262144")
-        self.assertIn("256K tokens   (needs ~78 GB RAM, this PC has 64: may run out of memory)", out)
-        self.assertIn("128K tokens   (recommended for your GPU)\n", out)
-        self.assertIn("Kept as you chose", out)
-
-    def test_a_200k_choice_is_kept(self):
-        """#406: 200K was added between the 128K rule and 256K - it is inside the trained 262144, so no rope scaling,
-        and a pick of it is kept with the note 256K gets instead of being capped to 128K."""
-        code, out, cfg, _ = install(self.RAM64, self.GPU32, ["--family", "qwen", "--model", "IQ3_S", "--no-start"],
-                                    answers={"Context?": "5"})
-        self.assertEqual(code, 0, out)
-        self.assertEqual(arg(cfg, "--max-context"), "204800")
         self.assertNotIn("--rope-scaling", cfg["args"])
-        self.assertIn("200K tokens   (needs ~77 GB RAM, this PC has 64: may run out of memory)", out)
-        self.assertIn("200K with IQ3_S needs ~77 GB of RAM by setup's estimate", out)
-        self.assertIn("Kept as you chose", out)
+        self.assertNotIn("Context?", asked)
+        self.assertNotIn("tokens   (", out)                                # no menu lines
+        self.assertIn("256K with IQ3_S needs ~78 GB of RAM by setup's estimate", out)   # the RAM risk is still said
+
+    def test_a_shorter_or_longer_context_is_ignored_with_a_warning(self):
+        for asked_ctx in ("204800", "524288"):
+            code, out, cfg, _ = install(self.RAM64, self.GPU32, ["--family", "qwen", "--model", "IQ3_S", "--no-start",
+                                                                 "--context", asked_ctx, "--rope-scaling", "yarn"])
+            self.assertEqual(code, 0, out)
+            self.assertEqual(arg(cfg, "--max-context"), "262144", asked_ctx)
+            self.assertNotIn("--rope-scaling", cfg["args"], asked_ctx)
+            self.assertIn(f"--context {asked_ctx} is ignored", out)
+            self.assertIn("--rope-scaling / --rope-scale are ignored", out)
 
     def test_low_ram_mode_keeps_262k_without_a_ram_note(self):
         ram, found = PROFILES["32GB-2x24GB"]                              # #364
@@ -229,10 +227,10 @@ class LowRamGpus(unittest.TestCase):
                 self.assertIn("low-RAM mode on 2 GPUs", out)
 
     def test_the_share_counts_every_card(self):
-        ram, found = PROFILES["47GB-2x16GB"]                              # #384: 2 x 16 GB, 47 GB, IQ3_XXS at 64K
+        ram, found = PROFILES["47GB-2x16GB"]                              # #384: 2 x 16 GB, 47 GB, IQ3_XXS at 256K
         code, out, cfg, _ = install(ram, found, ["--family", "qwen", "--model", "IQ3_XXS", "--no-start",
                                                  "--gpus", "0,1"])
-        one = setup.low_ram_gpu_gb("IQ3_XXS", 15.9, 65536, "int8")
+        one = setup.low_ram_gpu_gb("IQ3_XXS", 15.9, 262144, "int8")
         self.assertIn(f"the GPUs hold ~{100 * 2 * one / setup.MODELS['IQ3_XXS']['arena_gb']:.0f}% of them", out)
 
     def test_asked_and_answered_two(self):
@@ -465,11 +463,6 @@ class KvStreaming(unittest.TestCase):
         self.assertEqual(arg(cfg, "--kv-resident"), "32768")
         self.assertEqual(arg(cfg, "--kv"), "k8v4")
 
-    def test_on_where_it_cannot(self):
-        code, out, cfg, _ = self.go("Q2_0", "--kv-streaming", "on", "--context", "32768")
-        self.assertNotIn("--kv-resident", cfg["args"])
-        self.assertIn("a context under 64K is not streamed", out)
-
     def test_budget_flag_on_another_size(self):
         code, out, cfg, _ = self.go("Q2_0", "--resident-budget-gib", "30")
         self.assertEqual(code, 0, out)
@@ -489,7 +482,7 @@ class RulesAgreeWithTheWrittenConfig(unittest.TestCase):
         return install(ram, cards, ["--family", "qwen", "--model", model, "--no-start", *flags])
 
     def test_the_streaming_rule_is_the_flag_setup_writes(self):
-        for model, ctx, kv, choice in itertools.product(("Q2_0", "IQ3_XXS", "IQ3_S"), ("32768", "131072"),
+        for model, ctx, kv, choice in itertools.product(("Q2_0", "IQ3_XXS", "IQ3_S"), ("262144",),      # setup always serves the model's longest context
                                                         ("int8", "q4_0", "k8v4"), ("auto", "on", "off")):
             code, out, cfg, _ = self.go(self.RAM64, self.CARDS64, model, "--context", ctx, "--kv", kv,
                                         "--kv-streaming", choice)

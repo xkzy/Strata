@@ -202,6 +202,7 @@ UNSLOTH_RAM_LEFT_GB = 24        # RAM beside the budget: the OS, the engine, and
 # 204800 (200K) sits between 128K and 256K: it is inside the trained 262144, so it needs no rope scaling and
 # costs ~2.8 GB of 8-bit KV with IQ3_S (vs ~3.6 GB at 256K) - a middle step for PCs that cannot hold 256K.
 CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288]
+TRAINED_CTX = 262144    # the longest context setup configures: the model's trained length (no rope extension past it)
 # The model families: the same architecture, weights in the same three GSQ-RCO sizes, different files.
 FAMILIES = {
     "qwen": {"title": "Qwen3.8-Flash-Next", "by": "Qwen; GSQ-RCO quants by ISTA-DASLab",
@@ -4604,21 +4605,13 @@ def main() -> int:
         rec_ctx = 8192 if small < 14 else 32768
     # #406: the RAM rule is part of the recommendation (the smaller of the two), no longer a cap over the user's choice
     rec_ctx = min(rec_ctx, ram_ctx(model, ram, low_ram))
-    if a.context:
-        ctx = a.context
-    else:
-        say()
-        say("  Context length = how much text the model can see at once (your chat, files, tool output).")
-        say("  Longer needs more VRAM for it, so fewer experts fit on the GPU:")
-        for i, c in enumerate(CONTEXTS, 1):
-            need_c = ctx_ram_need(model, c, low_ram)
-            note = ("   (recommended for your GPU)" if c == rec_ctx else "") + \
-                   ("   (experimental: setup adds rope scaling)" if c > 262144 else "") + \
-                   (f"   (needs ~{need_c:.0f} GB RAM, this PC has {ram:.0f}: may run out of memory)"
-                    if c > 131072 and need_c is not None and need_c > ram else "")
-            say(f"  {i}) {c // 1024}K tokens{note}")
-        ctx = CONTEXTS[int(ask("Context?", [str(i) for i in range(1, len(CONTEXTS) + 1)],
-                               str(CONTEXTS.index(rec_ctx) + 1), a.yes)) - 1]
+    # The model is always served with the longest context it supports, its trained 262,144 tokens: no menu, no smaller
+    # pick, and no extension past it (rope scaling).  The KV cache of that much text is what --kv-streaming is for.
+    ctx = TRAINED_CTX
+    if a.context and a.context != ctx:
+        warn(f"--context {a.context} is ignored: the model is always served with its longest context, {ctx}")
+    if a.rope_scaling or a.rope_scale is not None:
+        warn("--rope-scaling / --rope-scale are ignored: the context never goes past the model's trained length")
     # #406 #364: a context past the RAM rule (an explicit --context, a pick in the list, or the earlier install's) is
     # kept, with what it risks.  It used to become 128K: users ran 256K fine where setup's estimate said no.
     need_gb = ctx_ram_need(model, ctx, low_ram)
@@ -4627,25 +4620,8 @@ def main() -> int:
              f"({MODELS[model]['arena_gb']:.0f} GB of experts + the context + room for the rest); this PC has "
              f"{ram:.0f}. Kept as you chose: it may be slower or run out of RAM under load. {rec_ctx // 1024}K is the "
              "recommended size.")
-    scaling = a.rope_scaling
-    if ctx > 262144 and scaling is None and not a.yes:
-        # the interactive path: one question, yarn preselected (llama.cpp's extension method, recall-tested
-        # here at 512K).  With --yes nothing prints: resolve_rope takes yarn below and the ok() line says so.
-        say()
-        say(f"  A {ctx // 1024}K context runs the model past its trained 262,144 positions: the rotary angles")
-        say("  get rescaled (llama.cpp's RoPE extension). yarn keeps the trained angles on the high-frequency")
-        say("  pairs and corrects the magnitudes; linear shrinks every angle. Override any time with")
-        say("  --rope-scaling.")
-        scaling = ask("RoPE extension method?", ["yarn", "linear"], "yarn", a.yes)
-    try:
-        scaling, rope_scale = resolve_rope(ctx, scaling, a.rope_scale)
-    except ValueError as e:
-        fail(str(e))
-    if scaling is not None:
-        origin = ("final context / trained 262144; override with --rope-scale" if a.rope_scale is None
-                  else "as requested")
-        ok(f"rope scaling: {scaling}, factor {rope_scale:g} ({origin})")
-    ok(f"context: {ctx} tokens")
+    scaling, rope_scale = None, None       # inside the trained range: the stock angles, no extension
+    ok(f"context: {ctx} tokens (the model's longest)")
     # the KV cache (the model's memory of the conversation): 8-bit, or 4-bit after a Hadamard rotation (PR #21)
     kv = "fp16" if ctx <= 8192 else (a.kv or "int8")
     if ctx > 8192 and not a.kv and not a.yes:

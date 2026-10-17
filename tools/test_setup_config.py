@@ -52,7 +52,7 @@ class CarryOver(unittest.TestCase):
         for k, v in USER.items():
             self.assertEqual(cfg[k], v, k)
         a = cfg["args"]
-        self.assertEqual(a[a.index("--max-context") + 1], "131072")       # the new choice is used
+        self.assertEqual(a[a.index("--max-context") + 1], "262144")       # always the model's longest context, whatever --context says
         self.assertNotIn("--hand-option", a)                               # setup chooses the engine options...
         self.assertIn("kept from your earlier strata-q2_0.json: sampling, mcp_servers, mcp, cors_origins, "
                       "reasoning_effort", out)

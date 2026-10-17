@@ -192,10 +192,10 @@ says so and starts the engine you had.
 
 - **Which model and size?** The original, Swift 1.5, the Coder or Unsloth's 4-bit, and Q2_0, IQ2_XS, IQ3_XXS or
   IQ3_S - see [which model](MODELS.md).
-- **How much context?** How much text it can keep in mind at once (it suggests one for your card). 384K and
-  512K (experimental) extend the model past its trained 262K by rope scaling - the setup turns it on itself (yarn and a
-  covering factor; `--rope-scaling`/`--rope-scale` override) ([details](DETAILS.md): "Context extension past
-  262K").
+- **How much context?** No question: the model is always served with its longest context, 262,144 tokens (256K).
+  `--context`, `--rope-scaling` and `--rope-scale` are ignored with a warning; there is no extension past 262K and
+  no virtual limit. Setup budgets the KV cache of the full 256K (streamed from RAM past 64K), so the experts'
+  resident budget is a few GB smaller than with a short context (UD-Q4_K_XL: 36 GB, was 40).
 - **Images?** Whether it should also read pictures. The image encoder (0.9 GB) runs on the GPU (0.1-0.5 s per
   picture, ~1.4 GB of VRAM kept free for it) or on the CPU (about 3-13 s per picture, nothing on the GPU); with AMD cards
   on the CPU for now. [Details](DETAILS.md#images-vision).
@@ -216,7 +216,7 @@ keep it. NVIDIA cards for now. [What it measures](DETAILS.md#double-click-start-
 ```
 START-HERE.bat --setup                          install another model, or change context / images
 SETUP.bat                                       the same (double-click it)
-START-HERE.bat --model IQ2_XS --context 32768 --vision yes --yes     no questions
+START-HERE.bat --model IQ2_XS --vision yes --yes     no questions
 START-HERE.bat --gguf-dir D:\models\IQ2_XS       use GGUF files you already have
 START-HERE.bat --data-dir E:\Strata-data         keep the model files somewhere else
 START-HERE.bat --port 8081                      another port

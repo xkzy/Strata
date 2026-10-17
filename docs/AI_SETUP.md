@@ -96,7 +96,7 @@ The flags (all of them: `START-HERE.bat --help`):
 | `--yes` | take the recommended answer to every question (no prompts) |
 | `--family qwen\|swift\|coder\|unsloth` | the model version |
 | `--model Q2_0\|IQ2_XS\|IQ3_XXS\|IQ3_S\|IQ1_M\|UD-IQ4_XS\|UD-Q4_K_XL` | the size (the Coder is IQ1_M, Unsloth UD-IQ4_XS or UD-Q4_K_XL) |
-| `--context N` | context in tokens; default by VRAM: 32768 under 14 GB, 65536 under 20 GB, else 131072 |
+| `--context N` | ignored (warning): the model is always served with its longest context, 262144 tokens |
 | `--vision yes\|no\|gpu\|cpu` | read pictures; `--yes` leaves images off. AMD cards: `cpu` |
 | `--gpu N` / `--gpus 0,1` / `--gpus all` | one card, or several sharing the model (default: the card with the most VRAM) |
 | `--backend cuda\|hip` | NVIDIA or AMD engine; chosen by itself on a PC with only one kind of card |
@@ -188,7 +188,7 @@ line when it is ready; the engine log is `strata-<model>.log` in the Strata fold
 | `port 8080 is already in use` | Strata is already running (check `/health`), or use `--port 8081`. |
 | Very slow, disk busy, or "the engine stopped unexpectedly" | Not enough free RAM: close programs, or set up a smaller size (`--setup --model Q2_0` or IQ2_XS). |
 | `ExpertCache: cudaMalloc(...) failed: out of memory` with free VRAM (Windows) | The page file is off or tiny: set it to "System managed" and restart. |
-| `prompt ... exceeds the context` | Rerun setup with `--setup --context <bigger>`. |
+| `prompt ... exceeds the context` | The window is already the model's longest (262144); shorten the prompt. |
 | No AMD GPU found (Linux) | The amdgpu driver lists no GPU; check the card and driver. Integrated GPUs are not supported. |
 | Python or build tools could not be installed | Install what the message names (links are printed), then rerun. |
 

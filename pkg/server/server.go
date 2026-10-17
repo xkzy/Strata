@@ -34,6 +34,9 @@ import (
 	"strata/pkg/virtualcontext"
 )
 
+// ModelMaxContext is the longest context window of the models Strata serves (Qwen3.8-Flash-Next's trained length).
+const ModelMaxContext = 262144
+
 type ServerConfig struct {
 	Port          int
 	ModelName     string
@@ -93,12 +96,6 @@ func NewStrataServer(cfg ServerConfig) *StrataServer {
 		if (cfg.ModelName == "" || cfg.ModelName == "Qwen3.8-Flash-Next") && activeModel != "" {
 			cfg.ModelName = activeModel
 		}
-		if cfg.MaxContext <= 0 && saved.MaxContext > 0 {
-			cfg.MaxContext = saved.MaxContext
-		}
-		if cfg.VirtualLimit <= 0 && saved.VirtualLimit > 0 {
-			cfg.VirtualLimit = saved.VirtualLimit
-		}
 		if cfg.BindHost == "" && saved.Host != "" {
 			cfg.BindHost = saved.Host
 		}
@@ -116,12 +113,10 @@ func NewStrataServer(cfg ServerConfig) *StrataServer {
 	if cfg.ModelName == "" {
 		cfg.ModelName = "Qwen3.8-Flash-Next"
 	}
-	if cfg.MaxContext <= 0 {
-		cfg.MaxContext = 32768
-	}
-	if cfg.VirtualLimit <= 0 { // no extension beyond what the engine holds, unless --virtual-limit asks for one
-		cfg.VirtualLimit = cfg.MaxContext
-	}
+	// The context window is always the longest one the model supports: never a smaller pick, never an extension
+	// beyond it. The engine's own READY line corrects it where the loaded model holds less.
+	cfg.MaxContext = ModelMaxContext
+	cfg.VirtualLimit = cfg.MaxContext
 
 	mr := mathruntime.NewMathRuntime(nil)
 	lv := logicverifier.NewLogicVerifier()
@@ -159,7 +154,7 @@ func NewStrataServer(cfg ServerConfig) *StrataServer {
 				ModelPath:            m.ModelPath,
 				EngineBinary:         m.EngineBinary,
 				MaxContext:           m.MaxContext,
-				VirtualLimit:         m.VirtualLimit,
+				VirtualLimit:         m.MaxContext,
 				Abliterate:           m.Abliterate,
 				AbliterationStrength: m.AbliterationStrength,
 				AbliterationVector:   m.AbliterationVector,
@@ -1063,8 +1058,6 @@ func (s *StrataServer) handleSetupConfigure(w http.ResponseWriter, r *http.Reque
 	var req struct {
 		ModelName    string   `json:"model_name"`
 		ModelPath    string   `json:"model_path"`
-		MaxContext   int      `json:"max_context"`
-		VirtualLimit int      `json:"virtual_limit"`
 		PoolWorkers  int      `json:"pool_workers"`
 		PcieFrac     *float64 `json:"pcie_frac"`
 		GPUs         string   `json:"gpus"`
@@ -1080,12 +1073,6 @@ func (s *StrataServer) handleSetupConfigure(w http.ResponseWriter, r *http.Reque
 	if req.ModelPath != "" {
 		s.Config.ModelPath = req.ModelPath
 	}
-	if req.MaxContext > 0 {
-		s.Config.MaxContext = req.MaxContext
-	}
-	if req.VirtualLimit > 0 {
-		s.Config.VirtualLimit = req.VirtualLimit
-	}
 
 	// Persist to ConfigManager
 	if s.ConfigManager != nil {
@@ -1093,7 +1080,6 @@ func (s *StrataServer) handleSetupConfigure(w http.ResponseWriter, r *http.Reque
 		cfg.Model = s.Config.ModelName
 		cfg.ModelPath = s.Config.ModelPath
 		cfg.MaxContext = s.Config.MaxContext
-		cfg.VirtualLimit = s.Config.VirtualLimit
 		if req.PoolWorkers > 0 {
 			cfg.PoolWorkers = req.PoolWorkers
 		}

@@ -88,8 +88,6 @@ func runServer(args []string) {
 	rtBinary := fs.String("rt-binary", "", "Path to strata_rt_server (default: looked for next to the engine)")
 	window := fs.Int("window", 65536, "Physical context window the runtime fills per request (tokens)")
 	modelName := fs.String("model", "", "Model identifier (default: from saved strata-config.json)")
-	maxContext := fs.Int("max-context", 0, "Physical context limit (default: from saved strata-config.json)")
-	virtualLimit := fs.Int("virtual-limit", 0, "Virtual context limit (default: from saved strata-config.json)")
 	apiKey := fs.String("api-key", "", "API key for auth")
 	modelPath := fs.String("model-path", "", "Path to model weights (.gguf / .bin)")
 	binaryPath := fs.String("binary-path", "", "Path to C++ strata engine binary")
@@ -99,8 +97,6 @@ func runServer(args []string) {
 	cfg := server.ServerConfig{
 		Port:          *port,
 		ModelName:     *modelName,
-		MaxContext:    *maxContext,
-		VirtualLimit:  *virtualLimit,
 		APIKey:        *apiKey,
 		ModelPath:     *modelPath,
 		BinaryPath:    *binaryPath,
@@ -138,8 +134,7 @@ func runServer(args []string) {
 		fmt.Printf(" Model Path:        %s\n", srv.Config.ModelPath)
 	}
 	fmt.Printf(" Web UI & API:      http://127.0.0.1:%d\n", srv.Config.Port)
-	fmt.Printf(" Physical Context:  %d tokens\n", srv.Config.MaxContext)
-	fmt.Printf(" Virtual Context:   %d tokens\n", srv.Config.VirtualLimit)
+	fmt.Printf(" Context window:    %d tokens (the model's longest)\n", srv.Config.MaxContext)
 	fmt.Printf(" Math Runtime:      Active (Mathics CAS + FastNumeric Exact Rational)\n")
 	fmt.Printf(" Logic Verifier:    Active (Tri-State Modus Ponens, SI Units, Bounds)\n")
 	fmt.Println("======================================================================")
