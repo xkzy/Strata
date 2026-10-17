@@ -48,8 +48,8 @@ var editable = []editableKey{
 		help: "CPU worker threads for offloaded MoE expert compute (e.g. 8-16 for 16-core CPU; 0 = engine default)"},
 	{key: "pcie_frac", kind: "arg_float", flag: "--pcie-frac",
 		help: "Share of offloaded experts transferred over PCIe to GPU vs computed on CPU (0.0 = 100% CPU pool, 1.0 = GPU DMA)"},
-	{key: "gpus", kind: "arg_str", flag: "--gpus",
-		help: "GPU devices to split layers across (e.g. '0' for dGPU only, '0,1' for dGPU + iGPU multi-GPU split)"},
+	{key: "gpus", kind: "arg_str", flag: "--layer-split",
+		help: "Several GPUs: 'auto' splits the layers across the visible cards (the engine has no --gpus flag; '0,1', 'all' or 'auto' all mean auto). Empty or a single card number: one GPU"},
 	{key: "threads", kind: "arg", flag: "--threads",
 		help: "CPU threads for prompt ingestion and math runtime"},
 	{key: "prefill", kind: "arg_str", flag: "--prefill",
@@ -241,7 +241,14 @@ func check(key string, v interface{}, cfg map[string]interface{}) (interface{}, 
 		if !ok {
 			return nil, fmt.Errorf("%s: expected a string, not %v", key, v)
 		}
-		return strings.TrimSpace(s), nil
+		s = strings.TrimSpace(s)
+		if e.key == "gpus" { // the engine's flag is --layer-split; a list of cards or "all" means "auto"
+			if s == "" || !strings.ContainsAny(s, ",") && s != "all" && s != "auto" {
+				return nil, nil
+			}
+			return "auto", nil
+		}
+		return s, nil
 	case "num>=0":
 		f, err := number(key, v, false, 0, nil, false)
 		return num(f, false), err

@@ -120,3 +120,22 @@ func TestSaveKeepsOwnerOnlyMode(t *testing.T) {
 		}
 	}
 }
+
+func TestGPUsKeyWritesLayerSplit(t *testing.T) {
+	cfg := map[string]interface{}{"args": []interface{}{"--prefill", "auto"}}
+	nw, _, err := Apply(cfg, map[string]interface{}{"gpus": "0,1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ := nw["args"].([]interface{})
+	if len(args) != 4 || args[2] != "--layer-split" || args[3] != "auto" {
+		t.Fatalf("args = %v", args)
+	}
+	nw, _, err = Apply(nw, map[string]interface{}{"gpus": "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args, _ = nw["args"].([]interface{}); len(args) != 2 {
+		t.Fatalf("one card should drop --layer-split: %v", args)
+	}
+}
