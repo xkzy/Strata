@@ -27,7 +27,7 @@ func runTune(args []string) {
 	configFile := fs.String("config", "", "the strata-<model>.json to measure and update (default: the only one here)")
 	decode := fs.Int("tokens", 256, "tokens to generate in the measured request")
 	words := fs.Int("prompt-words", 1500, "length of the measured prompt in words (about 2K tokens)")
-	only := fs.String("only", "", "comma-separated candidates to measure (gpu0, gpu1, split, split-probe)")
+	only := fs.String("only", "", "comma-separated candidates to measure (gpu0, gpu1, split, split-probe, peer)")
 	noResident := fs.Bool("no-resident", false, "skip measuring the winner with --resident-experts (a locked RAM copy of the experts)")
 	dry := fs.Bool("dry-run", false, "measure and print, but leave the run config as it is")
 	loadWait := fs.Duration("load-timeout", 25*time.Minute, "how long one candidate may take to load the model")

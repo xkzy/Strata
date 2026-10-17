@@ -40,7 +40,7 @@ func TestCandidates(t *testing.T) {
 	for _, c := range cs {
 		names = append(names, c.Name)
 	}
-	if strings.Join(names, ",") != "gpu0,gpu1,split,split-probe" {
+	if strings.Join(names, ",") != "gpu0,gpu1,split,split-probe,peer" {
 		t.Fatalf("names = %v", names)
 	}
 	flat := func(c Candidate) string { return strings.Join(argsOf(c.Config), " ") }
@@ -52,6 +52,16 @@ func TestCandidates(t *testing.T) {
 	}
 	if strings.Contains(flat(cs[3]), "--pcie-frac") {
 		t.Errorf("split-probe keeps --pcie-frac: %s", flat(cs[3]))
+	}
+	if !strings.Contains(flat(cs[4]), "--peer-device 1") || strings.Contains(flat(cs[4]), "--layer-split") {
+		t.Errorf("peer: %s", flat(cs[4]))
+	}
+	withPeer := base()
+	withPeer["args"] = append(argsOf(withPeer), "--peer-device", "1")
+	for _, c := range Candidates(withPeer, 2) {
+		if c.Name != "peer" && strings.Contains(strings.Join(argsOf(c.Config), " "), "--peer-device") {
+			t.Errorf("%s keeps the user's --peer-device", c.Name)
+		}
 	}
 	env := cs[1].Config["env"].(map[string]interface{})
 	if env["CUDA_VISIBLE_DEVICES"] != "1" || env["CUDA_DEVICE_ORDER"] != "PCI_BUS_ID" || env["STRATA_CVEC_FUSE"] != "1" {

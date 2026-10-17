@@ -191,6 +191,23 @@ The Coder on an RTX 5080 + RTX 3090 (Ryzen 9 9950X3D), 32K context; details in
   3090 pair slower (68 / 90 tok/s decode): every extra card costs its own round per window.
 - More cards pay off when the model's routed experts do not fit the faster ones.
 
+**A small second card: `--peer-device 1`, not a layer split.** The Coder IQ1_M (24.8 GB, native pack) on an RTX 5060 Ti
+16 GB (x8) + RTX 4060 8 GB (x4, no P2P), Ryzen 9 9950X3D, 30 GB RAM, 262,144 context, `--kv-resident 20480`,
+`--mmap-experts`, multi-token prediction and the control vector on. One request pair per row (a warm-up, then a
+3,001-token prompt and 256 generated tokens, greedy):
+
+| | Decode tok/s | Prompt tok/s |
+|---|---|---|
+| 5060 Ti alone | 22.3 | 212.9 |
+| 5060 Ti + `--peer-device 1` (the 4060 holds 3,605 more experts, 6.89 GiB; 8,047 of 12,288 on the GPUs) | 36.7 | 243.4 |
+| 5060 Ti + 4060, `--layer-split auto` | does not start | |
+
+The auto split gives the 4060 one layer (K=47) and leaves the 5060 Ti's prompt path with 6-16 MiB free at
+`--prefill` 512 and 1024, so the engine stops with "too little free VRAM for the prompt path". The card that cannot
+hold the layers is better used as extra expert cache. Prompts still run on the first card (no P2P). `strata tune`
+measures this placement as the `peer` candidate; its own run of it gave 33.2 tok/s decode and 277.8 tok/s prompt (a
+different prompt text and a second start, so the speculation acceptance differs: expect 33-37 tok/s decode).
+
 ## One conversation with both cards busy (`--pipeline-windows`, opt-in)
 
 With a split the cards take turns on a verify window: the first card runs its layers and hands off, then waits while

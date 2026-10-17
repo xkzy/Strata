@@ -115,7 +115,8 @@ func withEnv(cfg map[string]interface{}, k, v string) {
 
 // Candidates builds the placements to measure for `cards` NVIDIA GPUs (numbered as nvidia-smi does) from the user's own
 // run config, so every other setting (control vector, speculation, context) is what they run. Each card alone, then all
-// cards in a layer split, then the split with --pcie-frac left to the engine's per-card link probe.
+// cards in a layer split, then the split with --pcie-frac left to the engine's per-card link probe, then the first card
+// with the second as an expert-cache peer (--peer-device).
 func Candidates(base map[string]interface{}, cards int) []Candidate {
 	if cards < 1 {
 		return nil
@@ -123,7 +124,7 @@ func Candidates(base map[string]interface{}, cards int) []Candidate {
 	var out []Candidate
 	mk := func(name string, edit func(cfg map[string]interface{}, args []string) []string) {
 		cfg := copyMap(base)
-		args := SetArg(argsOf(cfg), "--layer-split", nil)
+		args := SetArg(SetArg(argsOf(cfg), "--layer-split", nil), "--peer-device", nil)
 		args = edit(cfg, args)
 		withArgs(cfg, args)
 		withEnv(cfg, "CUDA_DEVICE_ORDER", "PCI_BUS_ID") // so the numbers below are nvidia-smi's, not CUDA's fastest-first
@@ -150,6 +151,12 @@ func Candidates(base map[string]interface{}, cards int) []Candidate {
 		mk("split-probe", func(cfg map[string]interface{}, args []string) []string {
 			withEnv(cfg, "CUDA_VISIBLE_DEVICES", list)
 			return SetArg(SetArg(args, "--layer-split", &auto), "--pcie-frac", nil)
+		})
+		// The first card runs the model; the second holds more of its experts and computes their rows (no P2P needed).
+		peer := "1"
+		mk("peer", func(cfg map[string]interface{}, args []string) []string {
+			withEnv(cfg, "CUDA_VISIBLE_DEVICES", list)
+			return SetArg(args, "--peer-device", &peer)
 		})
 	}
 	return out
