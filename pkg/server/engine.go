@@ -227,6 +227,9 @@ func (s *StrataServer) engineUnavailable() (int, string) {
 	st, reason := s.EngineIPC.Status()
 	switch st {
 	case engineipc.StateReady:
+		if _, full := s.EngineIPC.Scheduler().Full(); full {
+			return 429, "the engine is busy and its queue is full; try again shortly"
+		}
 		return 0, ""
 	case engineipc.StateStarting:
 		return 503, "the model is still loading; try again in a moment"

@@ -28,6 +28,7 @@ import (
 	"strata/pkg/tokenizer"
 
 	"strata/pkg/reqtrace"
+	"strata/pkg/scheduler"
 )
 
 // ByteTokenizer is a stand-in tokenizer for tests without a pack: one id per UTF-8 byte, specials as ids >= 256.
@@ -161,6 +162,7 @@ type EngineConfig struct {
 	ContextSize  int           `json:"context_size"`
 	ExtraArgs    []string      `json:"extra_args"`
 	StartTimeout time.Duration `json:"start_timeout"` // model loading can take minutes (default 30 min)
+	QueueLimit   int           `json:"queue_limit"`   // requests that may wait for the engine; more are refused (0: 32)
 	// Compatibility fields from the earlier configuration; the engine takes its sizes from Args.
 	Threads      int           `json:"threads"`
 	GPULayers    int           `json:"gpu_layers"`
@@ -257,8 +259,12 @@ type EngineOrchestrator struct {
 	logTail    []string
 	kv         KVLedger // the engine's KVEV cache events (see kvledger.go)
 	readyCh    chan struct{}
-	reqSem     chan struct{} // one request at a time: the engine has one session
+	sched      *scheduler.Scheduler // one request at a time (the engine has one session); the rest wait in its queue
 }
+
+// Scheduler is the queue in front of the engine: its Stats are the queue depth and waits, its Full says when a new
+// request would be refused.
+func (eo *EngineOrchestrator) Scheduler() *scheduler.Scheduler { return eo.sched }
 
 func NewEngineOrchestrator(cfg EngineConfig) *EngineOrchestrator {
 	if cfg.BinaryPath == "" {
@@ -280,7 +286,7 @@ func NewEngineOrchestrator(cfg EngineConfig) *EngineOrchestrator {
 	}
 	return &EngineOrchestrator{
 		cfg: cfg, info: map[string]string{}, tokenizer: NewByteTokenizer(), maxContext: cfg.ContextSize,
-		readyCh: make(chan struct{}), reqSem: make(chan struct{}, 1),
+		readyCh: make(chan struct{}), sched: scheduler.New(1, cfg.QueueLimit),
 	}
 }
 
@@ -589,20 +595,21 @@ func (eo *EngineOrchestrator) GenerateIDs(ctx context.Context, ids []int, sampli
 	}
 	// one request at a time
 	waited := time.Now()
-	select {
-	case eo.reqSem <- struct{}{}:
-		defer func() { <-eo.reqSem }()
-	default:
-		reqtrace.Add(ctx, "engine", "waiting for the engine: another request is running")
-		select {
-		case eo.reqSem <- struct{}{}:
-			defer func() { <-eo.reqSem }()
-			reqtrace.Add(ctx, "engine", "got the engine after waiting %.1f s", time.Since(waited).Seconds())
-		case <-ctx.Done():
-			reqtrace.Add(ctx, "engine", "cancelled while waiting for the engine (%v)", context.Cause(ctx))
-			out <- TokenEvent{IsEnd: true, FinishReason: "cancel"}
+	release, err := eo.sched.Acquire(ctx)
+	if err != nil {
+		var full *scheduler.ErrQueueFull
+		if errors.As(err, &full) {
+			reqtrace.Add(ctx, "engine", "refused: %v", err)
+			out <- TokenEvent{Error: err, IsEnd: true, FinishReason: "error"}
 			return
 		}
+		reqtrace.Add(ctx, "engine", "cancelled while waiting for the engine (%v)", err)
+		out <- TokenEvent{IsEnd: true, FinishReason: "cancel"}
+		return
+	}
+	defer release()
+	if w := time.Since(waited); w > 50*time.Millisecond {
+		reqtrace.Add(ctx, "engine", "got the engine after waiting %.1f s", w.Seconds())
 	}
 	if maxNew <= 0 {
 		maxNew = 2048

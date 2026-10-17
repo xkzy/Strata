@@ -68,6 +68,8 @@ type apiError struct {
 	Status int
 	Type   string
 	Msg    string
+	// RetryAfter is the seconds a 429 / 503 tells the caller to wait (0: the status's default).
+	RetryAfter int
 }
 
 func (e *apiError) Error() string { return e.Msg }
@@ -76,7 +78,7 @@ func (e *apiError) Error() string { return e.Msg }
 // content / tool-call events and ends with one End event; it is closed afterwards.
 func (s *StrataServer) startGeneration(ctx context.Context, spec genSpec) (<-chan genEvent, int, error) {
 	if status, msg := s.engineUnavailable(); status != 0 {
-		return nil, 0, &apiError{Status: status, Type: "engine_unavailable", Msg: msg}
+		return nil, 0, s.unavailableErr(status, msg)
 	}
 	tok := s.tokenizerOrNil()
 

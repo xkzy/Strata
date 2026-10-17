@@ -257,7 +257,7 @@ func (b *rtBackend) Generate(ctx context.Context, ids []int, sp rtclient.Samplin
 // startRuntimeGeneration runs a chat request through the C++ runtime. The events have the same shape as the direct path's.
 func (s *StrataServer) startRuntimeGeneration(ctx context.Context, spec genSpec) (<-chan genEvent, int, error) {
 	if status, msg := s.engineUnavailable(); status != 0 {
-		return nil, 0, &apiError{Status: status, Type: "engine_unavailable", Msg: msg}
+		return nil, 0, s.unavailableErr(status, msg)
 	}
 	s.rt.mu.RLock()
 	client := s.rt.client

@@ -294,7 +294,7 @@ func (s *StrataServer) Router() http.Handler {
 	// Root Web UI
 	mux.HandleFunc("/", s.handleRoot)
 
-	return s.corsMiddleware(mux)
+	return s.corsMiddleware(withTicket(mux))
 }
 
 // publicPath says whether a request needs no API key: the health probes, the web UI shell and the read-only setup
@@ -659,6 +659,7 @@ func (s *StrataServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		"requests_kept":      kept,
 		"totals":             totals,
 		"resource":           s.ResourceManager.Metrics(),
+		"scheduler":          s.EngineIPC.Scheduler().Stats(),
 		"anti_loop":          s.AntiLoop.Stats(),
 		"context":            s.VirtualContext.Stats(),
 		"math":               s.MathRuntime.GetStats(),

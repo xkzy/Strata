@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -299,10 +300,15 @@ func writeAPIError(w http.ResponseWriter, err error) {
 	var ae *apiError
 	if e, ok := err.(*apiError); ok {
 		ae = e
+	} else if qe, ok := queueFullError(err); ok {
+		ae = qe
 	} else {
 		ae = &apiError{Status: 500, Type: "server_error", Msg: err.Error()}
 	}
-	if ae.Status == 503 {
+	switch {
+	case ae.RetryAfter > 0:
+		w.Header().Set("Retry-After", strconv.Itoa(ae.RetryAfter))
+	case ae.Status == 503, ae.Status == 429:
 		w.Header().Set("Retry-After", "5")
 	}
 	writeJSON(w, ae.Status, map[string]interface{}{"error": map[string]interface{}{"message": ae.Msg, "type": ae.Type, "code": ae.Type}})
