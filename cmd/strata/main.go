@@ -37,6 +37,8 @@ func main() {
 		runServer(os.Args[2:])
 	case "setup":
 		runSetup(os.Args[2:])
+	case "tune":
+		runTune(os.Args[2:])
 	case "math":
 		runMath(os.Args[2:])
 	case "verify":
@@ -69,6 +71,7 @@ func printUsage() {
 	fmt.Println("Commands:")
 	fmt.Println("  serve               Start the high-performance AI inference server & Web UI")
 	fmt.Println("  setup               Detect hardware & configure/download optimal model")
+	fmt.Println("  tune                Measure the cards (each alone, and split) and set the fastest placement in the run config")
 	fmt.Println("  math                Evaluate a mathematical expression deterministically")
 	fmt.Println("  verify              Verify logical deductions, constraints, SI units, schemas")
 	fmt.Println("  check-hallucination Detect and verify factual claims against ground truth")

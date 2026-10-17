@@ -119,8 +119,8 @@ func NewStrataServer(cfg ServerConfig) *StrataServer {
 	if cfg.MaxContext <= 0 {
 		cfg.MaxContext = 32768
 	}
-	if cfg.VirtualLimit <= 0 {
-		cfg.VirtualLimit = 2000000
+	if cfg.VirtualLimit <= 0 { // no extension beyond what the engine holds, unless --virtual-limit asks for one
+		cfg.VirtualLimit = cfg.MaxContext
 	}
 
 	mr := mathruntime.NewMathRuntime(nil)
@@ -481,7 +481,7 @@ func (s *StrataServer) modelEntry(id string) map[string]interface{} {
 	}
 	virt := s.Config.VirtualLimit
 	if virt < ctx {
-		virt = 2000000
+		virt = ctx
 	}
 	created := s.started.Unix()
 	if created <= 0 {
@@ -598,7 +598,7 @@ func (s *StrataServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 	virtLimit := s.Config.VirtualLimit
 	if virtLimit <= 0 {
-		virtLimit = 2000000
+		virtLimit = s.Config.MaxContext
 	}
 
 	engineMap := map[string]interface{}{

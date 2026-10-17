@@ -153,7 +153,7 @@ func DefaultConfig() StrataConfig {
 		Port:                  8080,
 		Model:                 "Qwen3.8-Flash-Next",
 		MaxContext:            32768,
-		VirtualLimit:          2000000,
+		VirtualLimit:          0, // unset: the server uses the engine's max context, no extension
 		FitMaxTokens:          true,
 		ReasoningBudgetTokens: 0,
 		AnthropicThinking:     "model",
