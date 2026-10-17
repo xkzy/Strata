@@ -152,11 +152,37 @@ func nvidiaCards() []string {
 }
 
 func engineRunning() string {
-	out, err := exec.Command("pgrep", "-af", "strata --serve|strata_rt_server|strata serve").Output()
+	out, err := exec.Command("pgrep", "-af", "strata").Output()
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+	return findEngine(string(out), os.Getpid())
+}
+
+// findEngine picks the first `pid command line` row of pgrep -af output that is a Strata engine or server: its
+// executable (not just some word in its arguments, like a shell that quotes the command) is strata / strata-server /
+// strata_rt_server, started to serve. self is skipped.
+func findEngine(pgrep string, self int) string {
+	for _, line := range strings.Split(pgrep, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 || f[0] == fmt.Sprint(self) {
+			continue
+		}
+		switch filepath.Base(f[1]) {
+		case "strata_rt_server", "strata-server":
+			return strings.TrimSpace(line)
+		case "strata":
+			for _, a := range f[2:] {
+				if a == "--serve" {
+					return strings.TrimSpace(line)
+				}
+			}
+			if len(f) > 2 && f[2] == "serve" {
+				return strings.TrimSpace(line)
+			}
+		}
+	}
+	return ""
 }
 
 type lockedBuf struct {
