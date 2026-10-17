@@ -23,6 +23,8 @@ class DraftPolicy {
 public:
     static constexpr int kMaxT = 8;
     static constexpr int kBuckets = 4;
+    static constexpr int kAdaptSeen = 8;        // windows of a size before adapt_t trusts its average
+    static constexpr int kExploreEvery = 16;    // adapt_t: one round in this many tries the least-seen size
 
     explicit DraftPolicy(int max_t, double margin = 0.03);
 
@@ -34,6 +36,13 @@ public:
     Pick choose(int t_mtp, int lookup_k, int match) const;
     /// After the round: the window it used, the drafts accepted, and the round's time (verify + commit + draft).
     void observe(bool lookup, int t, int accepted, int match, double round_ms);
+
+    /// --spec-auto: the MTP window to verify this round, at most `cap` tokens (1 + drafts). The size whose measured
+    /// committed tokens per millisecond is best, once at least kAdaptSeen windows of it have run; a smaller size
+    /// replaces the cap only when it wins by `margin`. Every kExploreEvery-th round (`round` counts them) the size seen
+    /// least so far is tried instead, so a size that was bad once is measured again as the machine and text change.
+    /// Which drafts are verified changes, never the output.
+    int adapt_t(int cap, long long round) const;
 
     /// --lookup-chain: how many of `k_avail` lookup tokens to append after an MTP window of `t_mtp` tokens whose
     /// drafts all hold with probability `p_mtp` (estimated from the draft layer's own probabilities): the k with the

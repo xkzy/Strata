@@ -98,6 +98,27 @@ void DraftPolicy::observe(bool lookup, int t, int accepted, int match, double ro
     }
 }
 
+int DraftPolicy::adapt_t(int cap, long long round) const {
+    cap = std::clamp(cap, 1, max_t_);
+    if (cap <= 1) return cap;
+    if (round % kExploreEvery == kExploreEvery - 1) {
+        int least = cap;
+        for (int t = 2; t < cap; ++t)
+            if (mtp_n_[t] < mtp_n_[least]) least = t;
+        if (mtp_n_[least] < kAdaptSeen) return least;
+    }
+    if (mtp_n_[cap] < kAdaptSeen) return cap;      // the full window is the reference; measure it first
+    const double ref = mtp_tokens(cap) / cost_ms(cap);
+    int best_t = cap;
+    double best = ref * (1.0 + margin_);
+    for (int t = 1; t < cap; ++t) {
+        if (mtp_n_[t] < kAdaptSeen) continue;
+        const double r = mtp_tokens(t) / cost_ms(t);
+        if (r > best) { best = r; best_t = t; }
+    }
+    return best_t;
+}
+
 double DraftPolicy::chain_rate(int match) const {
     // prior: a chained draft is a lookup continuing the MTP's drafts - weaker evidence than a plain match of that length
     constexpr double kChainPrior[kBuckets] = {0.45, 0.65, 0.8, 0.9};

@@ -90,6 +90,7 @@ func Propose(rng *rand.Rand, args []string, knobs []Knob, step float64) []string
 			}
 		}
 		cur = math.Round(cur/q) * q
+		cur = math.Round(cur*1e6) / 1e6 // 0.7000000000000001 -> 0.7
 		cur = math.Min(k.Hi, math.Max(k.Lo, cur))
 		s := strconv.FormatFloat(cur, 'f', -1, 64)
 		out = SetArg(out, k.Flag, &s)

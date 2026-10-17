@@ -75,6 +75,23 @@ int main() {
         check(q.chain(4, 0.9, 3, 4) == 0, "chain: dear rows, never accepted -> none");
         check(q.chain(4, 0.9, 0, 4) == 0 && q.chain(8, 1.0, 3, 40) == 0, "chain: nothing proposed / no room -> none");
     }
+    {
+        // --spec-auto: the window size follows the measured committed tokens per ms
+        DraftPolicy p(6);
+        check(p.adapt_t(4, 0) == 4, "adapt: nothing measured -> the cap");
+        for (int i = 0; i < 20; ++i) p.observe(false, 4, 0, 0, cost(4));   // 4-windows commit 1 token: all drafts rejected
+        for (int i = 0; i < 20; ++i) p.observe(false, 2, 1, 0, cost(2));   // 2-windows commit 2 tokens
+        check(p.adapt_t(4, 1) == 2, "adapt: long windows rejected, short ones accepted -> the short size");
+        DraftPolicy q(6);
+        for (int i = 0; i < 20; ++i) q.observe(false, 4, 3, 0, cost(4));   // 4-windows commit 4 tokens
+        for (int i = 0; i < 20; ++i) q.observe(false, 2, 1, 0, cost(2));
+        check(q.adapt_t(4, 1) == 4, "adapt: long windows accepted -> the cap stays");
+        check(q.adapt_t(4, 100) <= 4 && q.adapt_t(1, 5) == 1 && q.adapt_t(9, 1) <= 6, "adapt: never beyond the cap");
+        DraftPolicy r(6);
+        for (int i = 0; i < 20; ++i) r.observe(false, 4, 0, 0, cost(4));
+        check(r.adapt_t(4, DraftPolicy::kExploreEvery - 1) < 4 && r.adapt_t(4, DraftPolicy::kExploreEvery - 2) == 4,
+              "adapt: every 16th round tries a size not seen enough");
+    }
     std::printf(g_fail ? "FAIL\n" : "PASS\n");
     return g_fail ? 1 : 0;
 }

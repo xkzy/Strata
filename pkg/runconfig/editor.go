@@ -62,6 +62,8 @@ var editable = []editableKey{
 		help: "What the adaptive resource controller aims for (#18): throughput, latency, a balance, or saved energy"},
 	{key: "resource_adapt", kind: "bool",
 		help: "Adapt queue limits and admission to measured load (#18); off keeps one fixed limit whatever the load"},
+	{key: "spec_auto", kind: "arg_bool", flag: "--spec-auto",
+		help: "Adapt the speculative window while running: shorter windows when they commit more tokens per ms (--spec is the longest). Output is unchanged"},
 	{key: "abliterate", kind: "arg_bool", flag: "--abliterate",
 		help: "Online abliteration (uncensor mode): removes the measured refusal direction from the residual stream per request. Needs a refusal vector (--abliteration-vector FILE or --control-vector-scaled); there is no built-in direction"},
 	{key: "abliteration_strength", kind: "arg_float", flag: "--abliteration-strength",
