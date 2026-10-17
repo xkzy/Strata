@@ -7,6 +7,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -29,6 +31,8 @@ func runTune(args []string) {
 	words := fs.Int("prompt-words", 1500, "length of the measured prompt in words (about 2K tokens)")
 	only := fs.String("only", "", "comma-separated candidates to measure (gpu0, gpu1, split, split-probe, peer)")
 	noResident := fs.Bool("no-resident", false, "skip measuring the winner with --resident-experts (a locked RAM copy of the experts)")
+	search := fs.Int("search", 0, "after the placement is chosen, try this many random settings of --pool-workers, --pcie-frac and --spec (0 = off)")
+	seed := fs.Int64("seed", 0, "seed of the random search (0 = from the clock)")
 	dry := fs.Bool("dry-run", false, "measure and print, but leave the run config as it is")
 	loadWait := fs.Duration("load-timeout", 25*time.Minute, "how long one candidate may take to load the model")
 	fs.Parse(args)
@@ -115,6 +119,9 @@ func runTune(args []string) {
 			run(v)
 		}
 	}
+	if bi := tune.Choose(results); bi >= 0 && *search > 0 {
+		results, cands = searchKnobs(exe, results, cands, bi, *search, *seed, *decode, *words, *loadWait)
+	}
 	best := tune.Choose(results)
 	if best < 0 {
 		fmt.Fprintln(os.Stderr, "\nstrata tune: no candidate ran; the run config is unchanged")
@@ -131,6 +138,80 @@ func runTune(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("Wrote the placement to %s (the old file is %s.bak). It is used from the next start of the model.\n", path, path)
+}
+
+// searchKnobs is a random search from the winner results[bi]: each round tries a random nearby setting of the numeric
+// options, with a step that shrinks every round (a decaying learning rate), and moves there when it is faster - or,
+// while the temperature is still high, sometimes when it is slower. One measurement varies by about 10-15% between
+// runs, so the start and the best setting found are measured once more and averaged before they are compared.
+// It returns the results and candidates with the search's other tries dropped.
+func searchKnobs(exe string, results []tune.Result, cands []tune.Candidate, bi, rounds int, seed int64, decode, words int, loadWait time.Duration) ([]tune.Result, []tune.Candidate) {
+	if seed == 0 {
+		seed = time.Now().UnixNano()
+	}
+	rng := rand.New(rand.NewSource(seed))
+	knobs := tune.DefaultKnobs()
+	rate := math.Pow(0.25, 1/float64(rounds)) // the step and the temperature end at a quarter of their start
+	start := cands[indexOf(cands, results[bi].Name)]
+	cur, curScore := start, tune.Score(results[bi])
+	top, topScore := start, curScore
+	seen := map[string]bool{tune.Settings(start, knobs): true}
+	fmt.Printf("\n== random search, %d rounds, seed %d ==\n   start: %s\n", rounds, seed, tune.Settings(start, knobs))
+	var tried []tune.Result
+	for i := 0; i < rounds; i++ {
+		step, temp := tune.Decay(0.3, rate, i), tune.Decay(0.05, rate, i)
+		var c tune.Candidate
+		found := false
+		for try := 0; try < 30 && !found; try++ {
+			c = tune.WithArgs(cur, fmt.Sprintf("search-%d", i+1), tune.Propose(rng, tune.ArgsOf(cur), knobs, step))
+			found = !seen[tune.Settings(c, knobs)]
+		}
+		if !found {
+			continue
+		}
+		seen[tune.Settings(c, knobs)] = true
+		r := measure(exe, c, decode, words, loadWait)
+		r.Name = c.Name
+		if r.Err != "" {
+			fmt.Printf("   %2d  %s: failed: %s\n", i+1, tune.Settings(c, knobs), r.Err)
+			continue
+		}
+		s := tune.Score(r)
+		take := tune.Accept(rng, curScore, s, temp)
+		fmt.Printf("   %2d  %s: decode %.1f, prompt %.1f tok/s (step %.2f)%s\n", i+1, tune.Settings(c, knobs), r.DecodeTokS, r.PrefillTokS, step,
+			map[bool]string{true: " <- moved", false: ""}[take])
+		tried = append(tried, r)
+		if take {
+			cur, curScore = c, s
+		}
+		if s > topScore {
+			top, topScore = c, s
+		}
+	}
+	if top.Name == start.Name {
+		fmt.Println("   no setting beat the start")
+		return results, cands
+	}
+	// confirm: measure the start and the best found once more, and keep the averages
+	fmt.Printf("   best found: %s; measuring it and the start again\n", tune.Settings(top, knobs))
+	avg := func(c tune.Candidate, first tune.Result) tune.Result {
+		r := measure(exe, c, decode, words, loadWait)
+		if r.Err != "" {
+			return first
+		}
+		first.DecodeTokS, first.PrefillTokS = (first.DecodeTokS+r.DecodeTokS)/2, (first.PrefillTokS+r.PrefillTokS)/2
+		return first
+	}
+	var topFirst tune.Result
+	for _, r := range tried {
+		if r.Name == top.Name {
+			topFirst = r
+		}
+	}
+	topRes, startRes := avg(top, topFirst), avg(start, results[bi])
+	fmt.Printf("   start %.1f / %.1f, best found %.1f / %.1f (decode / prompt tok/s, mean of two)\n", startRes.DecodeTokS, startRes.PrefillTokS, topRes.DecodeTokS, topRes.PrefillTokS)
+	results[bi] = startRes
+	return append(results, topRes), append(cands, top)
 }
 
 // reserveOf is the --vram-reserve-mib a candidate asks for.

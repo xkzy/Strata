@@ -264,7 +264,7 @@ func Apply(path string, chosen Candidate, rec Record) error {
 		return err
 	}
 	args := argsOf(cur)
-	for _, flag := range []string{"--layer-split", "--peer-device", "--pcie-frac"} {
+	for _, flag := range []string{"--layer-split", "--peer-device", "--pcie-frac", "--pool-workers", "--spec"} {
 		var v *string
 		if x := lookup(argsOf(chosen.Config), flag); x != "" {
 			v = &x
