@@ -215,7 +215,11 @@ func measure(exe string, c tune.Candidate, decode, words int, loadWait time.Dura
 		if time.Now().After(deadline) {
 			return tune.Result{Err: "the model did not load in " + loadWait.String()}
 		}
-		if loaded(base) {
+		ok, failed := loaded(base)
+		if failed != "" {
+			return tune.Result{Err: "the engine failed to start: " + failed}
+		}
+		if ok {
 			break
 		}
 		time.Sleep(2 * time.Second)
@@ -238,17 +242,32 @@ func measure(exe string, c tune.Candidate, decode, words int, loadWait time.Dura
 	return r
 }
 
-func loaded(base string) bool {
+// loaded reports whether the model is loaded; failed is the engine's reason (its last log lines) when it gave up.
+func loaded(base string) (ok bool, failed string) {
 	resp, err := http.Get(base + "/health")
 	if err != nil {
-		return false
+		return false, ""
 	}
 	defer resp.Body.Close()
 	var h struct {
-		Loaded bool `json:"loaded"`
+		Loaded bool   `json:"loaded"`
+		Engine string `json:"engine"`
+		Error  string `json:"error"`
 	}
 	json.NewDecoder(resp.Body).Decode(&h)
-	return h.Loaded
+	if h.Engine == "failed" {
+		return false, lastSentence(h.Error)
+	}
+	return h.Loaded, ""
+}
+
+// lastSentence keeps the end of the engine's message, which is where it says what went wrong.
+func lastSentence(s string) string {
+	parts := strings.Split(s, " | ")
+	if len(parts) > 2 {
+		parts = parts[len(parts)-2:]
+	}
+	return strings.Join(parts, " | ")
 }
 
 // prompt is text that differs per tag, so the measured request never matches the warm-up's cached prompt.
