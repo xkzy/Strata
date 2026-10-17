@@ -318,6 +318,9 @@ func Apply(cfg map[string]interface{}, changes map[string]interface{}) (map[stri
 			}
 		case "arg", "arg_float", "arg_str":
 			args, _ := nw["args"].([]interface{})
+			if e.key == "gpus" && v != nil && argBoolValue(nw, "--peer-device") {
+				continue // the second card is an expert cache (--peer-device); a layer split would replace that
+			}
 			at := -1
 			for i := 0; i+1 < len(args); i++ {
 				if s, _ := args[i].(string); s == e.flag {

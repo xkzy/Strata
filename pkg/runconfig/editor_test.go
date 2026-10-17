@@ -139,3 +139,14 @@ func TestGPUsKeyWritesLayerSplit(t *testing.T) {
 		t.Fatalf("one card should drop --layer-split: %v", args)
 	}
 }
+
+func TestGPUsKeyLeavesAPeerSetupAlone(t *testing.T) {
+	cfg := map[string]interface{}{"args": []interface{}{"--peer-device", "1"}}
+	nw, _, err := Apply(cfg, map[string]interface{}{"gpus": "0,1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args, _ := nw["args"].([]interface{}); len(args) != 2 {
+		t.Fatalf("a layer split was added next to --peer-device: %v", args)
+	}
+}

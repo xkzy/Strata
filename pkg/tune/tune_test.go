@@ -137,6 +137,39 @@ func TestApplyChangesOnlyThePlacement(t *testing.T) {
 	}
 }
 
+func TestApplyKeepsTheRuntimeSettingsInStep(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "strata-m.json")
+	rt := filepath.Join(dir, "strata-config.json")
+	orig, _ := json.Marshal(base())
+	_ = os.WriteFile(path, orig, 0o644)
+	_ = os.WriteFile(rt, []byte(`{"gpus":"0","pcie_frac":1,"pool_workers":32,"max_context":262144}`), 0o644)
+	c := Candidates(base(), 2)[4] // peer: --pcie-frac 0.5 from base
+	if err := Apply(path, c, Record{Chosen: "peer"}); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]interface{}
+	raw, _ := os.ReadFile(rt)
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["gpus"] != "0,1" || got["pcie_frac"] != 0.5 || got["max_context"] != float64(262144) {
+		t.Errorf("runtime = %v", got)
+	}
+	if _, in := got["pool_workers"]; in {
+		t.Errorf("pool_workers stayed though the run config has no --pool-workers: %v", got)
+	}
+	var run map[string]interface{}
+	raw, _ = os.ReadFile(path)
+	_ = json.Unmarshal(raw, &run)
+	if !strings.Contains(strings.Join(argsOf(run), " "), "--peer-device 1") {
+		t.Errorf("run config lost --peer-device: %v", argsOf(run))
+	}
+	if _, err := os.Stat(rt + ".bak"); err != nil {
+		t.Error("no backup of the runtime settings")
+	}
+}
+
 func TestResidentVariantAndApply(t *testing.T) {
 	b := base()
 	b["args"] = append(b["args"].([]interface{}), "--mmap-experts")

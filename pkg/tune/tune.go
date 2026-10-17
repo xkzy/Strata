@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -263,7 +264,7 @@ func Apply(path string, chosen Candidate, rec Record) error {
 		return err
 	}
 	args := argsOf(cur)
-	for _, flag := range []string{"--layer-split", "--pcie-frac"} {
+	for _, flag := range []string{"--layer-split", "--peer-device", "--pcie-frac"} {
 		var v *string
 		if x := lookup(argsOf(chosen.Config), flag); x != "" {
 			v = &x
@@ -302,6 +303,44 @@ func Apply(path string, chosen Candidate, rec Record) error {
 	}
 	cur["tuned"] = rec
 	out, err := json.MarshalIndent(cur, "", " ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		return err
+	}
+	return syncRuntime(filepath.Join(filepath.Dir(path), "strata-config.json"), args, env)
+}
+
+// syncRuntime makes the settings in strata-config.json (the runtime settings the server and its web page show) say what
+// the tuned run config runs: the cards in use, --pcie-frac and --pool-workers. A missing file is left missing; a key
+// the run config has no flag for is removed, as the settings page does for an empty field. Other keys stay.
+func syncRuntime(path string, args []string, env map[string]interface{}) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var rt map[string]interface{}
+	if json.Unmarshal(raw, &rt) != nil {
+		return nil
+	}
+	if err := os.WriteFile(path+".bak", raw, 0o644); err != nil {
+		return err
+	}
+	if cards, _ := env["CUDA_VISIBLE_DEVICES"].(string); cards != "" {
+		rt["gpus"] = cards
+	}
+	if v, err := strconv.ParseFloat(lookup(args, "--pcie-frac"), 64); err == nil {
+		rt["pcie_frac"] = v
+	} else {
+		delete(rt, "pcie_frac")
+	}
+	if v, err := strconv.Atoi(lookup(args, "--pool-workers")); err == nil {
+		rt["pool_workers"] = v
+	} else {
+		delete(rt, "pool_workers")
+	}
+	out, err := json.MarshalIndent(rt, "", "  ")
 	if err != nil {
 		return err
 	}
