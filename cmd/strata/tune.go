@@ -85,6 +85,17 @@ func runTune(args []string) {
 	run := func(c tune.Candidate) {
 		fmt.Printf("\n== %s ==\n", c.Name)
 		r := measure(exe, c, *decode, *words, *loadWait)
+		// A card with no room left for the prompt buffers: keep more VRAM free of the expert cache and measure again.
+		for tries := 0; tries < 2 && r.Err != "" && strings.Contains(r.Err, "free VRAM"); tries++ {
+			more, ok := tune.ReserveMore(c)
+			if !ok {
+				break
+			}
+			fmt.Printf("   not enough VRAM for the prompt buffers; again with --vram-reserve-mib %s\n", reserveOf(more))
+			c = more
+			cands[indexOf(cands, c.Name)] = c
+			r = measure(exe, c, *decode, *words, *loadWait)
+		}
 		r.Name = c.Name
 		if r.Err != "" {
 			fmt.Printf("   failed: %s\n", r.Err)
@@ -120,6 +131,18 @@ func runTune(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("Wrote the placement to %s (the old file is %s.bak). It is used from the next start of the model.\n", path, path)
+}
+
+// reserveOf is the --vram-reserve-mib a candidate asks for.
+func reserveOf(c tune.Candidate) string {
+	args, _ := c.Config["args"].([]interface{})
+	for i := 0; i+1 < len(args); i++ {
+		if a, _ := args[i].(string); a == "--vram-reserve-mib" {
+			v, _ := args[i+1].(string)
+			return v
+		}
+	}
+	return "?"
 }
 
 func indexOf(cs []tune.Candidate, name string) int {

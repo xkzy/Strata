@@ -203,6 +203,32 @@ func ResidentVariant(c Candidate) (v Candidate, ok bool) {
 	return Candidate{Name: c.Name + "+resident", Config: cfg}, true
 }
 
+// Defaults of the engine's --vram-reserve-mib, the step ReserveMore adds and the most it asks for.
+const (
+	defaultReserveMiB = 700
+	reserveStepMiB    = 1500
+	maxReserveMiB     = 6000
+)
+
+// ReserveMore is c with a bigger --vram-reserve-mib (the VRAM each card keeps free of the expert cache), for a card that
+// ran out of room for the prompt buffers. ok is false when c already asks for the most.
+func ReserveMore(c Candidate) (v Candidate, ok bool) {
+	args := argsOf(c.Config)
+	cur := defaultReserveMiB
+	if s := lookup(args, "--vram-reserve-mib"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil {
+			cur = n
+		}
+	}
+	if cur >= maxReserveMiB {
+		return Candidate{}, false
+	}
+	next := strconv.Itoa(min(cur+reserveStepMiB, maxReserveMiB))
+	cfg := copyMap(c.Config)
+	withArgs(cfg, SetArg(args, "--vram-reserve-mib", &next))
+	return Candidate{Name: c.Name, Config: cfg}, true
+}
+
 func hasFlag(args []string, flag string) bool {
 	for _, a := range args {
 		if a == flag {

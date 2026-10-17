@@ -72,6 +72,27 @@ func TestCandidates(t *testing.T) {
 	}
 }
 
+func TestReserveMore(t *testing.T) {
+	c := Candidates(base(), 1)[0]
+	flat := func(c Candidate) string { return strings.Join(argsOf(c.Config), " ") }
+	v, ok := ReserveMore(c)
+	if !ok || !strings.Contains(flat(v), "--vram-reserve-mib 2200") {
+		t.Fatalf("first step from the default 700: %v %s", ok, flat(v))
+	}
+	v, ok = ReserveMore(v)
+	if !ok || !strings.Contains(flat(v), "--vram-reserve-mib 3700") || strings.Count(flat(v), "--vram-reserve-mib") != 1 {
+		t.Fatalf("second step: %v %s", ok, flat(v))
+	}
+	if strings.Contains(flat(c), "--vram-reserve-mib") {
+		t.Error("the original candidate was changed")
+	}
+	s := "6000"
+	withArgs(c.Config, SetArg(argsOf(c.Config), "--vram-reserve-mib", &s))
+	if _, ok := ReserveMore(c); ok {
+		t.Error("no step past the maximum")
+	}
+}
+
 func TestChoose(t *testing.T) {
 	if Choose([]Result{{Name: "a", Err: "x"}}) != -1 {
 		t.Fatal("all failed")
