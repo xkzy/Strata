@@ -735,6 +735,21 @@ async function loadConfig() {
     return `<label for="${id}" title="${esc(k.help)}">${esc(k.help)}<code>${esc(k.key)}</code></label>${input}`;
   }).join("");
   $("cfg-card").hidden = false;
+  renderTune(c.tuned);
+}
+// The last `strata tune`: the candidates it measured and the one it chose (marked), from the run config's "tuned" record.
+function renderTune(t) {
+  const card = $("tune-card");
+  if (!t || !Array.isArray(t.results) || !t.results.length) { card.hidden = true; return; }
+  const fix = (n) => (typeof n === "number" ? n.toFixed(1) : "-");
+  $("tune-when").textContent = t.at ? new Date(t.at).toLocaleString() : "";
+  $("tune-hw").textContent = Array.isArray(t.hardware) ? t.hardware.join(" · ") : "";
+  $("tune-rows").innerHTML = t.results.map((r) => {
+    const chosen = r.name === t.chosen;
+    return `<tr${chosen ? ' class="tune-chosen"' : ""}><td>${esc(r.name || "")}${chosen ? " <strong>(in use)</strong>" : ""}</td>` +
+      `<td class="num">${fix(r.decode_tok_s)}</td><td class="num">${fix(r.prefill_tok_s)}</td></tr>`;
+  }).join("");
+  card.hidden = false;
 }
 function configValue(k, el) {
   const s = el.value.trim();

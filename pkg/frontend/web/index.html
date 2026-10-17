@@ -449,6 +449,15 @@
         <div class="cfg-actions"><button class="st-btn st-btn--primary" id="cfg-save" type="button">Save</button>
           <span class="muted small" id="cfg-msg" role="status"></span></div>
       </div>
+      <div class="st-card tune-card" id="tune-card" hidden>
+        <div class="req-head"><span class="card-title">Last tune</span><span class="muted small" id="tune-when"></span></div>
+        <p class="muted small" id="tune-hw"></p>
+        <table class="st-table"><thead><tr><th>Placement</th><th class="num">Decode tok/s</th><th class="num">Prompt tok/s</th></tr></thead>
+          <tbody id="tune-rows"></tbody></table>
+        <p class="muted small">From <code>strata tune</code> (a prompt of about 3,000 tokens, 256 generated). Single runs vary by
+          about ±10%, so a gap of a few tok/s between two rows is not a real difference. Run it again with
+          <code>strata tune --config &lt;file&gt; --search 14</code>.</p>
+      </div>
     </div>
   </section>
 </main>

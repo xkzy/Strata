@@ -62,6 +62,16 @@ var editable = []editableKey{
 		help: "What the adaptive resource controller aims for (#18): throughput, latency, a balance, or saved energy"},
 	{key: "resource_adapt", kind: "bool",
 		help: "Adapt queue limits and admission to measured load (#18); off keeps one fixed limit whatever the load"},
+	{key: "spec", kind: "arg", flag: "--spec",
+		help: "Longest speculative window: draft tokens checked per step (1-8; 4 measured best on the RTX 5060 Ti rig)"},
+	{key: "spec_min_p", kind: "arg_float", flag: "--spec-min-p",
+		help: "Draft tokens the draft layer is less sure of than this (0-1) are left out of a window"},
+	{key: "adapt_every", kind: "arg", flag: "--adapt-every",
+		help: "The GPU expert cache follows the conversation every this many windows (engine default 4; 0 = never: measured 54% hit rate instead of 92%)"},
+	{key: "adapt_swaps", kind: "arg", flag: "--adapt-swaps",
+		help: "Most experts swapped into the GPU cache per adaptive round (engine default 96; 32 measured slower)"},
+	{key: "adapt_decay", kind: "arg_float", flag: "--adapt-decay",
+		help: "How much of the routing counts is kept after each adaptive round (0-1, engine default 0.7)"},
 	{key: "spec_auto", kind: "arg_bool", flag: "--spec-auto",
 		help: "Adapt the speculative window while running: shorter windows when they commit more tokens per ms (--spec is the longest). Output is unchanged"},
 	{key: "abliterate", kind: "arg_bool", flag: "--abliterate",
@@ -151,8 +161,12 @@ func View(cfg map[string]interface{}, path string) map[string]interface{} {
 		}
 		keys = append(keys, k)
 	}
-	return map[string]interface{}{"file": filepath.Base(path), "keys": keys,
+	view := map[string]interface{}{"file": filepath.Base(path), "keys": keys,
 		"note": "Saved to the run config; used from the next start of the model."}
+	if t, ok := cfg["tuned"].(map[string]interface{}); ok { // the last `strata tune`: what it measured and chose
+		view["tuned"] = t
+	}
+	return view
 }
 
 func number(key string, v interface{}, whole bool, lo float64, hi *float64, loOpen bool) (float64, error) {
@@ -242,11 +256,16 @@ func check(key string, v interface{}, cfg map[string]interface{}) (interface{}, 
 		}
 		return names, nil
 	case "int>=0", "arg":
+		if e.flag == "--spec" { // a window of 1 to 8 draft tokens
+			eight := 8.0
+			f, err := number(key, v, true, 1, &eight, false)
+			return num(f, true), err
+		}
 		f, err := number(key, v, true, 0, nil, false)
 		return num(f, true), err
 	case "arg_float":
 		var maxF *float64
-		if e.flag == "--pcie-frac" {
+		if e.flag == "--pcie-frac" || e.flag == "--spec-min-p" || e.flag == "--adapt-decay" {
 			maxF = &one
 		}
 		f, err := number(key, v, false, 0, maxF, false)

@@ -34,6 +34,31 @@ func TestViewListsEditableKeys(t *testing.T) {
 	}
 }
 
+func TestTuningKeysAreCheckedAndTheTuneRecordIsShown(t *testing.T) {
+	tuned := map[string]interface{}{"chosen": "search-9", "results": []interface{}{map[string]interface{}{"name": "peer"}}}
+	cfg := map[string]interface{}{"args": []interface{}{"--spec", "4", "--adapt-every", "4"}, "tuned": tuned}
+	v := View(cfg, "/x/strata-m.json")
+	if v["tuned"] == nil {
+		t.Fatalf("the view leaves out the tune record: %v", v)
+	}
+	for _, bad := range []map[string]interface{}{
+		{"spec": 0.0}, {"spec": 9.0}, {"spec": 2.5}, {"spec_min_p": 1.5}, {"adapt_decay": -0.1}, {"adapt_every": 1.5},
+	} {
+		if _, _, err := Apply(cfg, bad); err == nil {
+			t.Errorf("%v was accepted", bad)
+		}
+	}
+	nw, changed, err := Apply(cfg, map[string]interface{}{"spec": 6.0, "adapt_every": 0.0, "adapt_swaps": 192.0, "adapt_decay": 0.5})
+	if err != nil || len(changed) != 4 {
+		t.Fatalf("changed = %v, err = %v", changed, err)
+	}
+	for flag, want := range map[string]interface{}{"--spec": 6, "--adapt-every": 0, "--adapt-swaps": 192, "--adapt-decay": 0.5} {
+		if got := argValue(nw, flag); got != want {
+			t.Errorf("%s = %v, want %v", flag, got, want)
+		}
+	}
+}
+
 func TestApplyChangesOnlyNamedKeys(t *testing.T) {
 	cfg := map[string]interface{}{"exe": "engine", "args": []interface{}{"--x", "1"}, "api_key": "secret"}
 	nw, changed, err := Apply(cfg, map[string]interface{}{
