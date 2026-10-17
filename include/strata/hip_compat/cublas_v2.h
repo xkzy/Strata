@@ -2,8 +2,8 @@
 #include <hipblas/hipblas.h>
 #include <hipblas/hipblas-version.h>
 
-#if hipblasVersionMajor == 0
-// Ubuntu's hipBLAS 0.54 has no workspace API or compute-type enum. Use its
+#if hipblasVersionMajor < 3
+// hipBLAS before 3.0 (Ubuntu 0.54, Fedora 2.4 on ROCm 6.4) has no workspace API or hipDataType GemmEx. Use its
 // underlying rocBLAS API directly, including ownership of the real handle,
 // so the engine's explicit workspace contract is preserved.
 #include <rocblas/rocblas.h>
