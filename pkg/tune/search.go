@@ -19,16 +19,23 @@ type Knob struct {
 	Flag    string
 	Lo, Hi  float64
 	Whole   bool
+	Quantum float64 // values are multiples of this (default: 1 for a whole number, 0.05 otherwise)
 	Default float64 // used when the run config does not set the flag
+	// Optional: the flag also switches a feature on, so the search only changes it where the run config already sets it.
+	Optional bool
 }
 
-// DefaultKnobs are the options that moved the speed in measurements: CPU worker threads, the share of offloaded experts
-// sent over PCIe, and the draft length of speculative decoding.
+// DefaultKnobs are the options that can move the speed: CPU worker threads, the share of offloaded experts sent over
+// PCIe, the draft length and the confidence cut-off of speculative decoding, and how much VRAM stays free of the
+// expert cache (--vram-reserve-mib) and goes to the KV cache (--kv-resident), which trade against the cache size.
 func DefaultKnobs() []Knob {
 	return []Knob{
 		{Flag: "--pool-workers", Lo: 4, Hi: 32, Whole: true, Default: 16},
 		{Flag: "--pcie-frac", Lo: 0, Hi: 1, Default: 0.5},
 		{Flag: "--spec", Lo: 1, Hi: 8, Whole: true, Default: 4},
+		{Flag: "--spec-min-p", Lo: 0.1, Hi: 0.9, Default: 0.5},
+		{Flag: "--vram-reserve-mib", Lo: 300, Hi: 2500, Whole: true, Quantum: 100, Default: 700},
+		{Flag: "--kv-resident", Lo: 20480, Hi: 49152, Whole: true, Quantum: 1024, Default: 20480, Optional: true},
 	}
 }
 
@@ -47,30 +54,43 @@ func Score(r Result) float64 {
 // range. The caller can compare Settings of the result to skip a setting it already measured.
 func Propose(rng *rand.Rand, args []string, knobs []Knob, step float64) []string {
 	out := append([]string(nil), args...)
+	var usable []int // an Optional knob is left alone where the run config does not set it
+	for i, k := range knobs {
+		if !k.Optional || lookup(out, k.Flag) != "" {
+			usable = append(usable, i)
+		}
+	}
+	if len(usable) == 0 {
+		return out
+	}
 	chosen := make([]bool, len(knobs))
 	any := false
-	for i := range knobs {
-		if rng.Float64() < 0.5 {
+	for _, i := range usable {
+		if rng.Float64() < 0.4 {
 			chosen[i], any = true, true
 		}
 	}
 	if !any {
-		chosen[rng.Intn(len(knobs))] = true
+		chosen[usable[rng.Intn(len(usable))]] = true
 	}
 	for i, k := range knobs {
+		if !chosen[i] {
+			continue
+		}
 		cur := k.Default
 		if v, err := strconv.ParseFloat(lookup(out, k.Flag), 64); err == nil {
 			cur = v
 		}
-		if chosen[i] {
-			cur += rng.NormFloat64() * step * (k.Hi - k.Lo)
+		cur += rng.NormFloat64() * step * (k.Hi - k.Lo)
+		q := k.Quantum // 0.05 steps by default: finer differences are lost in the measurement noise
+		if q == 0 {
+			q = 0.05
 			if k.Whole {
-				cur = math.Round(cur)
-			} else {
-				cur = math.Round(cur*20) / 20 // 0.05 steps: finer differences are lost in the measurement noise
+				q = 1
 			}
-			cur = math.Min(k.Hi, math.Max(k.Lo, cur))
 		}
+		cur = math.Round(cur/q) * q
+		cur = math.Min(k.Hi, math.Max(k.Lo, cur))
 		s := strconv.FormatFloat(cur, 'f', -1, 64)
 		out = SetArg(out, k.Flag, &s)
 	}

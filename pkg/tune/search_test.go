@@ -15,6 +15,9 @@ func TestProposeStaysInRangeAndChangesSomething(t *testing.T) {
 	for i := 0; i < 300; i++ {
 		got := Propose(rng, args, knobs, 0.3)
 		for _, k := range knobs {
+			if lookup(got, k.Flag) == "" {
+				continue
+			}
 			v, err := strconv.ParseFloat(lookup(got, k.Flag), 64)
 			if err != nil || v < k.Lo || v > k.Hi || (k.Whole && v != float64(int(v))) {
 				t.Fatalf("%s = %q out of range %v..%v", k.Flag, lookup(got, k.Flag), k.Lo, k.Hi)
@@ -25,6 +28,9 @@ func TestProposeStaysInRangeAndChangesSomething(t *testing.T) {
 		}
 		if !strings.Contains(strings.Join(got, " "), "--abliterate") {
 			t.Fatal("other options must stay")
+		}
+		if lookup(got, "--kv-resident") != "" {
+			t.Fatal("--kv-resident switches KV streaming on; the search must not add it")
 		}
 	}
 	if changed < 200 {
@@ -82,5 +88,22 @@ func TestWithArgsDoesNotChangeTheOriginal(t *testing.T) {
 	}
 	if !strings.Contains(Settings(n, DefaultKnobs()), "--pool-workers 9") {
 		t.Error(Settings(n, DefaultKnobs()))
+	}
+}
+
+func TestProposeChangesAnOptionalKnobOnlyWhereSet(t *testing.T) {
+	rng := rand.New(rand.NewSource(4))
+	args := []string{"--kv-resident", "20480"}
+	moved := false
+	for i := 0; i < 200; i++ {
+		got := Propose(rng, args, DefaultKnobs(), 0.3)
+		v, err := strconv.Atoi(lookup(got, "--kv-resident"))
+		if err != nil || v < 20480 || v > 49152 || v%1024 != 0 {
+			t.Fatalf("--kv-resident = %q", lookup(got, "--kv-resident"))
+		}
+		moved = moved || v != 20480
+	}
+	if !moved {
+		t.Error("--kv-resident never changed though the run config sets it")
 	}
 }
