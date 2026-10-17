@@ -327,7 +327,13 @@ func syncRuntime(path string, args []string, env map[string]interface{}) error {
 	if err := os.WriteFile(path+".bak", raw, 0o644); err != nil {
 		return err
 	}
-	if cards, _ := env["CUDA_VISIBLE_DEVICES"].(string); cards != "" {
+	cards, _ := env["CUDA_VISIBLE_DEVICES"].(string)
+	switch {
+	case hasFlag(args, "--peer-device"):
+		rt["gpus"] = "peer"
+	case hasFlag(args, "--layer-split"):
+		rt["gpus"] = "split"
+	case cards != "":
 		rt["gpus"] = cards
 	}
 	if v, err := strconv.ParseFloat(lookup(args, "--pcie-frac"), 64); err == nil {

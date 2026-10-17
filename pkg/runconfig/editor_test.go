@@ -140,13 +140,35 @@ func TestGPUsKeyWritesLayerSplit(t *testing.T) {
 	}
 }
 
-func TestGPUsKeyLeavesAPeerSetupAlone(t *testing.T) {
-	cfg := map[string]interface{}{"args": []interface{}{"--peer-device", "1"}}
-	nw, _, err := Apply(cfg, map[string]interface{}{"gpus": "0,1"})
+func TestGPUsKeyChoosesPeerOrSplit(t *testing.T) {
+	gpus := func(cfg map[string]interface{}) interface{} {
+		for _, k := range View(cfg, "x.json")["keys"].([]map[string]interface{}) {
+			if k["key"] == "gpus" {
+				return k["value"]
+			}
+		}
+		return "missing"
+	}
+	cfg := map[string]interface{}{"args": []interface{}{"--prefill", "auto"}}
+	nw, _, err := Apply(cfg, map[string]interface{}{"gpus": "peer"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if args, _ := nw["args"].([]interface{}); len(args) != 2 {
-		t.Fatalf("a layer split was added next to --peer-device: %v", args)
+	if args, _ := nw["args"].([]interface{}); len(args) != 4 || args[2] != "--peer-device" || args[3] != "1" || gpus(nw) != "peer" {
+		t.Fatalf("peer: %v shown as %v", nw["args"], gpus(nw))
+	}
+	nw, _, err = Apply(nw, map[string]interface{}{"gpus": "split"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args, _ := nw["args"].([]interface{}); len(args) != 4 || args[2] != "--layer-split" || gpus(nw) != "split" {
+		t.Fatalf("split must replace --peer-device: %v shown as %v", nw["args"], gpus(nw))
+	}
+	nw, _, err = Apply(nw, map[string]interface{}{"gpus": ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args, _ := nw["args"].([]interface{}); len(args) != 2 || gpus(nw) != nil {
+		t.Fatalf("empty means one card: %v shown as %v", nw["args"], gpus(nw))
 	}
 }

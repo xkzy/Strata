@@ -1106,6 +1106,7 @@ func (s *StrataServer) handleSetupConfigure(w http.ResponseWriter, r *http.Reque
 		s.ConfigManager.Update(cfg)
 		_ = s.ConfigManager.SaveToFile("")
 	}
+	s.applySetupToRunConfig(req.PoolWorkers, req.PcieFrac, req.GPUs)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "configured",

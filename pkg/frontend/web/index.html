@@ -358,10 +358,11 @@
             <option value="1.0">100% GPU DMA (1.00 - Bypass CPU)</option>
           </select>
 
-          <label for="setup-gpus">GPU / iGPU Target<code>--gpus</code></label>
+          <label for="setup-gpus">Graphics Cards<code>--peer-device / --layer-split</code></label>
           <select class="st-input" id="setup-gpus">
-            <option value="" selected>Discrete GPU Only (Device 0: RTX 4060)</option>
-            <option value="0,1">Hybrid Multi-GPU (Device 0 + 1: RTX 4060 + Radeon iGPU)</option>
+            <option value="single" selected>One card (the first one)</option>
+            <option value="peer">Two cards: second card is an extra expert cache (faster decode, recommended)</option>
+            <option value="split">Two cards: layers split across both</option>
           </select>
 
           <label for="setup-custom-url">Model Weight URL<code>HuggingFace / Direct Link</code></label>

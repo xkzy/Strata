@@ -202,6 +202,38 @@ func (s *StrataServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// applySetupToRunConfig puts the setup page's placement choices into the run config the engine starts from, the same
+// way the Settings view does (the engine does not read strata-config.json). An unset choice leaves its key as it is.
+func (s *StrataServer) applySetupToRunConfig(poolWorkers int, pcieFrac *float64, gpus string) {
+	path := s.runConfigPath()
+	set := map[string]interface{}{}
+	if poolWorkers > 0 {
+		set["pool_workers"] = float64(poolWorkers)
+	}
+	if pcieFrac != nil {
+		set["pcie_frac"] = *pcieFrac
+	}
+	if gpus != "" {
+		set["gpus"] = gpus
+	}
+	if path == "" || len(set) == 0 {
+		return
+	}
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	cfg, err := runconfig.LoadRaw(path)
+	if err != nil {
+		return
+	}
+	nw, changed, err := runconfig.Apply(cfg, set)
+	if err != nil || len(changed) == 0 {
+		return
+	}
+	if _, err := runconfig.SaveRaw(path, nw); err == nil {
+		fmt.Printf("[strata] the setup page changed %s in %s; used from the next start\n", strings.Join(changed, ", "), filepath.Base(path))
+	}
+}
+
 // handleRunConfig is GET / POST /config: a few documented keys of the run config (strata-<model>.json), #564.
 func (s *StrataServer) handleRunConfig(w http.ResponseWriter, r *http.Request) {
 	path := s.runConfigPath()

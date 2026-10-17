@@ -153,7 +153,7 @@ func TestApplyKeepsTheRuntimeSettingsInStep(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got["gpus"] != "0,1" || got["pcie_frac"] != 0.5 || got["max_context"] != float64(262144) {
+	if got["gpus"] != "peer" || got["pcie_frac"] != 0.5 || got["max_context"] != float64(262144) {
 		t.Errorf("runtime = %v", got)
 	}
 	if _, in := got["pool_workers"]; in {

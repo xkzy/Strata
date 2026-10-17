@@ -48,8 +48,8 @@ var editable = []editableKey{
 		help: "CPU worker threads for offloaded MoE expert compute (e.g. 8-16 for 16-core CPU; 0 = engine default)"},
 	{key: "pcie_frac", kind: "arg_float", flag: "--pcie-frac",
 		help: "Share of offloaded experts transferred over PCIe to GPU vs computed on CPU (0.0 = 100% CPU pool, 1.0 = GPU DMA)"},
-	{key: "gpus", kind: "arg_str", flag: "--layer-split",
-		help: "Several GPUs: 'auto' splits the layers across the visible cards (the engine has no --gpus flag; '0,1', 'all' or 'auto' all mean auto). Empty or a single card number: one GPU"},
+	{key: "gpus", kind: "gpu_mode",
+		help: "Several GPUs: 'peer' keeps the prompt on the first card and uses the second as an extra expert cache (--peer-device 1; faster decode, no P2P needed); 'split' splits the layers across the cards (--layer-split auto). Default: one GPU"},
 	{key: "threads", kind: "arg", flag: "--threads",
 		help: "CPU threads for prompt ingestion and math runtime"},
 	{key: "prefill", kind: "arg_str", flag: "--prefill",
@@ -111,6 +111,14 @@ func valueOf(cfg map[string]interface{}, e editableKey) interface{} {
 		return s[strings.TrimPrefix(e.key, "sampling.")]
 	case "arg", "arg_float", "arg_str":
 		return argValue(cfg, e.flag)
+	case "gpu_mode":
+		switch {
+		case argBoolValue(cfg, "--peer-device"):
+			return "peer"
+		case argBoolValue(cfg, "--layer-split"):
+			return "split"
+		}
+		return nil
 	case "arg_bool":
 		return argBoolValue(cfg, e.flag)
 	}
@@ -129,10 +137,15 @@ func View(cfg map[string]interface{}, path string) map[string]interface{} {
 			kind = "string"
 		case "arg_bool":
 			kind = "bool"
+		case "gpu_mode":
+			kind = "enum"
 		}
 		k := map[string]interface{}{"key": e.key, "value": valueOf(cfg, e), "help": e.help, "kind": kind}
 		if e.kind == "enum" {
 			k["choices"] = e.choices
+		}
+		if e.kind == "gpu_mode" {
+			k["choices"] = []string{"peer", "split"}
 		}
 		keys = append(keys, k)
 	}
@@ -236,19 +249,24 @@ func check(key string, v interface{}, cfg map[string]interface{}) (interface{}, 
 		}
 		f, err := number(key, v, false, 0, maxF, false)
 		return num(f, false), err
+	case "gpu_mode": // "peer", "split" (also "auto", "all" or a list of cards), or nothing / one card number: one GPU
+		s, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s: expected a string, not %v", key, v)
+		}
+		switch s = strings.TrimSpace(s); {
+		case s == "peer":
+			return "peer", nil
+		case s == "split" || s == "all" || s == "auto" || strings.Contains(s, ","):
+			return "split", nil
+		}
+		return nil, nil
 	case "arg_str":
 		s, ok := v.(string)
 		if !ok {
 			return nil, fmt.Errorf("%s: expected a string, not %v", key, v)
 		}
-		s = strings.TrimSpace(s)
-		if e.key == "gpus" { // the engine's flag is --layer-split; a list of cards or "all" means "auto"
-			if s == "" || !strings.ContainsAny(s, ",") && s != "all" && s != "auto" {
-				return nil, nil
-			}
-			return "auto", nil
-		}
-		return s, nil
+		return strings.TrimSpace(s), nil
 	case "num>=0":
 		f, err := number(key, v, false, 0, nil, false)
 		return num(f, false), err
@@ -316,11 +334,25 @@ func Apply(cfg map[string]interface{}, changes map[string]interface{}) (map[stri
 			} else {
 				delete(nw, "sampling")
 			}
+		case "gpu_mode": // the two ways to use a second card exclude each other
+			args, _ := nw["args"].([]interface{})
+			var kept []interface{}
+			for i := 0; i < len(args); i++ {
+				if s, _ := args[i].(string); s == "--layer-split" || s == "--peer-device" {
+					i++
+					continue
+				}
+				kept = append(kept, args[i])
+			}
+			switch v {
+			case "peer":
+				kept = append(kept, "--peer-device", "1")
+			case "split":
+				kept = append(kept, "--layer-split", "auto")
+			}
+			nw["args"] = kept
 		case "arg", "arg_float", "arg_str":
 			args, _ := nw["args"].([]interface{})
-			if e.key == "gpus" && v != nil && argBoolValue(nw, "--peer-device") {
-				continue // the second card is an expert cache (--peer-device); a layer split would replace that
-			}
 			at := -1
 			for i := 0; i+1 < len(args); i++ {
 				if s, _ := args[i].(string); s == e.flag {
