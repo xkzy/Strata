@@ -254,6 +254,7 @@ type EngineOrchestrator struct {
 	info       map[string]string
 	tokenizer  TextCodec
 	cancelFunc context.CancelFunc
+	done       chan struct{} // closed once the current engine process has been reaped
 	logTail    []string
 	kv         KVLedger // the engine's KVEV cache events (see kvledger.go)
 	readyCh    chan struct{}
@@ -321,6 +322,15 @@ func (eo *EngineOrchestrator) Start(ctx context.Context) error {
 		eo.mu.Unlock()
 		return errors.New(eo.reason)
 	}
+	// A failed or timed-out start can leave the old engine alive and holding the GPU: end it before launching the next.
+	oldCmd, oldCancel, oldDone := eo.cmd, eo.cancelFunc, eo.done
+	eo.mu.Unlock()
+	reapProcess(oldCmd, oldCancel, oldDone)
+	eo.mu.Lock()
+	if eo.state == StateStarting || eo.state == StateReady { // another Start won the race while unlocked
+		eo.mu.Unlock()
+		return nil
+	}
 	args := []string{"--serve"}
 	switch {
 	case len(eo.cfg.Args) > 0:
@@ -365,7 +375,8 @@ func (eo *EngineOrchestrator) Start(ctx context.Context) error {
 		eo.mu.Unlock()
 		return err
 	}
-	eo.cmd, eo.stdin, eo.cancelFunc = cmd, stdin, cancel
+	done := make(chan struct{})
+	eo.cmd, eo.stdin, eo.cancelFunc, eo.done = cmd, stdin, cancel, done
 	eo.state, eo.reason = StateStarting, ""
 	eo.lines = make(chan string, 8192)
 	eo.readyCh = make(chan struct{})
@@ -386,7 +397,7 @@ func (eo *EngineOrchestrator) Start(ctx context.Context) error {
 			eo.mu.Unlock()
 		}
 	}()
-	go eo.watchProcess(cmd)
+	go eo.watchProcess(cmd, done)
 	return nil
 }
 
@@ -451,8 +462,9 @@ func (eo *EngineOrchestrator) readLoop(r *bufio.Reader, lines chan string, ready
 	}
 }
 
-func (eo *EngineOrchestrator) watchProcess(cmd *exec.Cmd) {
+func (eo *EngineOrchestrator) watchProcess(cmd *exec.Cmd, done chan struct{}) {
 	err := cmd.Wait()
+	close(done)
 	eo.mu.Lock()
 	defer eo.mu.Unlock()
 	if eo.state == StateStopped || eo.cmd != cmd { // stopped, or an earlier process's exit after a restart
@@ -740,17 +752,29 @@ func (eo *EngineOrchestrator) GenerateIDs(ctx context.Context, ids []int, sampli
 func (eo *EngineOrchestrator) Stop() error {
 	eo.mu.Lock()
 	eo.state = StateStopped
-	cancel, stdin, cmd := eo.cancelFunc, eo.stdin, eo.cmd
+	cancel, stdin, cmd, done := eo.cancelFunc, eo.stdin, eo.cmd, eo.done
 	eo.mu.Unlock()
 	if stdin != nil {
 		_, _ = io.WriteString(stdin, "QUIT\n")
 		stdin.Close()
 	}
+	reapProcess(cmd, cancel, done)
+	return nil
+}
+
+// reapProcess kills an engine process and waits (bounded) until it has exited, so that its GPU and pinned memory
+// are released before a new engine starts. A nil or already-reaped process is a no-op.
+func reapProcess(cmd *exec.Cmd, cancel context.CancelFunc, done <-chan struct{}) {
 	if cancel != nil {
 		cancel()
 	}
 	if cmd != nil && cmd.Process != nil {
 		_ = cmd.Process.Kill()
 	}
-	return nil
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(15 * time.Second):
+		}
+	}
 }

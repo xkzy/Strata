@@ -314,7 +314,7 @@ func TestStaleProcessDoesNotFailARestartedEngine(t *testing.T) {
 	eo.readyCh = make(chan struct{})
 	eo.mu.Unlock()
 
-	eo.watchProcess(old) // the old process exits after Start moved the state on
+	eo.watchProcess(old, make(chan struct{})) // the old process exits after Start moved the state on
 	if st, why := eo.Status(); st != StateStarting {
 		t.Fatalf("a stale process's exit changed the state to %v (%s)", st, why)
 	}
@@ -351,3 +351,51 @@ func TestSamplingKeysAbliterate(t *testing.T) {
 	}
 }
 
+
+// A start that failed (here by hand; in practice a startup timeout or a failure line) can leave its engine alive and
+// holding the GPU. The next Start, and Stop, must end it and wait for it before going on.
+func TestStartAndStopReapThePreviousEngine(t *testing.T) {
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skip("needs /proc")
+	}
+	dir := t.TempDir()
+	script := dir + "/fake-engine.sh"
+	pidFile := dir + "/pid"
+	body := "#!/bin/sh\necho $$ >> " + pidFile + "\nexec sleep 300\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	eo := NewEngineOrchestrator(EngineConfig{BinaryPath: script, Args: []string{"x"}, StartTimeout: time.Minute})
+	if err := eo.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 100; i++ {
+		if b, _ := os.ReadFile(pidFile); len(b) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	eo.mu.Lock()
+	first := eo.cmd.Process.Pid
+	eo.state = StateFailed // failed, yet the process is still alive
+	eo.mu.Unlock()
+
+	if err := eo.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if syscallAlive(first) {
+		t.Fatalf("the failed engine (pid %d) was left running by the next Start", first)
+	}
+	eo.mu.RLock()
+	second := eo.cmd.Process.Pid
+	eo.mu.RUnlock()
+	_ = eo.Stop()
+	if syscallAlive(second) {
+		t.Fatalf("Stop returned while the engine (pid %d) was still running", second)
+	}
+}
+
+func syscallAlive(pid int) bool {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	return err == nil && !strings.Contains(string(b), ") Z ")
+}
