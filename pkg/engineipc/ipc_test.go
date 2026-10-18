@@ -314,7 +314,7 @@ func TestStaleProcessDoesNotFailARestartedEngine(t *testing.T) {
 	eo.readyCh = make(chan struct{})
 	eo.mu.Unlock()
 
-	eo.watchProcess(old, make(chan struct{})) // the old process exits after Start moved the state on
+	eo.watchProcess(old, make(chan struct{}), nil) // the old process exits after Start moved the state on
 	if st, why := eo.Status(); st != StateStarting {
 		t.Fatalf("a stale process's exit changed the state to %v (%s)", st, why)
 	}

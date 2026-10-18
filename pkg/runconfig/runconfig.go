@@ -4,6 +4,7 @@ package runconfig
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 )
@@ -188,7 +189,10 @@ func NewConfigManager(filePath string) *ConfigManager {
 		config:   DefaultConfig(),
 	}
 	if filePath != "" {
-		_ = cm.LoadFromFile(filePath)
+		// a missing file is normal (first run); an unreadable or invalid one must not pass for "use the defaults"
+		if err := cm.LoadFromFile(filePath); err != nil && !os.IsNotExist(err) {
+			log.Printf("strata: cannot load %s, using the defaults: %v", filePath, err)
+		}
 	}
 	return cm
 }
