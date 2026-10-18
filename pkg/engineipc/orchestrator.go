@@ -166,7 +166,12 @@ type EngineConfig struct {
 	GPULayers    int           `json:"gpu_layers"`
 	BatchSize    int           `json:"batch_size"`
 	PrefillChunk int           `json:"prefill_chunk"`
-	RestartDelay time.Duration `json:"restart_delay"`
+	// RestartDelay is the wait before the first automatic restart of a crashed engine (default 3 s; it doubles for
+	// each failure in a row, up to 2 min).  NoAutoRestart leaves a crashed engine down until a request starts it.
+	RestartDelay  time.Duration `json:"restart_delay"`
+	NoAutoRestart bool          `json:"no_auto_restart"`
+	// FailureLog is the file every engine failure is appended to (default strata-engine-failures.log in Cwd).
+	FailureLog string `json:"failure_log"`
 }
 
 type SamplingParams struct {
@@ -254,10 +259,14 @@ type EngineOrchestrator struct {
 	info       map[string]string
 	tokenizer  TextCodec
 	cancelFunc context.CancelFunc
+	exited     chan struct{} // closed when watchProcess has recorded the current process's end
 	logTail    []string
 	kv         KVLedger // the engine's KVEV cache events (see kvledger.go)
 	readyCh    chan struct{}
 	reqSem     chan struct{} // one request at a time: the engine has one session
+	readyAt    time.Time     // when the running process became ready (zero before)
+	gpuFaultsInRow int       // consecutive failures whose log tail shows a dead GPU (see gpuFault)
+	failsInRow int           // failures since the engine last ran for stableRun; the restart back-off counts these
 }
 
 func NewEngineOrchestrator(cfg EngineConfig) *EngineOrchestrator {
@@ -352,27 +361,36 @@ func (eo *EngineOrchestrator) Start(ctx context.Context) error {
 		eo.mu.Unlock()
 		return err
 	}
-	stderr, err := cmd.StderrPipe()
+	// Our own pipe, not StderrPipe: Wait closes a StderrPipe when the process ends, which can cut off the engine's last
+	// lines (the reason it died) before pumpStderr has read them.
+	stderr, stderrW, err := os.Pipe()
 	if err != nil {
 		cancel()
 		eo.state, eo.reason = StateFailed, err.Error()
 		eo.mu.Unlock()
 		return err
 	}
+	cmd.Stderr = stderrW
 	if err := cmd.Start(); err != nil {
+		stderr.Close()
+		stderrW.Close()
 		cancel()
 		eo.state, eo.reason = StateFailed, "cannot start the engine: "+err.Error()
 		eo.mu.Unlock()
 		return err
 	}
-	eo.cmd, eo.stdin, eo.cancelFunc = cmd, stdin, cancel
+	stderrW.Close() // the child holds its own copy; the read side now ends when the child (and its children) exit
+	exited := make(chan struct{})
+	stderrDone := make(chan struct{})
+	eo.cmd, eo.stdin, eo.cancelFunc, eo.exited = cmd, stdin, cancel, exited
 	eo.state, eo.reason = StateStarting, ""
+	eo.readyAt = time.Time{}
 	eo.lines = make(chan string, 8192)
 	eo.readyCh = make(chan struct{})
 	lines, readyCh := eo.lines, eo.readyCh
 	eo.mu.Unlock()
 
-	go eo.pumpStderr(stderr)
+	go func() { defer close(stderrDone); eo.pumpStderr(stderr) }()
 	go eo.readLoop(bufio.NewReaderSize(stdout, 1<<20), lines, readyCh)
 	go func() {
 		select {
@@ -386,11 +404,12 @@ func (eo *EngineOrchestrator) Start(ctx context.Context) error {
 			eo.mu.Unlock()
 		}
 	}()
-	go eo.watchProcess(cmd)
+	go eo.watchProcess(cmd, exited, stderrDone)
 	return nil
 }
 
-func (eo *EngineOrchestrator) pumpStderr(r io.Reader) {
+func (eo *EngineOrchestrator) pumpStderr(r io.ReadCloser) {
+	defer r.Close()
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for sc.Scan() {
@@ -398,6 +417,12 @@ func (eo *EngineOrchestrator) pumpStderr(r io.Reader) {
 		fmt.Fprintln(os.Stderr, line)
 		eo.noteStderrLine(line, time.Now())
 	}
+	// Scan also stops at a line over the buffer limit or a read error. The pipe must still be emptied, or the engine
+	// blocks on its next write to stderr and hangs.
+	if err := sc.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "strata: reading the engine's stderr stopped (%v); the rest is discarded\n", err)
+	}
+	_, _ = io.Copy(io.Discard, r)
 }
 
 func (eo *EngineOrchestrator) readLoop(r *bufio.Reader, lines chan string, readyCh chan struct{}) {
@@ -440,6 +465,7 @@ func (eo *EngineOrchestrator) readLoop(r *bufio.Reader, lines chan string, ready
 					}
 				}
 				eo.state, eo.reason = StateReady, ""
+				eo.readyAt = time.Now()
 				eo.mu.Unlock()
 				ready = true
 				close(readyCh)
@@ -451,10 +477,17 @@ func (eo *EngineOrchestrator) readLoop(r *bufio.Reader, lines chan string, ready
 	}
 }
 
-func (eo *EngineOrchestrator) watchProcess(cmd *exec.Cmd) {
+func (eo *EngineOrchestrator) watchProcess(cmd *exec.Cmd, exited chan struct{}, stderrDone <-chan struct{}) {
 	err := cmd.Wait()
+	if stderrDone != nil { // the engine's last lines say why it died: let them be read first (bounded: a child may keep the pipe open)
+		select {
+		case <-stderrDone:
+		case <-time.After(2 * time.Second):
+		}
+	}
 	eo.mu.Lock()
 	defer eo.mu.Unlock()
+	defer close(exited) // after the state below is set: a reader that saw the output end waits for this
 	if eo.state == StateStopped || eo.cmd != cmd { // stopped, or an earlier process's exit after a restart
 		return
 	}
@@ -470,6 +503,7 @@ func (eo *EngineOrchestrator) watchProcess(cmd *exec.Cmd) {
 		why += " (" + strings.Join(tail, " | ") + ")"
 	}
 	eo.state, eo.reason = StateFailed, why
+	eo.afterFailure(cmd, why)
 }
 
 // WaitReady blocks until the engine is ready, failed, or ctx ends.
@@ -581,7 +615,7 @@ func (eo *EngineOrchestrator) GenerateIDs(ctx context.Context, ids []int, sampli
 	defer close(out)
 	eo.mu.RLock()
 	st, reason := eo.state, eo.reason
-	lines, stdin, canStop, codec := eo.lines, eo.stdin, eo.canStop, eo.tokenizer
+	lines, stdin, canStop, codec, exited := eo.lines, eo.stdin, eo.canStop, eo.tokenizer, eo.exited
 	eo.mu.RUnlock()
 	if st != StateReady {
 		out <- TokenEvent{Error: &ErrNotReady{State: st, Reason: reason}, IsEnd: true, FinishReason: "error"}
@@ -629,6 +663,7 @@ func (eo *EngineOrchestrator) GenerateIDs(ctx context.Context, ids []int, sampli
 		}
 		stopped = true
 	}
+	badLine := "" // the first unreadable token line of this reply
 	lastPPLog := 0
 	curID := -1
 	emit := func(s string) {
@@ -652,6 +687,11 @@ func (eo *EngineOrchestrator) GenerateIDs(ctx context.Context, ids []int, sampli
 		case line, ok = <-lines:
 		}
 		if !ok {
+			// The output ends before watchProcess has recorded why; wait for it, or the reason is lost.
+			select {
+			case <-exited:
+			case <-time.After(5 * time.Second):
+			}
 			st, why := eo.Status()
 			if why == "" {
 				why = "the engine process ended"
@@ -662,8 +702,15 @@ func (eo *EngineOrchestrator) GenerateIDs(ctx context.Context, ids []int, sampli
 		switch {
 		case strings.HasPrefix(line, "T "):
 			id, err := strconv.Atoi(strings.TrimSpace(line[2:]))
-			if err != nil || finish != "" {
+			if finish != "" {
 				continue // draining after a stop decision
+			}
+			if err != nil {
+				// A token that cannot be read is a hole in the reply: stop the reply and report it, not a clean stop.
+				badLine = line
+				finish = "error"
+				sendStop()
+				continue
 			}
 			if stopIDs[id] {
 				finish = "stop"
@@ -683,6 +730,10 @@ func (eo *EngineOrchestrator) GenerateIDs(ctx context.Context, ids []int, sampli
 			}
 		case strings.HasPrefix(line, "DONE"):
 			reqtrace.Add(ctx, "engine", "%s", line)
+			if badLine != "" {
+				out <- TokenEvent{Error: fmt.Errorf("the engine sent an unreadable token line %q; the reply is incomplete", badLine), IsEnd: true, FinishReason: "error", GenTokens: genCount}
+				return
+			}
 			emit(matcher.Flush()) // text held back as a possible stop string that never completed
 			emit(detok.Flush())
 			f := strings.Fields(line)

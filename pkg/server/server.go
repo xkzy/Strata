@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"log"
 	"io"
 	"net"
 	"net/http"
@@ -1103,7 +1104,7 @@ func (s *StrataServer) handleSetupConfigure(w http.ResponseWriter, r *http.Reque
 			cfg.GPUs = req.GPUs
 		}
 		s.ConfigManager.Update(cfg)
-		_ = s.ConfigManager.SaveToFile("")
+		s.saveConfig()
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -1204,7 +1205,7 @@ func (s *StrataServer) handleSetupDownload(w http.ResponseWriter, r *http.Reques
 			cfg.Model = s.Config.ModelName
 			cfg.ModelPath = s.Config.ModelPath
 			s.ConfigManager.Update(cfg)
-			_ = s.ConfigManager.SaveToFile("")
+			s.saveConfig()
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"status":       "activated",
@@ -1338,7 +1339,7 @@ func (s *StrataServer) handleSetupDelete(w http.ResponseWriter, r *http.Request)
 			cfg.Model = ""
 			cfg.ModelPath = ""
 			s.ConfigManager.Update(cfg)
-			_ = s.ConfigManager.SaveToFile("")
+			s.saveConfig()
 		}
 	}
 
@@ -1431,4 +1432,12 @@ func (s *StrataServer) handleRuntimeMetrics(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"runtime": s.runtimeStatus(), "metrics": m})
+}
+
+// saveConfig writes the run config to disk. A failure (full disk, read-only folder) is logged: the change still holds
+// until the server stops, but it must not look saved.
+func (s *StrataServer) saveConfig() {
+	if err := s.ConfigManager.SaveToFile(""); err != nil {
+		log.Printf("strata: cannot save the run config, the change is lost at the next restart: %v", err)
+	}
 }
