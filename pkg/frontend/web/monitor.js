@@ -127,7 +127,7 @@ function content() {
     value = (lines.concat(cut).join("\n")) || "The runtime recorded no context or KV events for this request.";
     note = "What the runtime and the engine did with the context for this request (from the debug trace, not an estimate).";
   } else if (pane === "tool") {
-    const lines = debugLines(detail, (e) => e.source === "runtime" && /\b(recovery|verif|claim|tool_output|math|hedge)/.test(e.msg));
+    const lines = debugLines(detail, (e) => e.source === "guard" || e.source === "runtime" && /\b(recovery|verif|claim|tool_output|math|hedge)/.test(e.msg));
     value = lines.join("\n") || "The runtime recorded no verification or tool events for this request.";
     note = "Verification and tool events of the runtime for this request (from the debug trace).";
   } else if (pane === "scope") {

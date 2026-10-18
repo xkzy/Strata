@@ -5,8 +5,8 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
-	"log"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -42,6 +42,7 @@ type ServerConfig struct {
 	MaxContext    int
 	VirtualLimit  int
 	APIKey        string
+	GuardPolicy   string // reply guard: off | monitor | regenerate (default; STRATA_GUARD and the run config's guard_policy also set it)
 	ModelPath     string
 	BinaryPath    string
 	ConfigFile    string
@@ -292,6 +293,7 @@ func (s *StrataServer) Router() http.Handler {
 	mux.HandleFunc("/v1/strata/hallucination/evaluate", s.handleHallucinationEvaluate)
 	mux.HandleFunc("/v1/strata/hallucination/claims", s.handleHallucinationClaims)
 	mux.HandleFunc("/v1/strata/hallucination/metrics", s.handleHallucinationMetrics)
+	mux.HandleFunc("/v1/strata/guard/metrics", s.handleGuardMetrics)
 
 	// Multi-Tenant & Web Chat Session Management
 	mux.HandleFunc("/api/sessions", s.handleSessions)
@@ -322,6 +324,28 @@ func (s *StrataServer) Router() http.Handler {
 
 // publicPath says whether a request needs no API key: the health probes, the web UI shell and the read-only setup
 // queries. Everything that changes state (setup configure / download / cancel, generation, config) needs the key.
+// authorized reports whether the request carries the API key; with no key configured every request is (the server then
+// listens on loopback only, see CheckBind).
+func (s *StrataServer) authorized(r *http.Request) bool {
+	if s.Config.APIKey == "" {
+		return true
+	}
+	gotAuth := []byte(r.Header.Get("Authorization"))
+	wantAuth := []byte("Bearer " + s.Config.APIKey)
+	gotKey := []byte(r.Header.Get("X-Api-Key"))
+	if len(gotKey) == 0 {
+		gotKey = []byte(r.Header.Get("x-api-key"))
+	}
+	wantKey := []byte(s.Config.APIKey)
+	authOK := subtle.ConstantTimeCompare(gotAuth, wantAuth) == 1
+	keyOK := subtle.ConstantTimeCompare(gotKey, wantKey) == 1
+	return authOK || keyOK
+}
+
+// publicHealthFields are the parts of the status that carry file paths and the engine's own log text. The public
+// routes (/health, /api/setup/status) leave them out unless the caller sent the API key.
+var publicHealthFields = []string{"error", "engine_config", "template_warning", "last_config_file"}
+
 func publicPath(r *http.Request) bool {
 	// the page and its scripts, styles and fonts: a browser fetches them before the user can type a key
 	if strings.HasPrefix(r.URL.Path, "/web/") || strings.HasPrefix(r.URL.Path, "/fonts/") {
@@ -414,21 +438,9 @@ func (s *StrataServer) corsMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		if s.Config.APIKey != "" && !publicPath(r) {
-			gotAuth := []byte(r.Header.Get("Authorization"))
-			wantAuth := []byte("Bearer " + s.Config.APIKey)
-			gotKey := []byte(r.Header.Get("X-Api-Key"))
-			if len(gotKey) == 0 {
-				gotKey = []byte(r.Header.Get("x-api-key"))
-			}
-			wantKey := []byte(s.Config.APIKey)
-
-			authOK := subtle.ConstantTimeCompare(gotAuth, wantAuth) == 1
-			keyOK := subtle.ConstantTimeCompare(gotKey, wantKey) == 1
-			if !authOK && !keyOK {
-				http.Error(w, `{"error":{"message":"Unauthorized","type":"authentication_error"}}`, http.StatusUnauthorized)
-				return
-			}
+		if s.Config.APIKey != "" && !publicPath(r) && !s.authorized(r) {
+			http.Error(w, `{"error":{"message":"Unauthorized","type":"authentication_error"}}`, http.StatusUnauthorized)
+			return
 		}
 
 		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
@@ -529,6 +541,15 @@ func (s *StrataServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	if out["loaded"] != true {
 		out["status"] = "degraded" // the server is up, the model is not
+	}
+	if !s.authorized(r) { // /health needs no key, so it must not hand out paths and engine log lines
+		for _, k := range publicHealthFields {
+			delete(out, k)
+		}
+		if rt, ok := out["runtime"].(map[string]interface{}); ok {
+			delete(rt, "error")
+			delete(rt, "note")
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -1424,10 +1445,14 @@ func (s *StrataServer) handleSetupDownload(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *StrataServer) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
+	dl, activePath := s.SetupManager.GetStatus(), s.Config.ModelPath
+	if !s.authorized(r) { // a public route: no file paths or error text without the key
+		dl.DestPath, dl.Error, activePath = "", "", ""
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"download":     s.SetupManager.GetStatus(),
+		"download":     dl,
 		"active_model": s.Config.ModelName,
-		"active_path":  s.Config.ModelPath,
+		"active_path":  activePath,
 		"max_context":  s.Config.MaxContext,
 	})
 }
@@ -1532,7 +1557,6 @@ func (s *StrataServer) handleSetupDelete(w http.ResponseWriter, r *http.Request)
 		"was_active":    wasActive,
 	})
 }
-
 
 // Hallucination Runtime Handlers
 

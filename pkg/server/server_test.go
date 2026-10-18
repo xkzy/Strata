@@ -566,3 +566,44 @@ func TestLastSessionConfigRestore(t *testing.T) {
 	}
 }
 
+
+// /health and /api/setup/status need no key, so with a key set they must not give out file paths or the engine's log
+// text; the same request with the key still gets them.
+func TestPublicStatusRoutesHidePathsWithoutTheKey(t *testing.T) {
+	srv := NewStrataServer(ServerConfig{Port: 8080, APIKey: "secret-token-123", ModelName: "m", ModelPath: "/data/models/m.gguf", MaxContext: 4096})
+	ts := httptest.NewServer(srv.Router())
+	defer ts.Close()
+	get := func(path string, auth bool) map[string]interface{} {
+		req, _ := http.NewRequest("GET", ts.URL+path, nil)
+		if auth {
+			req.Header.Set("Authorization", "Bearer secret-token-123")
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s (auth %v): %v %v", path, auth, err, resp)
+		}
+		defer resp.Body.Close()
+		var m map[string]interface{}
+		json.NewDecoder(resp.Body).Decode(&m)
+		return m
+	}
+	h := get("/health", false)
+	for _, k := range publicHealthFields {
+		if _, ok := h[k]; ok {
+			t.Errorf("/health without the key has %q: %v", k, h)
+		}
+	}
+	if h["engine"] == nil || h["loaded"] != false {
+		t.Errorf("/health must still say whether the engine is up: %v", h)
+	}
+	if get("/health", true)["error"] == nil {
+		t.Error("/health with the key lost the engine error")
+	}
+	st := get("/api/setup/status", false)
+	if st["active_path"] != "" {
+		t.Errorf("/api/setup/status without the key gives the model path: %v", st)
+	}
+	if get("/api/setup/status", true)["active_path"] != "/data/models/m.gguf" {
+		t.Error("/api/setup/status with the key lost the model path")
+	}
+}

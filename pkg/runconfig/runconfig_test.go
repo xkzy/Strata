@@ -95,3 +95,18 @@ func TestConfig_MultiModelSupport(t *testing.T) {
 		t.Fatalf("expected 2 models in multi config, got %d", len(mAll))
 	}
 }
+
+// The config file may hold api_key: it is written owner-only, an older world-readable file included.
+func TestSaveToFileIsOwnerOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "strata-config.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cm := NewConfigManager("")
+	if err := cm.SaveToFile(path); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := os.Stat(path); st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, want 0600", st.Mode().Perm())
+	}
+}

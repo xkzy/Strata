@@ -22,6 +22,8 @@ const (
 	maxRestarts = 8
 	// stableRun: an engine that served this long since READY is healthy again, the back-off starts over.
 	stableRun = time.Minute
+	// maxFailureLogBytes: the failure log is rotated to <name>.1 once it reaches this size.
+	maxFailureLogBytes = 1 << 20
 )
 
 func (eo *EngineOrchestrator) failureLogPath() string {
@@ -140,11 +142,22 @@ func (eo *EngineOrchestrator) writeFailureLine(msg string) {
 
 func (eo *EngineOrchestrator) appendFailureLog(text string) {
 	log.Printf("strata: %s", strings.TrimRight(strings.SplitN(text, "\n", 2)[0], "\n"))
-	f, err := os.OpenFile(eo.failureLogPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	path := eo.failureLogPath()
+	// One older generation is kept: a crash loop must not grow this file without end.
+	if st, err := os.Stat(path); err == nil && st.Size() >= maxFailureLogBytes {
+		if err := os.Rename(path, path+".1"); err != nil {
+			log.Printf("strata: cannot rotate %s: %v", path, err)
+		}
+	}
+	// It holds the engine's last output lines (file paths, GPU messages): owner-only, also for a file made earlier.
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
-		log.Printf("strata: cannot write %s: %v", eo.failureLogPath(), err)
+		log.Printf("strata: cannot write %s: %v", path, err)
 		return
 	}
 	defer f.Close()
-	_, _ = f.WriteString(text)
+	_ = f.Chmod(0o600)
+	if _, err := f.WriteString(text); err != nil {
+		log.Printf("strata: cannot write %s: %v", path, err)
+	}
 }

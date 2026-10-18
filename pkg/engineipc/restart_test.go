@@ -192,3 +192,27 @@ func TestOversizedStderrLineDoesNotWedgeTheEngine(t *testing.T) {
 		t.Fatalf("request after a huge stderr line: %+v", last)
 	}
 }
+
+// The failure log holds the engine's last output lines: owner-only (an older file too), and it does not grow forever.
+func TestFailureLogIsOwnerOnlyAndRotates(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "strata-engine-failures.log")
+	if err := os.WriteFile(path, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	eo := NewEngineOrchestrator(EngineConfig{Cwd: dir})
+	eo.appendFailureLog("first\n")
+	if st, _ := os.Stat(path); st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, want 0600", st.Mode().Perm())
+	}
+	if err := os.WriteFile(path, make([]byte, maxFailureLogBytes), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	eo.appendFailureLog("after the cap\n")
+	if st, err := os.Stat(path + ".1"); err != nil || st.Size() != maxFailureLogBytes {
+		t.Fatalf("the full log was not rotated to .1: %v", err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "after the cap\n" {
+		t.Fatalf("the new log = %q", b)
+	}
+}

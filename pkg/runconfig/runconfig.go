@@ -34,6 +34,7 @@ type StrataConfig struct {
 	Host                  string                 `json:"host"`
 	Port                  int                    `json:"port"`
 	APIKey                string                 `json:"api_key"`
+	GuardPolicy           string                 `json:"guard_policy,omitempty"` // reply guard: off | monitor | regenerate
 	Model                 string                 `json:"model"`
 	ModelPath             string                 `json:"model_path"`
 	DefaultModel          string                 `json:"default_model,omitempty"`
@@ -232,7 +233,11 @@ func (cm *ConfigManager) SaveToFile(path string) error {
 		path = "strata-config.json"
 	}
 
-	return os.WriteFile(path, data, 0644)
+	// The file may hold api_key: owner-only. WriteFile keeps the mode of a file that exists, so tighten that too.
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }
 
 func (cm *ConfigManager) Get() StrataConfig {

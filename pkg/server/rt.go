@@ -357,8 +357,9 @@ func (s *StrataServer) startRuntimeGeneration(ctx context.Context, spec genSpec)
 	return out, 0, nil
 }
 
-// startChat picks the path for a request: through the runtime when it is active, else straight to the engine.
-func (s *StrataServer) startChat(ctx context.Context, spec genSpec) (<-chan genEvent, int, error) {
+// startChatUnguarded picks the path for a request: through the runtime when it is active, else straight to the engine.
+// startChat (guard.go) is the entry the API layer uses; it puts the reply guard around this.
+func (s *StrataServer) startChatUnguarded(ctx context.Context, spec genSpec) (<-chan genEvent, int, error) {
 	if !spec.Raw {
 		s.interceptMathIntent(&spec)
 		s.interceptToolIntent(&spec)

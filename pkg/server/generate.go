@@ -33,6 +33,7 @@ type genSpec struct {
 	DebugEcho           bool                      // also return it in the response body (X-Strata-Debug: 1)
 	DisableMath         bool                      // disable math interception (X-Strata-Math-Engine: off)
 	DisableTools        bool                      // disable tool interception (X-Strata-Tool-Intercept: off)
+	GuardOff            bool                      // skip the reply guard (X-Strata-Guard: off)
 	mathDone, toolsDone bool                      // the interceptions ran: they run once per request, however many paths it takes
 }
 

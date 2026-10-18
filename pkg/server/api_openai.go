@@ -367,6 +367,7 @@ func (s *StrataServer) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 		spec.DisableMath = true
 	}
 	spec.DisableTools = toolsOff(r.Header.Get("X-Strata-Tool-Intercept"))
+	spec.GuardOff = guardOffHeader(r)
 	reqID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
 	ctx, done := s.registerRequest(r.Context(), reqID)
