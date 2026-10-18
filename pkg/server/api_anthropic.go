@@ -178,7 +178,7 @@ func (r *anRequest) toSpec(s *StrataServer) (genSpec, error) {
 			}
 		}
 	}
-	spec.Sampling = s.defaultSampling()
+	spec.Sampling = s.defaultSampling(thinkingOn(spec.Opt))
 	if r.Temperature != nil {
 		spec.Sampling.Temperature = *r.Temperature
 	}

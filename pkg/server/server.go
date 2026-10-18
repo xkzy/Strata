@@ -324,22 +324,28 @@ func (s *StrataServer) Router() http.Handler {
 
 // publicPath says whether a request needs no API key: the health probes, the web UI shell and the read-only setup
 // queries. Everything that changes state (setup configure / download / cancel, generation, config) needs the key.
-// authorized reports whether the request carries the API key; with no key configured every request is (the server then
-// listens on loopback only, see CheckBind).
+// authorized reports whether the request carries an API key; with no key configured every request is (the server then
+// listens on loopback only, see CheckBind). Several keys are separated by commas ("k1,k2", as llama.cpp does); the
+// request's key must equal one, and every key is compared whatever the outcome.
 func (s *StrataServer) authorized(r *http.Request) bool {
 	if s.Config.APIKey == "" {
 		return true
 	}
 	gotAuth := []byte(r.Header.Get("Authorization"))
-	wantAuth := []byte("Bearer " + s.Config.APIKey)
 	gotKey := []byte(r.Header.Get("X-Api-Key"))
 	if len(gotKey) == 0 {
 		gotKey = []byte(r.Header.Get("x-api-key"))
 	}
-	wantKey := []byte(s.Config.APIKey)
-	authOK := subtle.ConstantTimeCompare(gotAuth, wantAuth) == 1
-	keyOK := subtle.ConstantTimeCompare(gotKey, wantKey) == 1
-	return authOK || keyOK
+	ok := 0
+	for _, k := range strings.Split(s.Config.APIKey, ",") {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		ok |= subtle.ConstantTimeCompare(gotAuth, []byte("Bearer "+k))
+		ok |= subtle.ConstantTimeCompare(gotKey, []byte(k))
+	}
+	return ok == 1
 }
 
 // publicHealthFields are the parts of the status that carry file paths and the engine's own log text. The public

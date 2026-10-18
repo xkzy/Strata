@@ -1,13 +1,16 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,13 +45,50 @@ func readEngineSpec(path string) (*engineSpec, error) {
 		return nil, err
 	}
 	var sp engineSpec
-	if err := json.Unmarshal(raw, &sp); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+	if err := json.Unmarshal(bytes.TrimPrefix(raw, []byte("\xef\xbb\xbf")), &sp); err != nil { // Notepad adds a BOM
+		return nil, fmt.Errorf("%s: %w", path, jsonErrorPlace(raw, err))
 	}
+	sp.Args = splitJoinedArgs(sp.Args)
 	if len(sp.Args) == 0 {
 		return nil, fmt.Errorf("%s has no \"args\" (it is not an engine config)", path)
 	}
 	return &sp, nil
+}
+
+// jsonErrorPlace says where in the file a JSON mistake is. Editing "args" by hand is where they happen (a missing comma
+// between two entries), so the hint names that.
+func jsonErrorPlace(raw []byte, err error) error {
+	var se *json.SyntaxError
+	if !errors.As(err, &se) {
+		return err
+	}
+	off := int(se.Offset)
+	if off > len(raw) {
+		off = len(raw)
+	}
+	line := 1 + bytes.Count(raw[:off], []byte("\n"))
+	col := off - (bytes.LastIndexByte(raw[:off], '\n') + 1)
+	return fmt.Errorf("not valid JSON: %v at line %d, column %d (check the commas between the entries of \"args\": each option and each value is its own quoted entry, e.g. \"--ple-io\", \"mmap\")", se, line, col)
+}
+
+var joinedFlag = regexp.MustCompile(`^(--[A-Za-z0-9][A-Za-z0-9-]*)(?:\s+|=)(\S.*)$`)
+var bareFlag = regexp.MustCompile(`^--[A-Za-z0-9][A-Za-z0-9-]*$`)
+
+// splitJoinedArgs: an engine option written as ONE entry of "args" ("--ple-io mmap" or "--ple-io=mmap") would reach the
+// engine as a single argument and stop it ("unknown argument"). Such an entry is split into the flag and its value, and
+// never one that sits in the value place of the flag before it (a value may itself contain a space).
+func splitJoinedArgs(args []string) []string {
+	out := make([]string, 0, len(args))
+	for _, a := range args {
+		m := joinedFlag.FindStringSubmatch(a)
+		if m == nil || (len(out) > 0 && bareFlag.MatchString(out[len(out)-1])) {
+			out = append(out, a)
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "strata: the config's args hold %q as one entry: split into %q and %q (write them as two entries)\n", a, m[1], strings.TrimSpace(m[2]))
+		out = append(out, m[1], strings.TrimSpace(m[2]))
+	}
+	return out
 }
 
 // resolveEngineConfigFile turns a file path or pack/model directory into a valid engineSpec and config file path.
@@ -191,6 +231,7 @@ type engineState struct {
 	source      string // config file in use
 	templateMsg string // set when the pack's chat template is not the supported one
 	sampling    engineipc.SamplingParams
+	samplingSet bool // the config has a "sampling" block; without one requests get the model card's (cardSampling)
 	templateSHA string
 }
 
@@ -323,7 +364,7 @@ func (s *StrataServer) StartEngine(ctx context.Context) error {
 		}
 		if d, ok := loadSamplingDefaults(p); ok {
 			s.eng.mu.Lock()
-			s.eng.sampling = d
+			s.eng.sampling, s.eng.samplingSet = d, true
 			s.eng.mu.Unlock()
 			break
 		}

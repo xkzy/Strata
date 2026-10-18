@@ -118,26 +118,36 @@ func contentText(raw json.RawMessage) (string, error) {
 }
 
 // toolArguments normalises a tool call's arguments to a JSON object (clients send a JSON string).
+// toolArguments turns a call's arguments from a client's history into the JSON object the template renders. An object
+// is used as it is and empty is nil; anything else (cut-off or malformed JSON, a list, a number) is kept as text under
+// "arguments" instead of refusing the whole conversation: an agent resends its history, and one call that was cut off
+// by max_tokens must not make every later request fail.
 func toolArguments(raw json.RawMessage) (json.RawMessage, error) {
 	raw = json.RawMessage(strings.TrimSpace(string(raw)))
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
 	}
+	text := string(raw)
 	if raw[0] == '"' {
 		var s string
 		if err := json.Unmarshal(raw, &s); err != nil {
-			return nil, badRequest("tool call arguments are not valid JSON")
+			return keepAsText(text), nil
 		}
 		if strings.TrimSpace(s) == "" {
 			return nil, nil
 		}
-		raw = json.RawMessage(s)
+		raw, text = json.RawMessage(s), s
 	}
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &probe); err != nil {
-		return nil, badRequest("tool call arguments must be a JSON object")
+		return keepAsText(text), nil
 	}
 	return raw, nil
+}
+
+func keepAsText(text string) json.RawMessage {
+	b, _ := json.Marshal(map[string]string{"arguments": text})
+	return b
 }
 
 func (r *oaRequest) toSpec(s *StrataServer) (genSpec, error) {
@@ -209,8 +219,7 @@ func normalizeEffort(o *chattemplate.Options) error {
 }
 
 func (r *oaRequest) applyCommon(s *StrataServer, spec *genSpec) {
-	d := s.defaultSampling()
-	spec.Sampling = d
+	spec.Sampling = s.defaultSampling(thinkingOn(spec.Opt))
 	if r.Temperature != nil {
 		spec.Sampling.Temperature = *r.Temperature
 	}
@@ -268,27 +277,33 @@ func (r *oaRequest) applyCommon(s *StrataServer, spec *genSpec) {
 	}
 }
 
-// defaultSampling comes from the config's "sampling" block (strata-config.json) when there is one; otherwise greedy.
-func (s *StrataServer) defaultSampling() engineipc.SamplingParams {
+// defaultSampling is what a request that sends no sampling keys decodes with: the config's "sampling" block when it has
+// one, otherwise the model card's set for the request's thinking state (cardSampling). A request's own fields win over
+// it; greedy is for whoever asks (temperature 0 in the request, or in the config's block).
+func (s *StrataServer) defaultSampling(thinking bool) engineipc.SamplingParams {
 	s.eng.mu.RLock()
 	defer s.eng.mu.RUnlock()
-	return s.eng.sampling
+	if s.eng.samplingSet {
+		return s.eng.sampling
+	}
+	return cardSampling(thinking)
 }
 
+// loadSamplingDefaults reads the config's "sampling" block; ok is false when the file has none (or is unreadable).
 func loadSamplingDefaults(path string) (engineipc.SamplingParams, bool) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return engineipc.SamplingParams{}, false
 	}
 	var c struct {
-		Sampling struct {
+		Sampling *struct {
 			Temperature float64 `json:"temperature"`
 			TopP        float64 `json:"top_p"`
 			TopK        int     `json:"top_k"`
 			MinP        float64 `json:"min_p"`
 		} `json:"sampling"`
 	}
-	if json.Unmarshal(raw, &c) != nil {
+	if json.Unmarshal(raw, &c) != nil || c.Sampling == nil {
 		return engineipc.SamplingParams{}, false
 	}
 	return engineipc.SamplingParams{Temperature: c.Sampling.Temperature, TopP: c.Sampling.TopP, TopK: c.Sampling.TopK, MinP: c.Sampling.MinP}, true
