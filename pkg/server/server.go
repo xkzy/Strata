@@ -37,21 +37,24 @@ import (
 )
 
 type ServerConfig struct {
-	Port          int
-	ModelName     string
-	MaxContext    int
-	VirtualLimit  int
-	APIKey        string
-	GuardPolicy   string // reply guard: off | monitor | regenerate (default; STRATA_GUARD and the run config's guard_policy also set it)
-	ModelPath     string
-	BinaryPath    string
-	ConfigFile    string
-	RuntimeMode   string // on | off | auto: the C++ transparent runtime (verification, virtual context)
-	RuntimeBinary string
-	WindowTokens  int    // physical context window the runtime fills (default 32768, at most the engine's context)
-	BindHost      string // address the HTTP server listens on; empty is treated as loopback
-	APIMonitor    bool   // keep the last requests' prompts and answers for the standalone Monitor page (opt-in)
-	SessionDir    string // directory for persistent chat session storage
+	Port           int
+	ModelName      string
+	MaxContext     int
+	VirtualLimit   int
+	APIKey         string
+	GuardPolicy    string // reply guard: off | monitor | regenerate (default; STRATA_GUARD and the run config's guard_policy also set it)
+	ModelPath      string
+	BinaryPath     string
+	ConfigFile     string
+	RuntimeMode    string // on | off | auto: the C++ transparent runtime (verification, virtual context)
+	RuntimeBinary  string
+	WindowTokens   int    // physical context window the runtime fills (default 32768, at most the engine's context)
+	RuntimePersist bool   // store the extended virtual window on disk so sessions survive a restart (default: RAM only)
+	BindHost       string // address the HTTP server listens on; empty is treated as loopback
+	APIMonitor     bool   // keep the last requests' prompts and answers for the standalone Monitor page (opt-in)
+	SessionDir     string // directory for persistent chat session storage
+	AutoTune       bool   // discover, plan and measure the engine at startup (on by default in the shipped commands)
+	TuningRecord   string // tuning record path (default: strata-tuning.json, or STRATA_TUNING_RECORD)
 }
 
 type StrataServer struct {
@@ -82,15 +85,46 @@ type StrataServer struct {
 	apiMon          apiMonitorState
 	cfgMu           sync.Mutex // one run-config write at a time
 	rt              rtState
+	tuning          tuningState
 	server          *http.Server
 	activeCancels   map[string]context.CancelFunc
 	cancelMu        sync.Mutex
+	runtimeOnce     sync.Once
+	runtimeCancel   context.CancelFunc
+	lifecycleCtx    context.Context // cancels background experiments (startup refinement) on shutdown
+	lifecycleCancel context.CancelFunc
+	tuneInfo        runtimeTuneInfo
+}
+
+// isEngineSpecFile reports whether path holds an engine argument spec ({"args": [...]}) rather than a run
+// configuration. Both are passed with --config, and they must never be treated as each other: loading an engine
+// spec as a run config zeroes every run setting, and saving would overwrite the spec with the run config, which
+// destroys the engine arguments the next start needs (it happened to the owner's strata-<model>.json on
+// 2026-10-19).
+func isEngineSpecFile(path string) bool {
+	if path == "" {
+		return false
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var probe struct {
+		Args []string `json:"args"`
+	}
+	return json.Unmarshal(b, &probe) == nil && probe.Args != nil
 }
 
 func NewStrataServer(cfg ServerConfig) *StrataServer {
-	cm := runconfig.NewConfigManager(cfg.ConfigFile)
+	runConfigPath := cfg.ConfigFile
+	if isEngineSpecFile(runConfigPath) {
+		runConfigPath = "" // strata-config.json; the engine spec stays the engine's
+	}
+	cm := runconfig.NewConfigManager(runConfigPath)
+	policy, adaptEnabled := "BALANCED", true
 	if cm != nil {
 		saved := cm.Get()
+		policy, adaptEnabled = saved.PowerPolicy, saved.ResourceAdapt
 		activeModel, activePath := saved.GetActiveModel()
 		if cfg.ModelPath == "" && activePath != "" {
 			cfg.ModelPath = activePath
@@ -188,6 +222,7 @@ func NewStrataServer(cfg ServerConfig) *StrataServer {
 		sessStore, _ = session.NewStore(filepath.Join(os.TempDir(), "strata-sessions"))
 	}
 
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	s := &StrataServer{
 		Config:          cfg,
 		Registry:        reg,
@@ -211,9 +246,13 @@ func NewStrataServer(cfg ServerConfig) *StrataServer {
 		SetupManager:    installer.NewSetupManager(),
 		Hallucination:   hr,
 		activeCancels:   make(map[string]context.CancelFunc),
+		lifecycleCtx:    lifecycleCtx,
+		lifecycleCancel: lifecycleCancel,
 	}
 	s.mon.init()
 	tc.SetTokSource(s.mon.currentTokS)
+	tc.SetPrefillSource(s.mon.currentPrefillTokS)
+	s.ResourceManager.ConfigureRuntime(policy, adaptEnabled)
 	return s
 }
 
@@ -883,6 +922,7 @@ func (s *StrataServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		"requests":           requests,
 		"requests_kept":      kept,
 		"totals":             totals,
+		"tuning":             s.tuningView(),
 		"resource":           s.ResourceManager.Metrics(),
 		"anti_loop":          s.AntiLoop.Stats(),
 		"context":            s.VirtualContext.Stats(),

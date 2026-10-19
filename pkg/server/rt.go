@@ -65,8 +65,9 @@ func (s *StrataServer) setupRuntime(vocab int) {
 	s.eng.mu.RLock()
 	tmpl := s.eng.templateSHA
 	s.eng.mu.RUnlock()
+	// Persist: false keeps the extended virtual window in RAM only - no context files are written to disk.
 	cl := rtclient.New(rtclient.Config{
-		Binary: bin, PhysicalTokens: window, Persist: true, Verification: true,
+		Binary: bin, PhysicalTokens: window, Persist: s.Config.RuntimePersist, Verification: true,
 		Identity: fmt.Sprintf("%s|vocab=%d|tmpl=%s", s.Config.ModelName, vocab, tmpl),
 	})
 	s.rt.client = cl
@@ -121,6 +122,7 @@ type rtBackend struct {
 	mu      sync.Mutex
 	err     error
 	stops   []string
+	ticket  uint64            // the runtime controller's admission ticket for the whole request
 	lastReq *monitoredRequest // the newest generation's monitor record (a retry inside the runtime makes another)
 }
 
@@ -185,6 +187,11 @@ func (b *rtBackend) BuildPrompt(ctx context.Context, msgs []rtclient.Message, pr
 		text += prefix
 	}
 	ids := tok.EncodeWithPlain(text, true, spans)
+	if b.s.ResourceManager != nil && b.s.ResourceManager.Adapt != nil {
+		// The runtime path admits before the prompt exists; now that its length is known, count it as a large
+		// prefill so the next one cannot take every slot.
+		b.s.ResourceManager.Adapt.MarkLarge(b.ticket, len(ids))
+	}
 	limit := b.s.Config.MaxContext - 16
 	if limit <= 0 {
 		limit = 32768
@@ -259,6 +266,12 @@ func (s *StrataServer) startRuntimeGeneration(ctx context.Context, spec genSpec)
 	if status, msg := s.engineUnavailable(); status != 0 {
 		return nil, 0, &apiError{Status: status, Type: "engine_unavailable", Msg: msg}
 	}
+	// The runtime builds its prompt internally, so admission happens before that work and the ticket covers
+	// the whole request (including the runtime's own retries). BuildPrompt upgrades a large prompt later.
+	ticket, aerr := s.admitRequest(ctx, 0)
+	if aerr != nil {
+		return nil, 0, aerr
+	}
 	s.rt.mu.RLock()
 	client := s.rt.client
 	s.rt.mu.RUnlock()
@@ -285,12 +298,13 @@ func (s *StrataServer) startRuntimeGeneration(ctx context.Context, spec genSpec)
 			Seed: spec.Sampling.Seed, Stop: spec.Stops},
 		MaxTokens: maxTokens, ReasoningPrefix: thinking && spec.Opt.AddGenerationPrompt, Debug: spec.Debug, Ephemeral: ephemeral,
 	}
-	be := &rtBackend{s: s, opt: spec.Opt, started: make(chan struct{})}
+	be := &rtBackend{s: s, opt: spec.Opt, started: make(chan struct{}), ticket: ticket}
 	out := make(chan genEvent, 64)
 	parser := newOutParser(req.ReasoningPrefix, spec.Tools)
 	failed := make(chan error, 1)
 
 	go func() {
+		defer s.releaseRequest(ticket)
 		defer close(out)
 		send := func(ev genEvent) {
 			select {

@@ -3,7 +3,6 @@ package telemetry
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -12,6 +11,56 @@ import (
 )
 
 const sectorBytes = 512
+
+// readAMDSysfs is the fallback card: the DRM card with the most VRAM, read from its device directory. Its
+// temperature and power come from the card's hwmon when the driver exposes them (temp1_input in millidegrees,
+// power1_average in microwatts); when it does not, they are reported as absent. The old path returned a fixed
+// 45 C and 50 W, which is worse than no number at all: the controller then believed a measurement that nobody
+// took.
+func readAMDSysfs(root string) gpuReading {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return gpuReading{}
+	}
+	var best gpuReading
+	for _, e := range entries {
+		if !cardDir.MatchString(e.Name()) {
+			continue
+		}
+		dir := filepath.Join(root, e.Name(), "device")
+		tot, _ := readUint(filepath.Join(dir, "mem_info_vram_total"))
+		if tot == 0 || tot < best.total {
+			continue
+		}
+		r := gpuReading{present: true, total: tot}
+		r.used, _ = readUint(filepath.Join(dir, "mem_info_vram_used"))
+		if u, ok := readUint(filepath.Join(dir, "gpu_busy_percent")); ok {
+			r.util = float64(u)
+		}
+		r.temp, r.hasTemp = readHwmonValue(dir, "temp1_input", 1000)     // millidegrees -> C
+		r.power, r.hasPower = readHwmonValue(dir, "power1_average", 1e6) // microwatts -> W
+		if !r.hasPower {
+			r.power, r.hasPower = readHwmonValue(dir, "power1_input", 1e6)
+		}
+		best = r
+	}
+	return best
+}
+
+// readHwmonValue reads one of the card's hwmon files (any hwmonN under its device) and scales it to the unit
+// the caller wants.
+func readHwmonValue(deviceDir, file string, scale float64) (float64, bool) {
+	dirs, err := filepath.Glob(filepath.Join(deviceDir, "hwmon", "hwmon*"))
+	if err != nil {
+		return 0, false
+	}
+	for _, d := range dirs {
+		if v, ok := readUint(filepath.Join(d, file)); ok {
+			return float64(v) / scale, true
+		}
+	}
+	return 0, false
+}
 
 var wholeDisk = regexp.MustCompile(`^(nvme\d+n\d+|sd[a-z]+|vd[a-z]+|xvd[a-z]+|hd[a-z]+|mmcblk\d+)$`)
 
@@ -121,7 +170,7 @@ func (g *drmGPU) read() map[string]interface{} {
 type nvSample struct {
 	usedBytes, totalBytes          uint64
 	util, temp, power              float64
-	hasPower                       bool
+	hasTemp, hasPower              bool
 	pcieGen, pcieGenMax, pcieWidth int
 }
 
@@ -145,7 +194,8 @@ func parseNvidiaSmiLine(line string) (nvSample, bool) {
 	}
 	s := nvSample{usedBytes: used << 20, totalBytes: total << 20}
 	s.util, _ = strconv.ParseFloat(f(2), 64)
-	s.temp, _ = strconv.ParseFloat(f(3), 64)
+	t, errT := strconv.ParseFloat(f(3), 64) // "[N/A]": the card does not report it
+	s.temp, s.hasTemp = t, errT == nil
 	p, err := strconv.ParseFloat(f(4), 64) // "[N/A]": the card does not report power
 	s.power, s.hasPower = p, err == nil
 	s.pcieGen, _ = strconv.Atoi(f(5))
@@ -235,29 +285,9 @@ func PcieBandwidthGBps(gen, width int) float64 {
 	return perLaneGBps * float64(width)
 }
 
-// readPcieThroughput probes live PCIe RX and TX transfer rates in MB/s via nvidia-smi dmon.
+// readPcieThroughput returns live PCIe RX and TX transfer rates in MB/s. The nvidia-smi dmon probe behind it is
+// rate-limited and shared (nvprobe.go), so this is usually a cached read: dmon costs about 117 ms, a whole
+// sampling period, and the sparkline does not need a point per second.
 func (tc *TelemetryCollector) readPcieThroughput() (rxMB, txMB float64, ok bool) {
-	out, err := exec.Command("nvidia-smi", "dmon", "-s", "t", "-c", "1").Output()
-	if err != nil {
-		return 0, 0, false
-	}
-	lines := strings.Split(string(out), "\n")
-	found := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") || trimmed == "" {
-			continue
-		}
-		fields := strings.Fields(trimmed)
-		if len(fields) >= 3 {
-			rx, errRx := strconv.ParseFloat(fields[1], 64)
-			tx, errTx := strconv.ParseFloat(fields[2], 64)
-			if errRx == nil && errTx == nil {
-				rxMB += rx
-				txMB += tx
-				found = true
-			}
-		}
-	}
-	return rxMB, txMB, found
+	return nvidiaPCIeThroughput(time.Now())
 }

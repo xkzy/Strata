@@ -31,6 +31,12 @@ func rtBinary(t *testing.T) string {
 }
 
 func startRTServer(t *testing.T, reply string, extraEnv ...string) (*httptest.Server, string) {
+	return startRTServerPersist(t, false, reply, extraEnv...)
+}
+
+// startRTServerPersist starts the API with the runtime's storage opt-in (--rt-persist) as given. Without it the
+// extended virtual window is RAM-only and writes no context file anywhere.
+func startRTServerPersist(t *testing.T, persist bool, reply string, extraEnv ...string) (*httptest.Server, string) {
 	t.Helper()
 	bin := rtBinary(t)
 	t.Setenv("STRATA_CONTEXT_DIR", t.TempDir())
@@ -50,7 +56,7 @@ func startRTServer(t *testing.T, reply string, extraEnv ...string) (*httptest.Se
 	if err := os.WriteFile(cfgPath, sb, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewStrataServer(ServerConfig{ModelName: "test-model", MaxContext: 16384, ConfigFile: cfgPath, RuntimeMode: "on", RuntimeBinary: bin, WindowTokens: 2048})
+	srv := NewStrataServer(ServerConfig{ModelName: "test-model", MaxContext: 16384, ConfigFile: cfgPath, RuntimeMode: "on", RuntimeBinary: bin, WindowTokens: 2048, RuntimePersist: persist})
 	if err := srv.StartEngine(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -199,6 +205,48 @@ func TestRuntimeVirtualContextRecallsAcrossRequests(t *testing.T) {
 	other := post(`{"messages":[{"role":"user","content":"What was the deploy code we discussed earlier?"}],"reasoning_effort":"none"}`, map[string]string{"X-Session-ID": "chat-B"})
 	if strings.Contains(other, "4321") {
 		t.Fatalf("sessions leaked: %q", other)
+	}
+}
+
+// The extended virtual window is RAM-only by default: even a named session may not leave a file on the disk.
+func TestRuntimeVirtualWindowStaysInRAMByDefault(t *testing.T) {
+	ts, _ := startRTServer(t, "thinking.\n\nok")
+	resp, b := postDebug(t, ts.URL+"/v1/chat/completions", `{"messages":[{"role":"user","content":"Decision: the window stores in RAM, never on the SSD."}],"reasoning_effort":"none"}`, map[string]string{"X-Session-ID": "ram-window"})
+	if resp.StatusCode != 200 {
+		t.Fatalf("%d %s", resp.StatusCode, b)
+	}
+	entries, err := os.ReadDir(os.Getenv("STRATA_CONTEXT_DIR"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if len(names) != 0 {
+		t.Fatalf("the virtual window wrote to disk by default: %v", names)
+	}
+}
+
+// --rt-persist opts back into storing the window on disk, so a session survives a restart.
+func TestRuntimeVirtualWindowPersistsWhenOptedIn(t *testing.T) {
+	ts, _ := startRTServerPersist(t, true, "thinking.\n\nok")
+	resp, b := postDebug(t, ts.URL+"/v1/chat/completions", `{"messages":[{"role":"user","content":"Decision: the window stores in RAM, never on the SSD."}],"reasoning_effort":"none"}`, map[string]string{"X-Session-ID": "stored-window"})
+	if resp.StatusCode != 200 {
+		t.Fatalf("%d %s", resp.StatusCode, b)
+	}
+	entries, err := os.ReadDir(os.Getenv("STRATA_CONTEXT_DIR"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifests := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".manifest") {
+			manifests++
+		}
+	}
+	if manifests == 0 {
+		t.Fatalf("--rt-persist stored no context: %d file(s) under %s", len(entries), os.Getenv("STRATA_CONTEXT_DIR"))
 	}
 }
 

@@ -71,8 +71,11 @@ struct RuntimeConfig {
     bool hedge_with_verified_value = true;    // an exact computed/authoritative value may replace a contradicted one
     int max_attempts = 8;                     // hard cap on generation attempts per request
     VirtualContextConfig virtual_context;     // physical window, advertised virtual size, tiers
-    bool persist_contexts = true;             // sessions survive a restart (content-addressed files + manifests)
-    std::string context_storage_dir;          // empty: $STRATA_CONTEXT_DIR, else ~/.strata/contexts
+    // The window is RAM-only by default: page content stays resident and nothing is written to disk. With
+    // persist_contexts, cold pages and a manifest per context are stored under context_storage_dir, so sessions
+    // survive a restart.
+    bool persist_contexts = false;
+    std::string context_storage_dir;          // empty: $STRATA_CONTEXT_DIR, else ~/.strata/contexts (persist_contexts only)
 };
 
 struct RuntimeDeps {

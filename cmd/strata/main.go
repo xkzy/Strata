@@ -16,7 +16,9 @@ import (
 	"syscall"
 	"time"
 
+	"strata/pkg/autotune"
 	"strata/pkg/bench"
+	"strata/pkg/engineipc"
 	"strata/pkg/hallucination"
 	"strata/pkg/installer"
 	"strata/pkg/logicverifier"
@@ -54,6 +56,8 @@ func main() {
 		runTokenize(os.Args[2:])
 	case "profile", "make-profile":
 		runProfile(os.Args[2:])
+	case "tune":
+		runTune(os.Args[2:])
 	case "calibrate":
 		runCalibrate(os.Args[2:])
 	case "needle", "needle-bench":
@@ -97,6 +101,7 @@ func printUsage() {
 	fmt.Println("  pack                Prepare GGUF weights, extract MoE expert blobs into Strata pack")
 	fmt.Println("  profile             Create or update expert routing profile (STRP) from trace")
 	fmt.Println("  calibrate           Calibrate PCIe transfer fraction and speculation settings")
+	fmt.Println("  tune                Discover hardware, solve and measure a configuration (no manual tuning needed)")
 	fmt.Println("  needle              Run needle-in-a-haystack long-context recall benchmark")
 	fmt.Println("  mcp                 Start JSON-RPC Model Context Protocol server for AI tools")
 	fmt.Println("  bench               Benchmark inference token throughput, TTFT, and latency")
@@ -115,6 +120,7 @@ func runServer(args []string) {
 	rtMode := fs.String("rt", "auto", "C++ transparent runtime (verification, virtual context): auto, on or off")
 	rtBinary := fs.String("rt-binary", "", "Path to strata_rt_server (default: looked for next to the engine)")
 	window := fs.Int("window", 65536, "Physical context window the runtime fills per request (tokens)")
+	rtPersist := fs.Bool("rt-persist", false, "Store the extended virtual window on disk so sessions survive a restart (default: RAM only)")
 	modelName := fs.String("model", "", "Model identifier (default: from saved strata-config.json)")
 	maxContext := fs.Int("max-context", 0, "Physical context limit (default: from saved strata-config.json)")
 	virtualLimit := fs.Int("virtual-limit", 0, "Virtual context limit (default: from saved strata-config.json)")
@@ -122,32 +128,41 @@ func runServer(args []string) {
 	modelPath := fs.String("model-path", "", "Path to model weights (.gguf / .bin)")
 	binaryPath := fs.String("binary-path", "", "Path to C++ strata engine binary")
 	configFile := fs.String("config", "", "Path to strata-<model>.json config")
+	noAutoTune := fs.Bool("no-autotune", false, "Do not discover, plan or measure hardware at startup")
+	tuningRecord := fs.String("tuning-record", "", "Tuning record path (default: strata-tuning.json or STRATA_TUNING_RECORD)")
 	fs.Parse(args)
 
 	cfg := server.ServerConfig{
-		Port:          *port,
-		ModelName:     *modelName,
-		MaxContext:    *maxContext,
-		VirtualLimit:  *virtualLimit,
-		APIKey:        *apiKey,
-		ModelPath:     *modelPath,
-		BinaryPath:    *binaryPath,
-		ConfigFile:    *configFile,
-		BindHost:      *host,
-		RuntimeMode:   *rtMode,
-		RuntimeBinary: *rtBinary,
-		WindowTokens:  *window,
+		Port:           *port,
+		ModelName:      *modelName,
+		MaxContext:     *maxContext,
+		VirtualLimit:   *virtualLimit,
+		APIKey:         *apiKey,
+		ModelPath:      *modelPath,
+		BinaryPath:     *binaryPath,
+		ConfigFile:     *configFile,
+		BindHost:       *host,
+		RuntimeMode:    *rtMode,
+		RuntimeBinary:  *rtBinary,
+		WindowTokens:   *window,
+		RuntimePersist: *rtPersist,
+		AutoTune:       !*noAutoTune,
+		TuningRecord:   *tuningRecord,
 	}
 
 	if err := server.CheckBind(*host, *apiKey); err != nil {
 		fmt.Fprintln(os.Stderr, "strata:", err)
 		os.Exit(2)
 	}
+	for _, w := range engineipc.LinkWarnings("/sys/bus/pci/devices") {
+		fmt.Fprintln(os.Stderr, "strata: WARNING", w)
+	}
 	srv := server.NewStrataServer(cfg)
 	if err := srv.StartEngine(context.Background()); err != nil {
 		fmt.Fprintf(os.Stderr, "strata: the model is not available: %v\n", err)
 	} else {
 		fmt.Fprintln(os.Stderr, "strata: loading the model in the background (requests get 503 until it is ready; see /health)")
+		srv.StartRuntime(context.Background())
 	}
 	handler := srv.Router()
 
@@ -182,6 +197,7 @@ func runServer(args []string) {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	fmt.Println("\nShutting down Strata Go Server gracefully...")
+	srv.StopRuntime()
 }
 
 func runMath(args []string) {
@@ -529,6 +545,52 @@ func runProfile(args []string) {
 		*out, len(ranked), counts["base"], counts["trace"], counts["fill"])
 }
 
+func runTune(args []string) {
+	fs := flag.NewFlagSet("tune", flag.ExitOnError)
+	record := fs.String("record", "", "Tuning record path (default: strata-tuning.json or STRATA_TUNING_RECORD)")
+	model := fs.String("model", "", "GGUF file to read the model shape from")
+	modelName := fs.String("name", "", "Model name/alias for a canonical pack (e.g. Qwen3.8-Flash-Next)")
+	pack := fs.String("pack", "", "Canonical pack directory")
+	contextLen := fs.Int("context", 0, "Physical context in tokens (0: the model's own)")
+	engineURL := fs.String("engine", "", "Measure a running server (e.g. http://127.0.0.1:8080) instead of the host only")
+	apiKey := fs.String("api-key", "", "API key for --engine")
+	timeout := fs.Duration("timeout", 60*time.Second, "Upper bound on the whole run")
+	measure := fs.Bool("measure", true, "Run the bounded host/engine probes")
+	save := fs.Bool("save", true, "Persist the tuning record")
+	fs.Parse(args)
+
+	var engineArgs []string
+	if *model != "" {
+		engineArgs = append(engineArgs, "--native", *model)
+	}
+	if *pack != "" {
+		engineArgs = append(engineArgs, "--pack", *pack)
+	}
+	if *contextLen > 0 {
+		engineArgs = append(engineArgs, "--max-context", fmt.Sprint(*contextLen))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	opts := autotune.StartupOptions{
+		Args: engineArgs, RecordPath: *record, MaxContext: *contextLen, Measure: *measure, NoSave: !*save, ModelName: *modelName,
+	}
+	if *engineURL != "" {
+		opts.Engine, opts.BaseURL, opts.APIKey = true, *engineURL, *apiKey
+		opts.Envelope = autotune.Envelope{PromptTokens: 128, OutputTokens: 16, Concurrency: 1, Source: "tune"}
+	}
+	res := autotune.Startup(ctx, opts)
+	out, _ := json.MarshalIndent(map[string]interface{}{
+		"capabilities": res.Capabilities,
+		"workload":     res.Workload,
+		"plan":         res.Plan,
+		"measurements": res.Measurements,
+		"applied_args": res.AppliedArgs,
+		"saved":        res.Saved,
+		"notes":        res.Notes,
+	}, "", "  ")
+	fmt.Println(string(out))
+}
+
 func runCalibrate(args []string) {
 	fs := flag.NewFlagSet("calibrate", flag.ExitOnError)
 	serverURL := fs.String("server", "http://127.0.0.1:8080", "Strata server endpoint")
@@ -648,7 +710,3 @@ func runTokenize(args []string) {
 	decoded := tok.Decode(encoded)
 	fmt.Printf("Round-trip text: %q (exact match: %t)\n", decoded, decoded == targetText)
 }
-
-
-
-

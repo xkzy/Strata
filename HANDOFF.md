@@ -142,7 +142,13 @@
   - Decoupled model architectural classification (`ModelFamily`, `Architecture`, `AttentionKind`, `MoETopology`, `SSMTopology`, `ResourceSpec`).
   - Canonical `ModelManifest` schema with validation, alias matching, and OpenAI serialization.
 - **Thread-Safe Model Registry (`pkg/modelschema/registry.go`)**:
-  - Pre-registered built-ins: `qwen3.8-flash-next`, `qwen3.8-flash-next-coder`, `mimo-v2.6-flash-rl`, `mamba-2.8b`, `deepseek-v3`.
+  - Pre-registered built-ins: `qwen3.8-flash-next`, `qwen3.8-flash-next-coder`, `mimo-v2.6-flash-rl`, `mamba-2.8b`, `deepseek-v3`, `deepseek-v4.1-flash`, `gpt-oss-20b`.
+  - DeepSeek-V4.1-Flash is recognized end to end at the metadata level: manifest + aliases in Go, and in the engine
+    `general.architecture == "deepseek41"` is validated against the real keys (`deepseek41.block_count`,
+    `attention.q_lora_rank`, `attention.compress_ratios`, `engram.layers`, ...) and then **refused by name** -
+    there is no CSA/HCA + engram forward graph yet, so the loader stops with that reason instead of mis-running.
+    The `deepseek41` model adapter (geometry, per-layer compression, sqrt(softplus) noaux_tc routing, tensor roles)
+    is in `src/models/model_adapter.cpp`; tests: `build/gguf_split_test`, `build/test_generic_runtime`.
   - Dynamic runtime profile tracking (`ModelRuntimeProfile`) with case-preserving resolution and alias mapping.
 - **Multi-Model Run Configuration (`pkg/runconfig/runconfig.go`)**:
   - Added `DefaultModel` and `Models map[string]ModelEntry` to `StrataConfig`.

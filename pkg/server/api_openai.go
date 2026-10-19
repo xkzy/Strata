@@ -44,28 +44,28 @@ type oaRequest struct {
 	StreamOptions struct {
 		IncludeUsage bool `json:"include_usage"`
 	} `json:"stream_options"`
-	Temperature         *float64               `json:"temperature"`
-	TopP                *float64               `json:"top_p"`
-	TopK                *int                   `json:"top_k"`
-	MinP                *float64               `json:"min_p"`
-	MaxTokens           *int                   `json:"max_tokens"`
-	MaxCompletionTokens *int                   `json:"max_completion_tokens"`
-	Stop                json.RawMessage        `json:"stop"`
-	Seed                *int64                 `json:"seed"`
-	FrequencyPenalty    *float64               `json:"frequency_penalty"`
-	PresencePenalty     *float64               `json:"presence_penalty"`
-	RepetitionPenalty   *float64               `json:"repetition_penalty"`
-	Tools               []json.RawMessage      `json:"tools"`
-	ToolChoice          json.RawMessage        `json:"tool_choice"`
-	ReasoningEffort     string                 `json:"reasoning_effort"`
-	EnableThinking      *bool                  `json:"enable_thinking"`
-	MathEngine          *bool                  `json:"math_engine"`
-	Abliterate          *bool                  `json:"abliterate"`
-	AbliterationStrength *float64              `json:"abliteration_strength"`
-	ChatTemplateKwargs  map[string]interface{} `json:"chat_template_kwargs"`
-	User                string                 `json:"user"`
-	SessionID           string                 `json:"session_id"`
-	Metadata            struct {
+	Temperature          *float64               `json:"temperature"`
+	TopP                 *float64               `json:"top_p"`
+	TopK                 *int                   `json:"top_k"`
+	MinP                 *float64               `json:"min_p"`
+	MaxTokens            *int                   `json:"max_tokens"`
+	MaxCompletionTokens  *int                   `json:"max_completion_tokens"`
+	Stop                 json.RawMessage        `json:"stop"`
+	Seed                 *int64                 `json:"seed"`
+	FrequencyPenalty     *float64               `json:"frequency_penalty"`
+	PresencePenalty      *float64               `json:"presence_penalty"`
+	RepetitionPenalty    *float64               `json:"repetition_penalty"`
+	Tools                []json.RawMessage      `json:"tools"`
+	ToolChoice           json.RawMessage        `json:"tool_choice"`
+	ReasoningEffort      string                 `json:"reasoning_effort"`
+	EnableThinking       *bool                  `json:"enable_thinking"`
+	MathEngine           *bool                  `json:"math_engine"`
+	Abliterate           *bool                  `json:"abliterate"`
+	AbliterationStrength *float64               `json:"abliteration_strength"`
+	ChatTemplateKwargs   map[string]interface{} `json:"chat_template_kwargs"`
+	User                 string                 `json:"user"`
+	SessionID            string                 `json:"session_id"`
+	Metadata             struct {
 		UserID string `json:"user_id"`
 	} `json:"metadata"`
 }
@@ -318,8 +318,12 @@ func writeAPIError(w http.ResponseWriter, err error) {
 	} else {
 		ae = &apiError{Status: 500, Type: "server_error", Msg: err.Error()}
 	}
-	if ae.Status == 503 {
-		w.Header().Set("Retry-After", "5")
+	retry := ae.RetryAfter
+	if retry <= 0 && ae.Status == 503 {
+		retry = 5
+	}
+	if retry > 0 {
+		w.Header().Set("Retry-After", fmt.Sprint(retry))
 	}
 	writeJSON(w, ae.Status, map[string]interface{}{"error": map[string]interface{}{"message": ae.Msg, "type": ae.Type, "code": ae.Type}})
 }

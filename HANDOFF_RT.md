@@ -28,7 +28,8 @@ Test: `build/test_transparent_runtime` (11 scenarios, scripted mock generator).
 Per-session logical context (tenant/user/workspace/agent/session). Content-addressed pages, BM25 index, dependency edges,
 HOT/WARM/COLD/ARCHIVE tiers, pinning, spill to disk, byte-exact recovery, persistence across restarts, authorization before
 retrieval, capacity from storage, honest `required_context_unavailable`, `model_info_json()` (physical vs virtual).
-Persisted under `$STRATA_CONTEXT_DIR` or `~/.strata/contexts` (dirs 0700, files 0600). Test: `build/test_virtual_window`.
+RAM-only by default: page content stays resident and no file is written. With `--rt-persist` it persists under
+`$STRATA_CONTEXT_DIR` or `~/.strata/contexts` (dirs 0700, files 0600), so sessions survive a restart. Test: `build/test_virtual_window`.
 
 ## Resolved Status
 - **`build/test_logic_verifier`**: Fixed recursive-descent JSON syntax verifier in `schema_verifier.cpp` and regex matching in `claim_extractor.cpp`. All 12/12 test suites PASS.
@@ -64,13 +65,15 @@ over stdin/stdout to the Go server (`pkg/rtclient`, `pkg/server/rt.go`). Go keep
 serves the runtime's two calls: "build the prompt ids for these messages (+ delivered prefix)" and "run the model on these ids".
 Chat requests (`/v1/chat/completions`, `/v1/messages`) go through it; raw `/v1/completions` goes straight to the engine.
 - Flags: `--rt auto|on|off` (auto: use it when `strata_rt_server` is found in `./engine`, `./build`, next to the binary or PATH,
-  else direct with a warning in `/health`), `--rt-binary`, `--window N` (physical window the runtime fills, default 32768).
+  else direct with a warning in `/health`), `--rt-binary`, `--window N` (physical window the runtime fills, default 32768),
+  `--rt-persist` (store the extended virtual window on disk; default: RAM only, nothing written).
 - Visible only to an operator: `/health` -> `runtime`, `GET /v1/strata/runtime/metrics`, header `X-Strata-Debug: 1` adds `strata_trace`
   (non-streaming OpenAI responses). No MCP, no tool, no special prompt.
 - Sessions: `X-Session-ID` / `session_id` / `user` name a persistent session. A caller that sends none gets a random, private,
   in-memory context for that one request (never stored, erased afterwards): an id derived from content would let callers that open
   with the same words read each other's context. Session ids are not bound to an authenticated principal: everyone holding the API key is one trust domain.
-  Contexts persist under `$STRATA_CONTEXT_DIR` (default `~/.strata/contexts`) and survive restarts.
+  Contexts live in RAM: no context file is written unless the server runs with `--rt-persist`, which stores them under
+  `$STRATA_CONTEXT_DIR` (default `~/.strata/contexts`) so they survive restarts.
 - Reasoning (`<think>` ... `</think>`) and `<tool_call>` blocks are streamed untouched and never verified; claims in the answer are,
   and a contradicted one is regenerated internally (hidden "Verified facts" system note), then hedged with the exact value.
 - Limits: dynamic temperature applies to the next attempt (the engine takes temperature per request, not mid-stream); assistant

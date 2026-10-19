@@ -28,7 +28,7 @@ type SetupConfigOptions struct {
 type StrataRunConfig struct {
 	Args          []string `json:"args"`
 	PowerPolicy   string   `json:"power_policy,omitempty"`
-	ResourceAdapt bool     `json:"resource_adapt,omitempty"`
+	ResourceAdapt bool     `json:"resource_adapt"` // written even when false: an explicit switch, not an absent key
 	Parallel      int      `json:"parallel,omitempty"`
 }
 
@@ -81,7 +81,7 @@ func GenerateRunConfig(opts SetupConfigOptions) (StrataRunConfig, error) {
 	return StrataRunConfig{
 		Args:          args,
 		PowerPolicy:   policy,
-		ResourceAdapt: opts.ResourceAdapt || true,
+		ResourceAdapt: opts.ResourceAdapt,
 		Parallel:      1,
 	}, nil
 }

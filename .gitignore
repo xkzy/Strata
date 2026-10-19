@@ -10,7 +10,7 @@ bench/micro/*.dll
 bench/micro/*.txt
 *.log
 build*/
-pack/
+/pack/
 logs/
 __pycache__/
 .pytest_cache/
@@ -65,3 +65,6 @@ build-vision-cuda12.bat
 /.cache/
 /.claude/
 *.bak
+
+# startup tuning record (per machine and model; generated)
+strata-tuning.json

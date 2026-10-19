@@ -4,6 +4,8 @@
 package server
 
 import (
+	"math"
+	"sort"
 	"sync"
 	"time"
 )
@@ -156,7 +158,7 @@ func (m *requestMonitor) live(loaded bool) map[string]interface{} {
 	m.initLocked()
 	out := map[string]interface{}{"state": "idle", "queued": 0, "running": len(m.running), "phase": nil,
 		"prompt_tokens": nil, "generated": nil, "max_tokens": nil, "elapsed_s": nil, "tok_s": nil, "tok_s_mean": nil,
-		"prompt_read": nil, "prompt_total": nil}
+		"prompt_read": nil, "prompt_total": nil, "prefill_tok_s_mean": nil}
 	var cur *monitoredRequest
 	for r := range m.running {
 		if cur == nil || r.started.After(cur.started) {
@@ -176,9 +178,15 @@ func (m *requestMonitor) live(loaded bool) map[string]interface{} {
 		out["state"] = "reading"
 		out["prompt_read"] = cur.promptRead
 		out["prompt_total"] = cur.promptTokens
+		if v := prefillRate(cur.promptRead, now.Sub(cur.started)); v > 0 {
+			out["prefill_tok_s_mean"] = v
+		}
 		return out
 	}
 	out["state"] = "generating"
+	if v := prefillRate(cur.promptTokens, cur.firstToken.Sub(cur.started)); v > 0 {
+		out["prefill_tok_s_mean"] = v
+	}
 	out["tok_s"], out["tok_s_mean"] = windowRate(cur.stamps, now), meanRate(cur, now)
 	return out
 }
@@ -195,6 +203,14 @@ func overlayEngineState(live map[string]interface{}, engine string) {
 	case "failed":
 		live["state"] = "error"
 	}
+}
+
+// prefillRate is the prompt tokens read per second over the time spent reading them (0: not known yet).
+func prefillRate(tokens int, span time.Duration) float64 {
+	if tokens <= 0 || span <= 0 {
+		return 0
+	}
+	return round1(float64(tokens) / span.Seconds())
 }
 
 // windowRate is the tokens per second over the last few seconds.
@@ -232,6 +248,106 @@ func (m *requestMonitor) currentTokS() float64 {
 		return v
 	}
 	return 0
+}
+
+// currentPrefillTokS is the running request's prompt tokens per second for the sparkline (0 when nothing is
+// reading a prompt, and 0 while generating a request whose prefill speed is not known).
+func (m *requestMonitor) currentPrefillTokS() float64 {
+	if v, ok := m.live(true)["prefill_tok_s_mean"].(float64); ok {
+		return v
+	}
+	return 0
+}
+
+// RequestStats is the workload view the runtime controller reads. It is computed from finished requests only:
+// a single in-flight request must not be mistaken for a sustained shift.
+type RequestStats struct {
+	Samples        int
+	PromptP95      int
+	OutputP95      int
+	TTFTmsP95      float64
+	LatencySP95    float64
+	DecodeTokSMean float64
+}
+
+// recentStats summarizes the last window of finished requests. Missing fields are ignored, never invented.
+func (m *requestMonitor) recentStats(window time.Duration) RequestStats {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.initLocked()
+	if window <= 0 {
+		window = 10 * time.Second
+	}
+	cutoff := float64(time.Now().Add(-window).UnixNano()) / 1e9
+	var prompts, outputs []int
+	var ttfts, durations []float64
+	decodeSum, decodeN := 0.0, 0
+	for _, r := range m.history {
+		t, _ := r["time"].(float64)
+		if t < cutoff {
+			continue
+		}
+		if v, ok := r["prompt_tokens"].(int); ok {
+			prompts = append(prompts, v)
+		}
+		if v, ok := r["output_tokens"].(int); ok {
+			outputs = append(outputs, v)
+		}
+		if v, ok := r["prompt_ms"].(float64); ok {
+			ttfts = append(ttfts, v)
+		}
+		if v, ok := r["duration_s"].(float64); ok {
+			durations = append(durations, v)
+		}
+		if v, ok := r["decode_tok_s"].(float64); ok && v > 0 {
+			decodeSum += v
+			decodeN++
+		}
+	}
+	st := RequestStats{Samples: len(prompts)}
+	if st.Samples == 0 {
+		st.Samples = len(ttfts)
+	}
+	st.PromptP95 = percentileInt(prompts, 0.95)
+	st.OutputP95 = percentileInt(outputs, 0.95)
+	st.TTFTmsP95 = percentileFloat(ttfts, 0.95)
+	st.LatencySP95 = percentileFloat(durations, 0.95)
+	if decodeN > 0 {
+		st.DecodeTokSMean = decodeSum / float64(decodeN)
+	}
+	return st
+}
+
+func percentileInt(v []int, p float64) int {
+	if len(v) == 0 {
+		return 0
+	}
+	s := append([]int(nil), v...)
+	sort.Ints(s)
+	i := int(math.Ceil(p*float64(len(s)))) - 1
+	if i < 0 {
+		i = 0
+	}
+	if i >= len(s) {
+		i = len(s) - 1
+	}
+	return s[i]
+}
+
+func percentileFloat(v []float64, p float64) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	s := append([]float64(nil), v...)
+	sort.Float64s(s)
+	i := int(math.Ceil(p*float64(len(s)))) - 1
+	if i < 0 {
+		i = 0
+	}
+	if i >= len(s) {
+		i = len(s) - 1
+	}
+	return s[i]
 }
 
 // view returns the finished requests newest first (the last 12, or all kept), how many are kept, and the totals.

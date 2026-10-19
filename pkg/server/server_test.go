@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -566,7 +567,6 @@ func TestLastSessionConfigRestore(t *testing.T) {
 	}
 }
 
-
 // /health and /api/setup/status need no key, so with a key set they must not give out file paths or the engine's log
 // text; the same request with the key still gets them.
 func TestPublicStatusRoutesHidePathsWithoutTheKey(t *testing.T) {
@@ -605,5 +605,29 @@ func TestPublicStatusRoutesHidePathsWithoutTheKey(t *testing.T) {
 	}
 	if get("/api/setup/status", true)["active_path"] != "/data/models/m.gguf" {
 		t.Error("/api/setup/status with the key lost the model path")
+	}
+}
+
+// `strata serve -config strata-<model>.json` gives the engine its argument spec; that file is not a run
+// configuration. Saving the run configuration back to that path destroyed the owner's model config (2026-10-19,
+// every field replaced by the server defaults), so the run config must go to strata-config.json instead.
+func TestServeDoesNotOverwriteTheEngineSpec(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir) // the fallback run config (strata-config.json) lands here, not in the package directory
+	specPath := filepath.Join(dir, "strata-model.json")
+	spec := `{"args":["--pack","/packs/coder","--max-context","262144"]}`
+	if err := os.WriteFile(specPath, []byte(spec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := NewStrataServer(ServerConfig{Port: 0, ConfigFile: specPath})
+	if err := srv.ConfigManager.SaveToFile(""); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(specPath); string(b) != spec {
+		t.Fatalf("the engine spec was rewritten:\n%s", b)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "strata-config.json")); err != nil {
+		t.Errorf("the run config must be saved to strata-config.json: %v", err)
 	}
 }

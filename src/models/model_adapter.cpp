@@ -298,6 +298,149 @@ private:
     MoEModelConfig cfg_;
 };
 
+// ------------------- DeepSeek-V4.1 Adapter (GGUF arch "deepseek41") -------------------
+// Geometry and tensor roles read from the real model (deepseek-ai/DeepSeek-V4.1-Flash, 40 text layers,
+// 5120 hidden, 64 query heads against 1 latent KV head of 512, 384 routed experts top-6 + 1 shared,
+// manifold-constrained hyper-connections, engram memory on layers 1 and 14, cross-layer compressed KV
+// on layers 2/8/14/20, and a sparse indexer that picks which past blocks each layer attends to).
+class DeepSeekV41Adapter : public MoEModelAdapter {
+public:
+    explicit DeepSeekV41Adapter(const MoEModelConfig* custom_cfg = nullptr) {
+        if (custom_cfg) {
+            cfg_ = *custom_cfg;
+        } else {
+            cfg_.model_name = "DeepSeek-V4.1-Flash";
+            cfg_.architecture = "deepseek41";
+            cfg_.n_embd = 5120;
+            cfg_.n_layers = 40;
+            cfg_.n_head = 64;
+            cfg_.n_head_kv = 1;
+            cfg_.head_dim = 512;             // attention.key_length / value_length (the latent)
+            cfg_.head_dim_qk = 576;          // 512 latent + 64 RoPE part (rope.dimension_count)
+            cfg_.q_lora_rank = 1280;         // attention.q_lora_rank
+            cfg_.kv_lora_rank = 512;
+            cfg_.qk_rope_head_dim = 64;
+            cfg_.output_lora_rank = 1024;    // attention.output_lora_rank, in 8 groups
+            cfg_.output_groups = 8;
+            cfg_.indexer_heads = 32;         // attention.indexer.head_count
+            cfg_.indexer_key_dim = 128;      // attention.indexer.key_length
+            cfg_.indexer_top_k = 512;        // attention.indexer.top_k
+            cfg_.n_expert = 384;             // expert_count
+            cfg_.active_experts = 6;         // expert_used_count
+            cfg_.n_shared_experts = 1;       // expert_shared_count
+            cfg_.n_ff = 2304;                // expert_feed_forward_length
+            cfg_.shared_n_ff = 2304;
+            cfg_.sliding_window = 128;       // attention.sliding_window
+            cfg_.hybrid_interval = 1;
+            cfg_.mtp_layers = 3;             // num_nextn_predict_layers (the DSpark draft file)
+            cfg_.hc = 4;                     // hyper_connection.count
+            cfg_.norm_eps = 1e-20f;          // rms_norm_eps (attention.layer_norm_rms_epsilon)
+            cfg_.routing_type = RoutingType::kCustomRouting; // sqrt(softplus), noaux_tc
+            cfg_.attention_type = AttentionType::kMultiHeadLatentAttn;
+            // attention.compress_ratios: layers 0-1 full attention, then HCA x2 for 18 layers,
+            // x1 for 17, and the last three full again (a 40-entry per-layer array).
+            cfg_.compress_ratios = {0, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+                                    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                                    0, 0, 0};
+            cfg_.engram_layers = {1, 14};    // engram.layers
+            cfg_.kv_source_layers = {2, 8, 14, 20}; // attention.kv_source_layers
+        }
+    }
+
+    const MoEModelConfig& config() const override { return cfg_; }
+    std::string architecture_name() const override { return "deepseek41"; }
+
+    std::string tensor_name(int64_t layer, const std::string& role) const override {
+        return "blk." + std::to_string(layer) + "." + role;
+    }
+
+    bool validate_weights(const core::WeightTable& table, std::string& err) const override {
+        // The globals and one full block establish the tensor naming this adapter assumes.
+        for (const char* name : {"token_embd.weight", "output.weight", "output_norm.weight"}) {
+            if (!table.find(name)) {
+                err = std::string("deepseek41: missing tensor ") + name;
+                return false;
+            }
+        }
+        for (const char* role : {"attn_norm.weight", "attn_q_a.weight", "attn_q_b.weight", "attn_kv.weight",
+                                 "attn_output_a.weight", "attn_output_b.weight", "ffn_gate_inp.weight",
+                                 "ffn_gate_exps.weight", "ffn_up_exps.weight", "ffn_down_exps.weight",
+                                 "ffn_gate_shexp.weight", "hc_attn_fn.weight", "hc_ffn_fn.weight"}) {
+            if (!table.find(tensor_name(0, role))) {
+                err = std::string("deepseek41: missing tensor blk.0.") + role;
+                return false;
+            }
+        }
+        for (int64_t l : cfg_.engram_layers) {
+            if (!table.find(tensor_name(l, "engram_embd.weight"))) {
+                err = "deepseek41: engram layer " + std::to_string(l) + " has no engram_embd.weight";
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Per-layer compression (attention.compress_ratios): 0 keeps the full attention over the window.
+    int64_t compress_ratio(int64_t layer) const {
+        if (layer < 0 || layer >= static_cast<int64_t>(cfg_.compress_ratios.size())) return 0;
+        return cfg_.compress_ratios[layer];
+    }
+    bool has_engram(int64_t layer) const {
+        for (int64_t l : cfg_.engram_layers)
+            if (l == layer) return true;
+        return false;
+    }
+    bool is_kv_source_layer(int64_t layer) const {
+        for (int64_t l : cfg_.kv_source_layers)
+            if (l == layer) return true;
+        return false;
+    }
+
+    LayerType layer_type(int64_t layer) const override {
+        return is_full_attention_layer(layer) ? LayerType::kStandardMoE : LayerType::kHybridDenseMoE;
+    }
+
+    bool is_full_attention_layer(int64_t layer) const override {
+        return compress_ratio(layer) == 0;
+    }
+
+    // noaux_tc routing: score = sqrt(softplus(logit)), top-6, then renormalized (norm_topk_prob)
+    // and multiplied by expert_weights_scale (1.5), which the model applies to the expert sum.
+    void route_token(const float* routing_logits, int64_t n_expert, int64_t top_k,
+                     int32_t* selected_experts_out, float* weights_out) const override {
+        thread_local std::vector<std::pair<float, int32_t>> tl_scored;
+        if (static_cast<int64_t>(tl_scored.size()) < n_expert) {
+            tl_scored.resize(n_expert);
+        }
+        for (int64_t i = 0; i < n_expert; ++i) {
+            const float x = routing_logits[i];
+            // sqrt(softplus(x)) without overflowing: softplus(x) = x + log1p(exp(-x)) for x < 0
+            const float sp = x > 0.0f ? x + std::log1p(std::exp(-x)) : std::log1p(std::exp(x));
+            tl_scored[i] = {std::sqrt(sp), static_cast<int32_t>(i)};
+        }
+        std::partial_sort(tl_scored.begin(), tl_scored.begin() + top_k, tl_scored.end(),
+                          [](const auto& a, const auto& b) {
+                              if (a.first != b.first) return a.first > b.first;
+                              return a.second < b.second;
+                          });
+        float sum = 0.0f;
+        for (int64_t i = 0; i < top_k; ++i) {
+            selected_experts_out[i] = tl_scored[i].second;
+            weights_out[i] = tl_scored[i].first;
+            sum += weights_out[i];
+        }
+        const float scale = sum > 0.0f ? (1.5f / sum) : 0.0f;
+        for (int64_t i = 0; i < top_k; ++i) weights_out[i] *= scale;
+    }
+
+    std::unique_ptr<MoEModelAdapter> clone() const override {
+        return std::make_unique<DeepSeekV41Adapter>(&cfg_);
+    }
+
+private:
+    MoEModelConfig cfg_;
+};
+
 // ------------------- MiMo-V2.6 MoE Adapter -------------------
 class MiMoV26Adapter : public MoEModelAdapter {
 public:
@@ -531,6 +674,12 @@ ModelAdapterRegistry::ModelAdapterRegistry() {
     register_factory("deepseek_moe", [](const MoEModelConfig* cfg) {
         return std::make_unique<DeepSeekMoEAdapter>(cfg);
     });
+    register_factory("deepseek41", [](const MoEModelConfig* cfg) {
+        return std::make_unique<DeepSeekV41Adapter>(cfg);
+    });
+    register_factory("deepseek_v41", [](const MoEModelConfig* cfg) {
+        return std::make_unique<DeepSeekV41Adapter>(cfg);
+    });
     register_factory("mimo_v2_6", [](const MoEModelConfig* cfg) {
         return std::make_unique<MiMoV26Adapter>(cfg);
     });
@@ -586,6 +735,10 @@ std::unique_ptr<MoEModelAdapter> ModelAdapterRegistry::detect_and_create(const c
     // Check for MiMo-style tensors (e.g. MTP head or MiMo router)
     if (table.find("blk.0.mtp_head.0.weight") || table.find("blk.0.mimo_router.weight")) {
         return create("mimo2");
+    }
+    // Check for DeepSeek-V4.1 tensors (MLA output LoRA + latent KV: no v2/v3-style shared expert)
+    if (table.find("blk.0.attn_output_a.weight") || table.find("blk.0.attn_output_b.weight")) {
+        return create("deepseek41");
     }
     // Check for DeepSeek-style tensors
     if (table.find("blk.0.ffn_shared_exps.weight") || table.find("blk.0.shared_expert.weight")) {

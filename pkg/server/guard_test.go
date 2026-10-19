@@ -21,7 +21,11 @@ func (t *traceSink) Add(source, msg string) {
 	t.logs = append(t.logs, source+": "+msg)
 	t.mu.Unlock()
 }
-func (t *traceSink) text() string { t.mu.Lock(); defer t.mu.Unlock(); return strings.Join(t.logs, "\n") }
+func (t *traceSink) text() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return strings.Join(t.logs, "\n")
+}
 
 var weatherTool = json.RawMessage(`{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","required":["city"],"properties":{"city":{"type":"string"},"days":{"type":"integer"}}}}}`)
 

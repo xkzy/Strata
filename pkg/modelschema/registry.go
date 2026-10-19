@@ -192,7 +192,40 @@ func (r *ModelRegistry) registerBuiltins() {
 		HuggingFaceRepo: "deepseek-ai/DeepSeek-V3-GGUF",
 	})
 
-	// 6. OpenAI GPT-OSS-20B (Open-Weight 21B MoE Reasoning)
+	// 6. DeepSeek-V4.1-Flash (CSA/HCA hybrid attention + DeepSeekMoE, 552B backbone, multimodal)
+	_ = r.RegisterManifest(ModelManifest{
+		ID:           "deepseek-v4.1-flash",
+		Name:         "DeepSeek-V4.1-Flash",
+		Family:       FamilyDeepSeek,
+		Architecture: ArchCompressedSparseAttention,
+		Attention:    AttentionHybridCSAHCA,
+		MoE: &MoETopology{
+			NumExperts:    384,
+			TopK:          6,
+			SharedExperts: 1,
+			RoutingType:   "sqrtsoftplus",
+		},
+		Resources: ResourceSpec{
+			MinRAMBytes:          448 << 30, // 448 GiB: the smallest GGUF is 415.8 GB on disk
+			MinVRAMBytes:         24 << 30,
+			LayersTotal:          40,
+			HiddenDim:            5120,
+			NumHeads:             64,
+			NumKVHeads:           1,
+			HeadDimQK:            512, // latent key length; the RoPE part of the query is 64 wide
+			HeadDimV:             512,
+			MaxContextTokens:     1048576,
+			DefaultContextTokens: 131072,
+			SupportsMTP:          true, // num_nextn_predict_layers = 3
+			SupportsAbliteration: false,
+		},
+		Aliases:         []string{"deepseek-v4", "deepseek-v4.1", "deepseek-v4.1-flash", "deepseek-ai/deepseek-v4.1-flash", "deepseek41", "dsv4", "dsv4.1", "v4.1-flash"},
+		Description:     "DeepSeek-V4.1-Flash: 552B-backbone multimodal MoE (40 text layers, 384 experts, 1 shared) with Compressed Sparse + Heavily Compressed attention, cross-layer KV sharing and a vision tower, 1M-token context",
+		HuggingFaceRepo: "deepseek-ai/DeepSeek-V4.1-Flash",
+		DefaultGGUF:     "DeepSeek-V4.1-Flash-GSQ-RCO-3.0bit.gguf",
+	})
+
+	// 7. OpenAI GPT-OSS-20B (Open-Weight 21B MoE Reasoning)
 	_ = r.RegisterManifest(ModelManifest{
 		ID:           "gpt-oss-20b",
 		Name:         "OpenAI GPT-OSS-20B",

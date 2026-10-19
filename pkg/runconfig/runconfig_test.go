@@ -110,3 +110,25 @@ func TestSaveToFileIsOwnerOnly(t *testing.T) {
 		t.Fatalf("mode = %v, want 0600", st.Mode().Perm())
 	}
 }
+
+// Only an explicit false turns the runtime controller off; a missing key keeps the default (on).
+func TestResourceAdaptAbsentKeepsTheDefault(t *testing.T) {
+	dir := t.TempDir()
+	write := func(body string) StrataConfig {
+		path := filepath.Join(dir, "cfg.json")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cm := NewConfigManager(path)
+		return cm.Get()
+	}
+	if !write(`{"port": 8080}`).ResourceAdapt {
+		t.Error("a config without resource_adapt must keep the default (on)")
+	}
+	if write(`{"resource_adapt": false}`).ResourceAdapt {
+		t.Error("an explicit false must disable adaptation")
+	}
+	if !write(`{"resource_adapt": true}`).ResourceAdapt {
+		t.Error("an explicit true must enable adaptation")
+	}
+}

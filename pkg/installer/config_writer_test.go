@@ -72,3 +72,32 @@ func TestWriteRunConfig(t *testing.T) {
 		t.Errorf("launcher script is empty")
 	}
 }
+
+// The generated config is where resource_adapt is chosen; both values must survive, and false must be written
+// explicitly so it is not read back as an absent key.
+func TestRunConfigHonoursResourceAdaptSwitch(t *testing.T) {
+	for _, want := range []bool{true, false} {
+		cfg, err := GenerateRunConfig(SetupConfigOptions{PackDir: "/pack", NativeGGUF: "/model.gguf", ResourceAdapt: want})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.ResourceAdapt != want {
+			t.Errorf("GenerateRunConfig(ResourceAdapt=%v) = %v", want, cfg.ResourceAdapt)
+		}
+		data, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := parsed["resource_adapt"]
+		if !ok {
+			t.Fatalf("resource_adapt must be written even when %v: %s", want, data)
+		}
+		if got != want {
+			t.Errorf("written resource_adapt = %v, want %v", got, want)
+		}
+	}
+}

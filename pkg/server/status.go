@@ -41,6 +41,8 @@ func architecture(model string) (arch string, swaWindow int) {
 		return "mimo_v2_6", 8192
 	case strings.Contains(m, "mixtral"):
 		return "mixtral", 4096
+	case strings.Contains(m, "deepseek-v4") || strings.Contains(m, "deepseek4") || strings.Contains(m, "deepseek41"):
+		return "deepseek41", 128 // V4/V4.1 keep a 128-token sliding window (GGUF: deepseek*.attention.sliding_window)
 	case strings.Contains(m, "deepseek"):
 		return "deepseek_moe", 4096
 	}

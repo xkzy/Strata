@@ -107,6 +107,24 @@ func TestModelRegistry_Builtins(t *testing.T) {
 		t.Fatalf("unexpected deepseek properties: family=%s, arch=%s", deepseek.Family, deepseek.Architecture)
 	}
 
+	// 4b. DeepSeek-V4.1-Flash
+	dsv4, ok := reg.GetManifest("deepseek-v4.1-flash")
+	if !ok || dsv4 == nil {
+		t.Fatal("failed to find built-in deepseek-v4.1-flash")
+	}
+	if dsv4.Family != FamilyDeepSeek || dsv4.Architecture != ArchCompressedSparseAttention || dsv4.Attention != AttentionHybridCSAHCA {
+		t.Fatalf("unexpected deepseek-v4.1 properties: family=%s, arch=%s, attention=%s", dsv4.Family, dsv4.Architecture, dsv4.Attention)
+	}
+	if dsv4.MoE == nil || dsv4.MoE.NumExperts != 384 || dsv4.MoE.TopK != 6 || dsv4.MoE.SharedExperts != 1 {
+		t.Fatalf("unexpected deepseek-v4.1 MoE topology: %+v", dsv4.MoE)
+	}
+	if dsv4.Resources.LayersTotal != 40 || dsv4.Resources.HiddenDim != 5120 || dsv4.Resources.NumKVHeads != 1 {
+		t.Fatalf("unexpected deepseek-v4.1 resources: %+v", dsv4.Resources)
+	}
+	if dsv4.Resources.MaxContextTokens != 1048576 {
+		t.Fatalf("unexpected deepseek-v4.1 max context: %d", dsv4.Resources.MaxContextTokens)
+	}
+
 	// 5. OpenAI GPT-OSS-20B
 	gptoss, ok := reg.GetManifest("gpt-oss-20b")
 	if !ok || gptoss == nil {
@@ -137,6 +155,10 @@ func TestModelRegistry_AliasesAndResolve(t *testing.T) {
 		{"mamba-ssm", "mamba-2.8b"},
 		{"deepseek", "deepseek-v3"},
 		{"deepseek-r1", "deepseek-v3"},
+		{"deepseek-v4", "deepseek-v4.1-flash"},
+		{"deepseek-v4.1-flash", "deepseek-v4.1-flash"},
+		{"deepseek-ai/deepseek-v4.1-flash", "deepseek-v4.1-flash"},
+		{"deepseek41", "deepseek-v4.1-flash"},
 		{"gpt-oss", "gpt-oss-20b"},
 		{"gpt-oss-20b", "gpt-oss-20b"},
 		{"openai/gpt-oss-20b", "gpt-oss-20b"},

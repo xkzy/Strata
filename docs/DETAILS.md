@@ -537,6 +537,11 @@ The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or
 | Save / restore the conversation to a file (session files, below) | `POST /slots/0?action=save\|restore` |
 | Everything the Monitor tab shows (engine, live state, last requests, hardware) | `GET /metrics` |
 
+The Monitor tab polls `GET /metrics` once a second while it is open. Measured on the development PC (AMD Ryzen 9
+9950X3D, `go test -bench BenchmarkMetricsHandler` in `pkg/server`, 500 finished requests kept): a poll costs
+**52-57 us**, and **1.15-1.23 ms** with `?requests=all`, which lists every kept request instead of the last 12.
+The page asks for `?requests=all` only when the operator switches the request table to that view.
+
 `/models` and `/v1/models` list only the loaded model, with its context limit and input modalities. `/props` exposes the original chat template, context limit, configured generation defaults (shared settings take precedence), model path and engine version when available. Context means the full engine context, not the resident KV window. `n_predict: -1` means no fixed output cap. Unconfigured sampling fields are omitted. `autoload` has no effect; an unknown `model` returns 404. These metadata endpoints and `/slots` require the API key when one is configured. They do not load, unload or restart models.
 
 ```bash
@@ -1304,6 +1309,8 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
   against the FP16 prompt path (IQ3_XXS, `--prefill auto`): 8K prompt KL 0.042 (0.1.39: 0.054), top-1 agreement
   93.5% (92.2%); 32K prompt KL 0.020 (0.019), top-1 95.3% (95.0%) - the same band as before. `STRATA_RING_BYTES=0`
   restores 0.1.39's ring, loan and chunk choice.
+
+**Automatic tuning.** The server discovers the CPU, memory limits and GPUs at startup, measures a small bounded set of rates, and solves for threads, PCIe share, speculation and placement from an explicit roofline model. It needs no flags: a first start measures about a second of host rates, later starts read `strata-tuning.json` in well under a second, and only knobs with a measurement behind them are applied. The optimizer is documented in **[docs/optimization/](optimization/)**: [hardware discovery](optimization/hardware-discovery.md), [performance model](optimization/performance-model.md), [startup benchmark](optimization/startup-benchmark.md), and [solver and optimality](optimization/solver-and-optimality.md). `strata tune` prints the discovered machine and the plan; `--no-autotune` turns it off. While serving, the Go server also adapts admission concurrency, queueing and memory pressure automatically; see [docs/ADAPTIVE.md](ADAPTIVE.md).
 
 The full story, with measurements, bottlenecks and what comes next: **[docs/paper/Strata-Paper.pdf](paper/Strata-Paper.pdf)**.
 

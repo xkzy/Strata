@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	"strata/pkg/autotune"
 	"strata/pkg/engineipc"
 	"strata/pkg/runconfig"
 	"strata/pkg/tokenizer"
@@ -369,12 +370,45 @@ func (s *StrataServer) StartEngine(ctx context.Context) error {
 			break
 		}
 	}
+	var refineAfterStart func()
+	if s.Config.AutoTune {
+		recordPath := s.Config.TuningRecord
+		if recordPath == "" {
+			recordPath = autotune.DefaultRecordPath()
+		}
+		geom, maxCtx, gerr := autotune.GeometryFromArgs(cfg.Args)
+		if gerr == nil {
+			geom = geom.ApplyKVFlag(cfg.Args)
+		}
+		if maxCtx <= 0 {
+			maxCtx = cfg.ContextSize
+		}
+		// Measure is false: a usable record supplies the hints, and only a first run or an invalidated record
+		// pays for the host calibration. Measured knobs replace the config's only where evidence exists.
+		sr := autotune.Startup(ctx, autotune.StartupOptions{
+			Args: cfg.Args, Cwd: cfg.Cwd, RecordPath: recordPath, MaxContext: maxCtx, ModelName: s.Config.ModelName,
+			FirstRunCalibration: true,
+		})
+		if len(sr.AppliedArgs) > 0 {
+			cfg.Args = sr.AppliedArgs
+		}
+		s.setTuning(sr, false)
+		s.setRuntimeTuneInfo(recordPath, cfg.Args, geom, maxCtx)
+		// The refinement waits for READY, so it is started only after the orchestrator exists and the engine
+		// has been started; starting it here would race with the assignment below.
+		refineAfterStart = func() {
+			go s.refineTuning(s.lifecycleCtx, recordPath, append([]string(nil), cfg.Args...), geom, maxCtx)
+		}
+	}
 	s.EngineIPC = engineipc.NewEngineOrchestrator(cfg)
 	s.EngineIPC.SetTokenizer(tok)
 	s.Config.MaxContext = cfg.ContextSize
 	if err := s.EngineIPC.Start(ctx); err != nil {
 		s.setProblem(err.Error())
 		return err
+	}
+	if refineAfterStart != nil {
+		refineAfterStart()
 	}
 	s.setupRuntime(tok.VocabSize())
 	if s.ConfigManager != nil && source != "" {

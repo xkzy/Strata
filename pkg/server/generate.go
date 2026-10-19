@@ -67,9 +67,10 @@ type genEvent struct {
 
 // apiError carries an HTTP status for the API layer.
 type apiError struct {
-	Status int
-	Type   string
-	Msg    string
+	Status     int
+	Type       string
+	Msg        string
+	RetryAfter int // seconds; set by admission control
 }
 
 func (e *apiError) Error() string { return e.Msg }
@@ -171,12 +172,18 @@ func (s *StrataServer) startGeneration(ctx context.Context, spec genSpec) (<-cha
 		spec.Sampling.AbliterationStrength = 1.0
 	}
 
+	ticket, aerr := s.admitRequest(ctx, len(ids))
+	if aerr != nil {
+		return nil, 0, aerr
+	}
+
 	engOut := make(chan engineipc.TokenEvent, 64)
 	go s.EngineIPC.GenerateIDs(ctx, ids, spec.Sampling, maxNew, stopIDs, spec.Stops, engOut)
 
 	rq := s.mon.begin(len(ids), maxNew)
 	out := make(chan genEvent, 64)
 	go func() {
+		defer s.releaseRequest(ticket)
 		defer close(out)
 		defer func() { // a request that ended without an End event: the client left, or the engine stopped
 			if ctx.Err() != nil {
@@ -361,4 +368,3 @@ func (spec *genSpec) setAbliterate(r *http.Request) {
 		}
 	}
 }
-

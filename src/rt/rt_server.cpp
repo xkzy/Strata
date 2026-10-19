@@ -273,7 +273,7 @@ int main() {
         RuntimeConfig cfg;
         cfg.virtual_context.physical_tokens = std::max<int64_t>(2048, c["physical_tokens"].i64(32768));
         if (c.has("virtual_tokens")) cfg.virtual_context.advertised_virtual_tokens = c["virtual_tokens"].i64();
-        cfg.persist_contexts = c["persist"].boolean_or(true);
+        cfg.persist_contexts = c["persist"].boolean_or(false);   // RAM only unless the host opts in
         cfg.context_storage_dir = c["storage_dir"].str();
         cfg.verification_enabled = c["verification"].boolean_or(true);
         cfg.recovery.strict = c["strict"].boolean_or(false);

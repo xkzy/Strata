@@ -21,6 +21,7 @@ func main() {
 	rtMode := flag.String("rt", "auto", "C++ transparent runtime (verification, virtual context): auto, on or off")
 	rtBinary := flag.String("rt-binary", "", "Path to strata_rt_server (default: looked for next to the engine)")
 	window := flag.Int("window", 65536, "Physical context window the runtime fills per request (tokens)")
+	rtPersist := flag.Bool("rt-persist", false, "Store the extended virtual window on disk so sessions survive a restart (default: RAM only)")
 	modelName := flag.String("model", "", "Model name or identifier (default: from saved strata-config.json)")
 	maxContext := flag.Int("max-context", 0, "Physical context limit in tokens (default: from saved strata-config.json)")
 	virtualLimit := flag.Int("virtual-limit", 0, "Virtual context limit in tokens (default: from saved strata-config.json)")
@@ -29,22 +30,27 @@ func main() {
 	binaryPath := flag.String("binary-path", "", "Path to the C++ strata engine binary")
 	configFile := flag.String("config", "", "Path to strata-<model>.json (engine command line)")
 	apiMonitor := flag.Bool("api-monitor", false, "Keep the last 100 requests' prompts and answers in memory for /api-monitor (also \"api_monitor\": true in the run config)")
+	noAutoTune := flag.Bool("no-autotune", false, "Do not discover, plan or measure hardware at startup")
+	tuningRecord := flag.String("tuning-record", "", "Tuning record path (default: strata-tuning.json or STRATA_TUNING_RECORD)")
 	flag.Parse()
 
 	cfg := server.ServerConfig{
-		Port:          *port,
-		ModelName:     *modelName,
-		MaxContext:    *maxContext,
-		VirtualLimit:  *virtualLimit,
-		APIKey:        *apiKey,
-		ModelPath:     *modelPath,
-		BinaryPath:    *binaryPath,
-		ConfigFile:    *configFile,
-		BindHost:      *host,
-		RuntimeMode:   *rtMode,
-		RuntimeBinary: *rtBinary,
-		WindowTokens:  *window,
-		APIMonitor:    *apiMonitor,
+		Port:           *port,
+		ModelName:      *modelName,
+		MaxContext:     *maxContext,
+		VirtualLimit:   *virtualLimit,
+		APIKey:         *apiKey,
+		ModelPath:      *modelPath,
+		BinaryPath:     *binaryPath,
+		ConfigFile:     *configFile,
+		BindHost:       *host,
+		RuntimeMode:    *rtMode,
+		RuntimeBinary:  *rtBinary,
+		WindowTokens:   *window,
+		RuntimePersist: *rtPersist,
+		APIMonitor:     *apiMonitor,
+		AutoTune:       !*noAutoTune,
+		TuningRecord:   *tuningRecord,
 	}
 
 	if err := server.CheckBind(*host, *apiKey); err != nil {
@@ -56,6 +62,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "strata: the model is not available: %v\n", err)
 	} else {
 		fmt.Fprintln(os.Stderr, "strata: loading the model in the background (requests get 503 until it is ready; see /health)")
+		strataServer.StartRuntime(context.Background())
 	}
 	handler := strataServer.Router()
 
@@ -89,4 +96,5 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	fmt.Println("\nShutting down Strata Go Server gracefully...")
+	strataServer.StopRuntime()
 }

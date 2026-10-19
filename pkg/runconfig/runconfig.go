@@ -212,6 +212,19 @@ func (cm *ConfigManager) LoadFromFile(path string) error {
 		return fmt.Errorf("invalid json config: %w", err)
 	}
 
+	// A config written before resource_adapt existed, or by hand without the key, keeps the default. Only an
+	// explicit false disables the runtime controller, so an older config is not silently read as "off".
+	var presence struct {
+		ResourceAdapt *bool `json:"resource_adapt"`
+	}
+	if err := json.Unmarshal(data, &presence); err != nil {
+		return fmt.Errorf("invalid json config: %w", err)
+	}
+	cfg.ResourceAdapt = DefaultConfig().ResourceAdapt
+	if presence.ResourceAdapt != nil {
+		cfg.ResourceAdapt = *presence.ResourceAdapt
+	}
+
 	cm.filePath = path
 	cm.config = cfg
 	return nil

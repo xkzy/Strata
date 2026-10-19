@@ -97,20 +97,45 @@ void test_model_adapters() {
     assert(deepseek->supports_swa());
     assert(deepseek->sliding_window_size() == 4096);
 
+    // Test DeepSeek-V4.1 Adapter (GGUF arch deepseek41)
+    auto dsv41 = reg.create("deepseek41");
+    assert(dsv41 != nullptr);
+    assert(dsv41->architecture_name() == "deepseek41");
+    const auto& v41 = dsv41->config();
+    assert(v41.n_layers == 40);
+    assert(v41.n_embd == 5120);
+    assert(v41.n_head == 64 && v41.n_head_kv == 1 && v41.head_dim == 512);
+    assert(v41.q_lora_rank == 1280 && v41.kv_lora_rank == 512 && v41.qk_rope_head_dim == 64);
+    assert(v41.n_expert == 384 && v41.active_experts == 6 && v41.n_shared_experts == 1);
+    assert(v41.n_ff == 2304);
+    assert(v41.indexer_heads == 32 && v41.indexer_key_dim == 128 && v41.indexer_top_k == 512);
+    assert(v41.output_lora_rank == 1024 && v41.output_groups == 8);
+    assert(v41.hc == 4 && v41.mtp_layers == 3);
+    assert(dsv41->supports_swa() && dsv41->sliding_window_size() == 128);
+    // compress_ratios: layers 0-1 full, then HCA x2, then x1, last three full
+    assert(dsv41->is_full_attention_layer(0) && dsv41->is_full_attention_layer(1));
+    assert(!dsv41->is_full_attention_layer(2));
+    assert(!dsv41->is_full_attention_layer(20));
+    assert(dsv41->is_full_attention_layer(39));
+    // engram memory lives on layers 1 and 14 only; layers 2/8/14/20 own the compressed KV source
+    assert(v41.engram_layers.size() == 2 && v41.engram_layers[0] == 1 && v41.engram_layers[1] == 14);
+    assert(v41.kv_source_layers.size() == 4 && v41.kv_source_layers[0] == 2 && v41.kv_source_layers[3] == 20);
+    assert(dsv41->tensor_name(7, "attn_kv.weight") == "blk.7.attn_kv.weight");
+
     // Test MiMo-V2.6 MoE Adapter
     auto mimo = reg.create("mimo_v2_6");
     assert(mimo != nullptr);
-    assert(mimo->architecture_name() == "mimo_v2_6");
-    assert(mimo->config().n_expert == 384);
+    assert(mimo->architecture_name() == "mimo2");
+    assert(mimo->config().n_expert == 256);
     assert(mimo->config().active_experts == 8);
-    assert(mimo->config().n_shared_experts == 2);
-    assert(mimo->config().n_layers == 70);
+    assert(mimo->config().n_shared_experts == 0); // pure sparse MoE, no shared expert
+    assert(mimo->config().n_layers == 48);
     assert(mimo->config().mtp_layers == 5);
-    assert(mimo->config().sliding_window == 4096);
+    assert(mimo->config().sliding_window == 128); // 128-token rolling SWA buffer
     assert(mimo->supports_swa());
-    assert(mimo->sliding_window_size() == 4096);
-    assert(mimo->is_full_attention_layer(3));
-    assert(!mimo->is_full_attention_layer(0));
+    assert(mimo->sliding_window_size() == 128);
+    assert(mimo->is_full_attention_layer(6)); // every 6th layer is full attention
+    assert(!mimo->is_full_attention_layer(3));
 
     // Test Generic MoE Adapter
     auto generic_moe = reg.create("generic_moe");
@@ -118,7 +143,7 @@ void test_model_adapters() {
     assert(generic_moe->supports_swa());
     assert(generic_moe->sliding_window_size() == 4096);
 
-    std::cout << "  Passed. Verified Qwen, Mixtral, DeepSeek, MiMo-V2.6, and Generic MoE adapters with SWA." << std::endl;
+    std::cout << "  Passed. Verified Qwen, Mixtral, DeepSeek-V2/V3, DeepSeek-V4.1, MiMo-V2.6, and Generic MoE adapters with SWA." << std::endl;
 }
 
 void test_routing_algorithms() {
@@ -176,6 +201,26 @@ void test_routing_algorithms() {
     float mimo_sum = 0.0f;
     for (float w : mimo_weights) mimo_sum += w;
     assert(std::fabs(mimo_sum - 1.0f) < 1e-4);
+
+    // 4. sqrt(softplus) noaux_tc Top-6 with 384 experts (DeepSeek-V4.1 style): the score is
+    // monotone in the logit, so the selection follows the raw logits, but the weights carry the
+    // model's routed_scaling_factor (1.5), which multiplies the expert sum.
+    auto dsv41 = reg.create("deepseek41");
+    std::vector<float> v41_logits(384, -1.0f);
+    v41_logits[7] = 6.0f;
+    v41_logits[150] = 2.5f;
+    v41_logits[333] = -3.0f; // sqrt(softplus(x)) stays real for negative logits
+
+    std::vector<int32_t> v41_selected(6, -1);
+    std::vector<float> v41_weights(6, 0.0f);
+    dsv41->route_token(v41_logits.data(), 384, 6, v41_selected.data(), v41_weights.data());
+
+    assert(v41_selected[0] == 7);
+    assert(v41_selected[1] == 150);
+    float v41_sum = 0.0f;
+    for (float w : v41_weights) v41_sum += w;
+    assert(std::fabs(v41_sum - 1.5f) < 1e-4);
+    assert(v41_weights[0] > v41_weights[1]);
 
     std::cout << "  Passed. Routing logic validated bit-exact and normalized across all models." << std::endl;
 }

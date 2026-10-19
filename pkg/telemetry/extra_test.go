@@ -167,4 +167,3 @@ func TestPcieBandwidthGBps(t *testing.T) {
 		t.Errorf("Gen3 x16 bandwidth = %v, want ~15.75 GB/s", bw3_16)
 	}
 }
-

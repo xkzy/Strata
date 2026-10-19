@@ -15,6 +15,20 @@ import (
 
 const HistoryCapacity = 60
 
+// drmRoot is where the fallback (non-NVIDIA) GPU path looks. It is a variable so a test can point a collector at
+// a fake sysfs tree.
+var drmRoot = "/sys/class/drm"
+
+// gpuReading is one GPU sample. present is false when no driver reports a card at all (a card that fell off the
+// bus, a wedged driver, a CPU-only host); hasTemp and hasPower are false when the driver does not report that
+// value. Nothing here is invented: a value the driver does not give is absent, not zero.
+type gpuReading struct {
+	used, total       uint64
+	util, temp, power float64
+	hasTemp, hasPower bool
+	present           bool
+}
+
 type Reading struct {
 	Timestamp float64 `json:"timestamp"`
 	CPU       float64 `json:"cpu"`
@@ -40,7 +54,6 @@ type TelemetryCollector struct {
 	haveDisk                    bool
 	prevDiskRead, prevDiskWrite uint64
 	prevDiskAt                  time.Time
-	noPower                     bool // the NVIDIA card answers power.draw with [N/A]
 	igpu                        *drmGPU
 	pcie                        [3]int // gen, max gen, width of the GPU link (0: unknown)
 
@@ -61,8 +74,10 @@ type TelemetryCollector struct {
 	historyIGPUUtil []float64
 	historyDiskRead []float64
 	historyPcieRx   []float64
+	historyPrefill  []float64
 
-	tokSource func() float64 // decode speed of the running request (nil or 0: idle)
+	tokSource     func() float64 // decode speed of the running request (nil or 0: idle)
+	prefillSource func() float64 // prefill speed of the running request (nil or 0: idle)
 }
 
 func NewTelemetryCollector() *TelemetryCollector {
@@ -75,13 +90,14 @@ func NewTelemetryCollector() *TelemetryCollector {
 		historyGPUTemp:  make([]float64, 0, HistoryCapacity),
 		historyGPUPower: make([]float64, 0, HistoryCapacity),
 		historyTokS:     make([]float64, 0, HistoryCapacity),
+		historyPrefill:  make([]float64, 0, HistoryCapacity),
 		historyRAMUtil:  make([]float64, 0, HistoryCapacity),
 		historyCPUUtil:  make([]float64, 0, HistoryCapacity),
 		historyPcieRx:   make([]float64, 0, HistoryCapacity),
 	}
 	if runtime.GOOS == "linux" {
-		tc.igpu = discoverIGPU("/sys/class/drm")
-		gen, maxGen, width, _ := discoverDrmPCIe("/sys/class/drm")
+		tc.igpu = discoverIGPU(drmRoot)
+		gen, maxGen, width, _ := discoverDrmPCIe(drmRoot)
 		if gen > 0 || maxGen > 0 || width > 0 {
 			tc.pcie = [3]int{gen, maxGen, width}
 		}
@@ -90,7 +106,29 @@ func NewTelemetryCollector() *TelemetryCollector {
 	return tc
 }
 
+// Static hardware facts do not change while the process runs, and probing them costs one nvidia-smi fork (20 ms
+// measured on the development PC) - or, on a host without one, an lspci fork - per collector. The tests build a
+// server per test and a multi-model server builds one collector per model, so the probe runs once per process.
+var (
+	staticOnce  sync.Once
+	staticFacts map[string]interface{}
+	staticVRAM  uint64
+)
+
 func (tc *TelemetryCollector) detectStaticHardware() {
+	staticOnce.Do(func() { staticFacts, staticVRAM = probeStaticHardware() })
+	for k, v := range staticFacts {
+		tc.static[k] = v
+	}
+	if tc.igpu != nil {
+		tc.static["igpu_name"] = tc.igpu.name()
+	}
+	if staticVRAM > 0 {
+		tc.now["gpu_mem_total"] = staticVRAM
+	}
+}
+
+func probeStaticHardware() (map[string]interface{}, uint64) {
 	threads := runtime.NumCPU()
 	cpuName := "CPU"
 	cores := threads / 2
@@ -137,7 +175,7 @@ func (tc *TelemetryCollector) detectStaticHardware() {
 
 	// 2. Try AMD sysfs if no NVIDIA GPU
 	if gpuName == "" {
-		if data, err := os.ReadFile("/sys/class/drm/card0/device/mem_info_vram_total"); err == nil {
+		if data, err := os.ReadFile(filepath.Join(drmRoot, "card0/device/mem_info_vram_total")); err == nil {
 			bytesVal, _ := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
 			if bytesVal > 0 {
 				vramTotalBytes = bytesVal
@@ -172,7 +210,7 @@ func (tc *TelemetryCollector) detectStaticHardware() {
 		computeDevices = append(computeDevices, gpuName)
 	}
 
-	tc.static = map[string]interface{}{
+	return map[string]interface{}{
 		"gpu_name":        gpuName,
 		"gpu_count":       gpuCount,
 		"compute_devices": computeDevices,
@@ -180,20 +218,21 @@ func (tc *TelemetryCollector) detectStaticHardware() {
 		"cores":           cores,
 		"threads":         threads,
 		"psutil":          true,
-	}
-
-	if tc.igpu != nil {
-		tc.static["igpu_name"] = tc.igpu.name()
-	}
-	if vramTotalBytes > 0 {
-		tc.now["gpu_mem_total"] = vramTotalBytes
-	}
+	}, vramTotalBytes
 }
 
 // SetTokSource sets where each sample's tokens-per-second comes from (the server's running request).
 func (tc *TelemetryCollector) SetTokSource(f func() float64) {
 	tc.mu.Lock()
 	tc.tokSource = f
+	tc.mu.Unlock()
+}
+
+// SetPrefillSource sets where each sample's prompt tokens-per-second comes from (the server's running
+// request). The web app draws history.prefill_tok_s_mean beside history.tok_s.
+func (tc *TelemetryCollector) SetPrefillSource(f func() float64) {
+	tc.mu.Lock()
+	tc.prefillSource = f
 	tc.mu.Unlock()
 }
 
@@ -236,8 +275,8 @@ func (tc *TelemetryCollector) sampleLoop() {
 
 func (tc *TelemetryCollector) sampleOnce() {
 	cpuPct := tc.readCPU()
-	ramUsedBytes, ramTotalBytes, ramPct := tc.readRAM()
-	vramUsedBytes, vramTotalBytes, gpuUtil, gpuTemp, gpuPower := tc.readGPU()
+	ramUsedBytes, ramTotalBytes, ramPct, ramSystem := tc.readRAM()
+	gpu := tc.readGPU()
 	diskRead, diskWrite, diskOK := tc.readDisk()
 
 	tc.mu.Lock()
@@ -248,20 +287,11 @@ func (tc *TelemetryCollector) sampleOnce() {
 	tc.now["ram_used"] = ramUsedBytes
 	tc.now["ram_total"] = ramTotalBytes
 	tc.now["ram_util"] = ramPct
+	// ram_system tells consumers whether these bytes are system memory or only this process's Go heap. The
+	// fallback path must not be mistaken for available host RAM by an admission controller.
+	tc.now["ram_system"] = ramSystem
 
-	if vramTotalBytes > 0 {
-		tc.now["gpu_mem_total"] = vramTotalBytes
-	}
-	if vramUsedBytes > 0 || tc.now["gpu_mem_total"] != nil {
-		tc.now["gpu_mem_used"] = vramUsedBytes
-		tc.now["gpu_util"] = gpuUtil
-		tc.now["gpu_temp"] = gpuTemp
-		if tc.noPower {
-			delete(tc.now, "gpu_power") // the card does not report it: the Monitor shows "–", not 0 W
-		} else {
-			tc.now["gpu_power"] = gpuPower
-		}
-	}
+	tc.publishGPU(gpu)
 
 	if tc.pcie[0] > 0 || tc.pcie[1] > 0 {
 		tc.now["gpu_pcie_gen"] = tc.pcie[0]
@@ -303,15 +333,17 @@ func (tc *TelemetryCollector) sampleOnce() {
 
 	tc.pushHistory(&tc.historyCPUUtil, cpuPct)
 	tc.pushHistory(&tc.historyRAMUtil, ramPct)
-	tc.pushHistory(&tc.historyGPUUtil, gpuUtil)
-	tc.pushHistory(&tc.historyVRAMUsed, float64(vramUsedBytes))
-	tc.pushHistory(&tc.historyGPUTemp, gpuTemp)
-	tc.pushHistory(&tc.historyGPUPower, gpuPower)
+	tc.pushGPUHistory(gpu)
 	tokS := 0.0
 	if tc.tokSource != nil {
 		tokS = tc.tokSource()
 	}
 	tc.pushHistory(&tc.historyTokS, tokS)
+	prefillS := 0.0
+	if tc.prefillSource != nil {
+		prefillS = tc.prefillSource()
+	}
+	tc.pushHistory(&tc.historyPrefill, prefillS)
 }
 
 func (tc *TelemetryCollector) pushHistory(slice *[]float64, val float64) {
@@ -319,6 +351,56 @@ func (tc *TelemetryCollector) pushHistory(slice *[]float64, val float64) {
 		*slice = (*slice)[1:]
 	}
 	*slice = append(*slice, val)
+}
+
+// publishGPU writes one GPU reading into the current sample. gpu_mem_total is a hardware fact (it stays in the
+// map when the live reading goes away); the rest are live readings. A value the driver does not report is
+// absent, never invented: the Monitor draws "–" and the controller reads it as unknown. When no card answers at
+// all - a fall-off, a wedged driver - the live values are removed rather than replaced by zero, which would read
+// as "the GPU is empty". Call with tc.mu held.
+func (tc *TelemetryCollector) publishGPU(gpu gpuReading) {
+	if !gpu.present {
+		delete(tc.now, "gpu_mem_used")
+		delete(tc.now, "gpu_util")
+		delete(tc.now, "gpu_temp")
+		delete(tc.now, "gpu_power")
+		return
+	}
+	tc.now["gpu_mem_total"] = gpu.total
+	tc.now["gpu_mem_used"] = gpu.used
+	tc.now["gpu_util"] = gpu.util
+	if gpu.hasTemp {
+		tc.now["gpu_temp"] = gpu.temp
+	} else {
+		delete(tc.now, "gpu_temp")
+	}
+	if gpu.hasPower {
+		tc.now["gpu_power"] = gpu.power
+	} else {
+		delete(tc.now, "gpu_power")
+	}
+}
+
+// pushGPUHistory appends one point per GPU sparkline. A reading the driver did not report keeps the last known
+// value instead of drawing a dip to zero that would read as "the GPU went idle". Call with tc.mu held.
+func (tc *TelemetryCollector) pushGPUHistory(gpu gpuReading) {
+	point := func(h []float64, cur float64, known bool) float64 {
+		if known {
+			return cur
+		}
+		if len(h) > 0 {
+			return h[len(h)-1]
+		}
+		return cur
+	}
+	_, utilKnown := tc.now["gpu_util"].(float64)
+	_, vramKnown := tc.now["gpu_mem_used"].(uint64)
+	_, tempKnown := tc.now["gpu_temp"].(float64)
+	_, powerKnown := tc.now["gpu_power"].(float64)
+	tc.pushHistory(&tc.historyGPUUtil, point(tc.historyGPUUtil, gpu.util, utilKnown))
+	tc.pushHistory(&tc.historyVRAMUsed, point(tc.historyVRAMUsed, float64(gpu.used), vramKnown))
+	tc.pushHistory(&tc.historyGPUTemp, point(tc.historyGPUTemp, gpu.temp, tempKnown))
+	tc.pushHistory(&tc.historyGPUPower, point(tc.historyGPUPower, gpu.power, powerKnown))
 }
 
 func (tc *TelemetryCollector) readCPU() float64 {
@@ -370,7 +452,7 @@ func (tc *TelemetryCollector) readCPU() float64 {
 	return mathRound(usage, 1)
 }
 
-func (tc *TelemetryCollector) readRAM() (usedBytes, totalBytes uint64, pct float64) {
+func (tc *TelemetryCollector) readRAM() (usedBytes, totalBytes uint64, pct float64, system bool) {
 	if runtime.GOOS == "linux" {
 		if data, err := os.ReadFile("/proc/meminfo"); err == nil {
 			var totalKB, freeKB, availKB uint64
@@ -394,62 +476,32 @@ func (tc *TelemetryCollector) readRAM() (usedBytes, totalBytes uint64, pct float
 				totalBytes = totalKB * 1024
 				usedBytes = usedKB * 1024
 				pct = mathRound((float64(usedKB)/float64(totalKB))*100.0, 1)
-				return usedBytes, totalBytes, pct
+				return usedBytes, totalBytes, pct, true
 			}
 		}
 	}
 
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
-	return m.Alloc, m.Sys, 0.0
+	return m.Alloc, m.Sys, 0.0, false
 }
 
-func (tc *TelemetryCollector) readGPU() (vramUsedBytes, vramTotalBytes uint64, gpuUtil, gpuTemp, gpuPower float64) {
-	// 1. Try nvidia-smi query
-	out, err := exec.Command("nvidia-smi", "--query-gpu="+nvidiaSmiQuery, "--format=csv,noheader,nounits").Output()
-	if err == nil {
-		line := strings.TrimSpace(string(out))
-		if idx := strings.Index(line, "\n"); idx != -1 {
-			line = line[:idx]
-		}
-		if smp, ok := parseNvidiaSmiLine(line); ok {
-			tc.pcie = [3]int{smp.pcieGen, smp.pcieGenMax, smp.pcieWidth}
-			tc.noPower = !smp.hasPower
-			return smp.usedBytes, smp.totalBytes, smp.util, smp.temp, smp.power
-		}
+func (tc *TelemetryCollector) readGPU() gpuReading {
+	// 1. The shared nvidia-smi query (see nvprobe.go: one probe per window serves every collector).
+	if smp, ok := nvidiaGPUQuery(time.Now()); ok {
+		tc.pcie = [3]int{smp.pcieGen, smp.pcieGenMax, smp.pcieWidth}
+		return gpuReading{present: true, used: smp.usedBytes, total: smp.totalBytes, util: smp.util,
+			temp: smp.temp, hasTemp: smp.hasTemp, power: smp.power, hasPower: smp.hasPower}
 	}
 
-	// 2. Try AMD sysfs
-	if runtime.GOOS == "linux" {
-		entries, err := os.ReadDir("/sys/class/drm")
-		if err == nil {
-			bestVRAM := uint64(0)
-			for _, e := range entries {
-				if !cardDir.MatchString(e.Name()) {
-					continue
-				}
-				dir := filepath.Join("/sys/class/drm", e.Name(), "device")
-				tot, _ := readUint(filepath.Join(dir, "mem_info_vram_total"))
-				if tot > bestVRAM {
-					bestVRAM = tot
-					vramTotalBytes = tot
-					vramUsedBytes, _ = readUint(filepath.Join(dir, "mem_info_vram_used"))
-					if u, ok := readUint(filepath.Join(dir, "gpu_busy_percent")); ok {
-						gpuUtil = float64(u)
-					}
-				}
-			}
-			if vramTotalBytes > 0 {
-				gen, maxGen, width, _ := discoverDrmPCIe("/sys/class/drm")
-				if gen > 0 || maxGen > 0 || width > 0 {
-					tc.pcie = [3]int{gen, maxGen, width}
-				}
-				return vramUsedBytes, vramTotalBytes, gpuUtil, 45.0, 50.0
-			}
-		}
+	// 2. The fallback card: any DRM card that exposes its VRAM in sysfs (AMD and Intel).
+	if r := readAMDSysfs(drmRoot); r.present {
+		return r
 	}
 
-	return 0, 0, 0, 0, 0
+	// 3. Nothing answers - a card that fell off the bus, a wedged driver, or no GPU at all. The sample is
+	// unknown, and the caller must publish it as unknown rather than as zero.
+	return gpuReading{}
 }
 
 func (tc *TelemetryCollector) Snapshot() map[string]interface{} {
@@ -467,17 +519,18 @@ func (tc *TelemetryCollector) Snapshot() map[string]interface{} {
 	}
 
 	historyCopy := map[string]interface{}{
-		"gpu_util":       copySlice(tc.historyGPUUtil),
-		"gpu_mem_used":   copySlice(tc.historyVRAMUsed),
-		"gpu_temp":       copySlice(tc.historyGPUTemp),
-		"gpu_power":      copySlice(tc.historyGPUPower),
-		"tok_s":          copySlice(tc.historyTokS),
-		"ram_util":       copySlice(tc.historyRAMUtil),
-		"cpu_util":       copySlice(tc.historyCPUUtil),
-		"cpu":            copySlice(tc.historyCPUUtil),
-		"igpu_util":      copySlice(tc.historyIGPUUtil),
-		"disk_read_mb":   copySlice(tc.historyDiskRead),
-		"gpu_pcie_rx_mb": copySlice(tc.historyPcieRx),
+		"gpu_util":           copySlice(tc.historyGPUUtil),
+		"gpu_mem_used":       copySlice(tc.historyVRAMUsed),
+		"gpu_temp":           copySlice(tc.historyGPUTemp),
+		"gpu_power":          copySlice(tc.historyGPUPower),
+		"tok_s":              copySlice(tc.historyTokS),
+		"prefill_tok_s_mean": copySlice(tc.historyPrefill),
+		"ram_util":           copySlice(tc.historyRAMUtil),
+		"cpu_util":           copySlice(tc.historyCPUUtil),
+		"cpu":                copySlice(tc.historyCPUUtil),
+		"igpu_util":          copySlice(tc.historyIGPUUtil),
+		"disk_read_mb":       copySlice(tc.historyDiskRead),
+		"gpu_pcie_rx_mb":     copySlice(tc.historyPcieRx),
 	}
 
 	return map[string]interface{}{

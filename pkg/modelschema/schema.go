@@ -24,12 +24,13 @@ const (
 type Architecture string
 
 const (
-	ArchHybridQSA               Architecture = "hybrid_qsa"                 // QSA + GDN hybrid recurrence
-	ArchDenseTransformer        Architecture = "dense_transformer"          // Standard dense transformer
-	ArchSparseMoE               Architecture = "sparse_moe"                 // Sparse Mixture-of-Experts
-	ArchAsymmetricMoE           Architecture = "asymmetric_moe"             // Asymmetric QK/V MoE with SWA (e.g. MiMo-V2.6)
-	ArchStateSpaceModel         Architecture = "state_space_model"          // Selective State-Space Model (e.g. Mamba-1/2)
-	ArchMultiHeadLatentAttention Architecture = "multi_head_latent_attention" // MLA + DeepSeekMoE
+	ArchHybridQSA                 Architecture = "hybrid_qsa"                  // QSA + GDN hybrid recurrence
+	ArchDenseTransformer          Architecture = "dense_transformer"           // Standard dense transformer
+	ArchSparseMoE                 Architecture = "sparse_moe"                  // Sparse Mixture-of-Experts
+	ArchAsymmetricMoE             Architecture = "asymmetric_moe"              // Asymmetric QK/V MoE with SWA (e.g. MiMo-V2.6)
+	ArchStateSpaceModel           Architecture = "state_space_model"           // Selective State-Space Model (e.g. Mamba-1/2)
+	ArchMultiHeadLatentAttention  Architecture = "multi_head_latent_attention" // MLA + DeepSeekMoE
+	ArchCompressedSparseAttention Architecture = "compressed_sparse_attention" // CSA + HCA hybrid attention + DeepSeekMoE (e.g. DeepSeek-V4)
 )
 
 // AttentionKind defines the attention / recurrence mechanism
@@ -42,6 +43,7 @@ const (
 	AttentionAsymmetricSWA AttentionKind = "asymmetric_swa"
 	AttentionSelectiveSSM  AttentionKind = "selective_ssm"
 	AttentionMLA           AttentionKind = "mla"
+	AttentionHybridCSAHCA  AttentionKind = "hybrid_csa_hca" // Compressed Sparse + Heavily Compressed Attention (e.g. DeepSeek-V4)
 )
 
 // MoETopology defines Mixture-of-Experts geometry

@@ -4,6 +4,7 @@
 #include "strata/rt/runtime.hpp"
 
 #include <cstdio>
+#include <filesystem>
 #include <functional>
 
 using namespace strata::rt;
@@ -187,6 +188,28 @@ int main() {
         auto rt3 = make([](const std::string& p, int) { return p.find("Correct value") != std::string::npos ? std::string("The 20th Fibonacci number is 6765.") : std::string("The 20th Fibonacci number is 6764."); }, nullptr, cfg);
         auto bad = rt3.generate(ask("fib 20?"));
         CHECK(bad.text.find("6765") != std::string::npos && bad.text.find("6764") == std::string::npos, "wrong Fibonacci value corrected");
+    }
+    {   std::printf("[12] the virtual window is RAM-only by default: no context file reaches the disk\n");
+        char tmpl[] = "/tmp/strata_rtXXXXXX"; std::string dir = mkdtemp(tmpl);
+        const char* prev = getenv("STRATA_CONTEXT_DIR"); std::string prev_dir = prev ? prev : "";
+        setenv("STRATA_CONTEXT_DIR", dir.c_str(), 1);   // even with the directory named, nothing may be written to it
+        CHECK(!RuntimeConfig().persist_contexts, "storing the window on disk is opt-in");
+        auto reply = [](const std::string& p, int) {
+            return p.find("never on the SSD") != std::string::npos ? std::string("In RAM, never on the SSD.") : std::string("Noted.");
+        };
+        RuntimeDeps d; d.generator = std::make_shared<ScriptedGenerator>(reply); d.tokenizer = std::make_shared<ByteTokenizer>();
+        RuntimeConfig cfg; cfg.virtual_context.physical_tokens = 2048;   // smaller than the conversation: the window has to page
+        InferenceRuntime rt(d, cfg);
+        rt.generate(ask("Decision: the window stores in RAM, never on the SSD."));
+        for (int i = 0; i < 120; ++i)
+            rt.generate(ask("Status note " + std::to_string(i) + ": build finished, nothing unusual, moving on to the next task."));
+        auto out = rt.generate(ask("Where does the window store context, as we discussed earlier?"));
+        CHECK(out.text.find("never on the SSD") != std::string::npos, "the window is recalled from RAM while the process runs");
+        size_t files = 0;
+        for (const auto& e : std::filesystem::directory_iterator(dir)) { (void)e; ++files; }
+        CHECK(files == 0, "STRATA_CONTEXT_DIR stayed empty: the window wrote nothing to disk");
+        if (prev_dir.empty()) unsetenv("STRATA_CONTEXT_DIR"); else setenv("STRATA_CONTEXT_DIR", prev_dir.c_str(), 1);
+        (void)std::system(("rm -rf '" + dir + "'").c_str());
     }
     std::printf(g_fail ? "%d FAILED\n" : "ALL PASSED\n", g_fail);
     return g_fail ? 1 : 0;

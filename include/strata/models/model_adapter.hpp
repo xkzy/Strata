@@ -81,6 +81,20 @@ struct MoEModelConfig {
     int64_t hc_lr = 320;
     float norm_eps = 1e-6f;
 
+    // DeepSeek-V4.1 (deepseek41) extensions: MLA-style LoRA ranks, the sparse indexer that picks
+    // which past blocks each layer attends to, per-layer compression, and the engram memory layers.
+    int64_t q_lora_rank = 0;
+    int64_t kv_lora_rank = 0;
+    int64_t qk_rope_head_dim = 0;
+    int64_t output_lora_rank = 0;
+    int64_t output_groups = 0;
+    int64_t indexer_heads = 0;
+    int64_t indexer_key_dim = 0;
+    int64_t indexer_top_k = 0;
+    std::vector<int64_t> compress_ratios;  // per layer: 0 = full attention, n = HCA compression
+    std::vector<int64_t> engram_layers;    // layers carrying the engram memory (deepseek41)
+    std::vector<int64_t> kv_source_layers; // layers that own a compressed-KV source (deepseek41)
+
     // Enums
     RoutingType routing_type = RoutingType::kTopKSigmoid;
     AttentionType attention_type = AttentionType::kSparseHybridAttn;

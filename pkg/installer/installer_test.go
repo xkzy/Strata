@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"strata/pkg/modelschema"
 )
 
 func TestDetectHardware(t *testing.T) {
@@ -301,6 +303,56 @@ func TestDeleteModelFilesAndSecurity(t *testing.T) {
 	}
 	if _, err := os.Stat(testPart); !os.IsNotExist(err) {
 		t.Errorf("testPart was not deleted")
+	}
+}
+
+// TestCuratedCatalog_DeepSeekV41Flash pins the DeepSeek-V4.1-Flash download entry: exactly one, with the
+// numbers the file on Hugging Face really has (415.8 GB single file, 1M-token context), and pointed at the
+// same file the model registry's manifest names, so the setup list and /v1/models cannot drift apart.
+func TestCuratedCatalog_DeepSeekV41Flash(t *testing.T) {
+	var got ModelOption
+	n := 0
+	for _, m := range GetCuratedHuggingFaceModels() {
+		if strings.Contains(m.RepoID, "DeepSeek-V4.1-Flash") {
+			got = m
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("expected exactly 1 DeepSeek-V4.1-Flash catalog entry, got %d", n)
+	}
+	if got.Filename != "DeepSeek-V4.1-Flash-GSQ-RCO-3.0bit.gguf" {
+		t.Errorf("unexpected filename %q", got.Filename)
+	}
+	if !strings.HasSuffix(got.DownloadURL, "/resolve/main/"+got.Filename) {
+		t.Errorf("download URL does not resolve the file: %q", got.DownloadURL)
+	}
+	if got.SizeGB < 400 || got.SizeGB > 430 {
+		t.Errorf("expected ~415.8 GB on disk, got %.1f GB", got.SizeGB)
+	}
+	if got.MinRAMGB <= got.SizeGB {
+		t.Errorf("MinRAMGB %.0f must exceed the %.1f GB on disk", got.MinRAMGB, got.SizeGB)
+	}
+	if got.ContextLength != 1048576 {
+		t.Errorf("expected 1048576-token context, got %d", got.ContextLength)
+	}
+	if got.Quantization == "" || got.Category == "" || got.Source != SourceHuggingFace {
+		t.Errorf("missing catalog metadata: %+v", got)
+	}
+
+	manifest, ok := modelschema.NewRegistry().GetManifest("deepseek-v4.1-flash")
+	if !ok || manifest == nil {
+		t.Fatal("the model registry has no deepseek-v4.1-flash manifest")
+	}
+	if manifest.DefaultGGUF != got.Filename {
+		t.Errorf("manifest DefaultGGUF %q != catalog filename %q", manifest.DefaultGGUF, got.Filename)
+	}
+	if manifest.HuggingFaceRepo != "deepseek-ai/DeepSeek-V4.1-Flash" {
+		t.Errorf("manifest HuggingFaceRepo %q, want the base model repo deepseek-ai/DeepSeek-V4.1-Flash", manifest.HuggingFaceRepo)
+	}
+	// the catalog sells a quantization build, so its repo differs from the base model repo (as MiMo's does)
+	if got.RepoID == manifest.HuggingFaceRepo {
+		t.Errorf("catalog RepoID %q points at the base model, not a GGUF build", got.RepoID)
 	}
 }
 

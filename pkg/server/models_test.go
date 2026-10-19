@@ -52,6 +52,7 @@ func TestModelsEndpoint_ListAndDetail(t *testing.T) {
 		"mimo-v2.6-flash-rl",
 		"mamba-2.8b",
 		"deepseek-v3",
+		"deepseek-v4.1-flash",
 		"gpt-oss-20b",
 	}
 

@@ -512,6 +512,23 @@ func GetCuratedHuggingFaceModels() []ModelOption {
 			ContextLength: 1048576,
 		},
 
+		// --- DeepSeek-V4.1-Flash (552B-backbone multimodal MoE, 40 text layers, 384 experts) ---
+		{
+			Name:          "DeepSeek-V4.1-Flash-GSQ-RCO-3.0bit",
+			RepoID:        "pfeifferj/DeepSeek-V4.1-Flash-GSQ-RCO-GGUF",
+			Filename:      "DeepSeek-V4.1-Flash-GSQ-RCO-3.0bit.gguf",
+			DownloadURL:   "https://huggingface.co/pfeifferj/DeepSeek-V4.1-Flash-GSQ-RCO-GGUF/resolve/main/DeepSeek-V4.1-Flash-GSQ-RCO-3.0bit.gguf",
+			SizeGB:        415.8,
+			MinRAMGB:      448.0,
+			Description:   "DeepSeek-V4.1-Flash 552B-backbone multimodal MoE in GSQ-RCO 3.0-bit (single 415.8 GB file, 1M-token context; separate DSpark draft 9.3 GB and mmproj vision 1.0 GB in the same repo)",
+			Source:        SourceHuggingFace,
+			Category:      "reasoning",
+			Tags:          []string{"DeepSeek", "MoE", "552B", "1M Context", "GSQ-RCO", "Vision"},
+			Quantization:  "GSQ-RCO-3.0bit",
+			ParamSize:     "552B-Backbone MoE",
+			ContextLength: 1048576,
+		},
+
 		// --- Coding ---
 		{
 			Name:          "Qwen2.5-Coder-7B-Instruct-Q4_K_M",

@@ -41,37 +41,37 @@ const (
 type ExecutionStrategy string
 
 const (
-	StrategyDirectGPU          ExecutionStrategy = "DIRECT_GPU"          // Standard full forward pass on GPU
-	StrategyChunkedPrefill     ExecutionStrategy = "CHUNKED_PREFILL"     // Interleave prompt chunks with decode tokens
-	StrategyActivationOffload  ExecutionStrategy = "ACTIVATION_OFFLOAD"  // Send small activation vectors over PCIe to CPU experts
-	StrategyAsyncSpeculative   ExecutionStrategy = "ASYNC_SPECULATIVE"   // Asynchronous CPU drafting with parallel GPU verification
-	StrategyIndependentCPU     ExecutionStrategy = "INDEPENDENT_CPU"     // Pure CPU execution without GPU contention
+	StrategyDirectGPU         ExecutionStrategy = "DIRECT_GPU"         // Standard full forward pass on GPU
+	StrategyChunkedPrefill    ExecutionStrategy = "CHUNKED_PREFILL"    // Interleave prompt chunks with decode tokens
+	StrategyActivationOffload ExecutionStrategy = "ACTIVATION_OFFLOAD" // Send small activation vectors over PCIe to CPU experts
+	StrategyAsyncSpeculative  ExecutionStrategy = "ASYNC_SPECULATIVE"  // Asynchronous CPU drafting with parallel GPU verification
+	StrategyIndependentCPU    ExecutionStrategy = "INDEPENDENT_CPU"    // Pure CPU execution without GPU contention
 )
 
 // ResourceSnapshot captures current hardware utilization
 type ResourceSnapshot struct {
-	VRAMUsedBytes      int64     `json:"vram_used_bytes"`
-	VRAMTotalBytes     int64     `json:"vram_total_bytes"`
-	HostRAMUsedBytes   int64     `json:"host_ram_used_bytes"`
-	HostRAMTotalBytes  int64     `json:"host_ram_total_bytes"`
-	PCIeTransferMBs    float64   `json:"pcie_transfer_mbs"`
-	PCIeMaxBWMBs       float64   `json:"pcie_max_bw_mbs"`
-	CPULoadPercent     float64   `json:"cpu_load_percent"`
-	GPULoadPercent     float64   `json:"gpu_load_percent"`
-	ActiveQueueLength  int       `json:"active_queue_length"`
-	Timestamp          time.Time `json:"timestamp"`
+	VRAMUsedBytes     int64     `json:"vram_used_bytes"`
+	VRAMTotalBytes    int64     `json:"vram_total_bytes"`
+	HostRAMUsedBytes  int64     `json:"host_ram_used_bytes"`
+	HostRAMTotalBytes int64     `json:"host_ram_total_bytes"`
+	PCIeTransferMBs   float64   `json:"pcie_transfer_mbs"`
+	PCIeMaxBWMBs      float64   `json:"pcie_max_bw_mbs"`
+	CPULoadPercent    float64   `json:"cpu_load_percent"`
+	GPULoadPercent    float64   `json:"gpu_load_percent"`
+	ActiveQueueLength int       `json:"active_queue_length"`
+	Timestamp         time.Time `json:"timestamp"`
 }
 
 // TaskDescriptor describes an incoming task for dispatching
 type TaskDescriptor struct {
-	TaskID        string       `json:"task_id"`
-	WorkloadClass string       `json:"workload_class"`
-	PromptTokens  int          `json:"prompt_tokens"`
-	MaxTokens     int          `json:"max_tokens"`
-	ModelID       string       `json:"model_id"`
-	Priority      int          `json:"priority"` // Higher is more urgent (0-10)
-	IsMoE         bool         `json:"is_moe"`
-	IsPureCPU     bool         `json:"is_pure_cpu"`
+	TaskID        string `json:"task_id"`
+	WorkloadClass string `json:"workload_class"`
+	PromptTokens  int    `json:"prompt_tokens"`
+	MaxTokens     int    `json:"max_tokens"`
+	ModelID       string `json:"model_id"`
+	Priority      int    `json:"priority"` // Higher is more urgent (0-10)
+	IsMoE         bool   `json:"is_moe"`
+	IsPureCPU     bool   `json:"is_pure_cpu"`
 }
 
 // AdmitDecision contains routing and execution directives
@@ -97,6 +97,10 @@ type DecisionRecord struct {
 
 // ResourceManager implements the multi-resource task distribution policy
 type ResourceManager struct {
+	// Adapt is the runtime controller: admission, queueing and memory-tier policy. It is separate from the
+	// legacy RouteTask counters below, which remain the task-routing policy.
+	Adapt *Controller
+
 	mu                sync.RWMutex
 	concurrency       int
 	queueLimit        int
@@ -115,6 +119,7 @@ type ResourceManager struct {
 // NewResourceManager initializes the resource controller with balanced defaults
 func NewResourceManager() *ResourceManager {
 	return &ResourceManager{
+		Adapt:             NewController(DefaultControllerConfig()),
 		concurrency:       4,
 		queueLimit:        32,
 		cacheTier:         "balanced",
@@ -339,6 +344,14 @@ func (rm *ResourceManager) logDecision(taskID, wClass string, dev TargetDevice, 
 	rm.decisions = append(rm.decisions, record)
 }
 
+// ConfigureRuntime applies the run config's power policy and resource_adapt switch to the runtime controller.
+func (rm *ResourceManager) ConfigureRuntime(policy string, enabled bool) {
+	rm.mu.Lock()
+	rm.powerPolicy = normalizePolicy(policy)
+	rm.Adapt.Configure(policy, enabled)
+	rm.mu.Unlock()
+}
+
 // Metrics returns observability snapshot for /metrics and /status endpoints
 func (rm *ResourceManager) Metrics() map[string]interface{} {
 	rm.mu.RLock()
@@ -358,17 +371,18 @@ func (rm *ResourceManager) Metrics() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"concurrency":     rm.concurrency,
-		"queue_limit":     rm.queueLimit,
-		"cache_tier":      rm.cacheTier,
-		"power_policy":    rm.powerPolicy,
-		"active_work":     rm.activeWork + rm.activeCPUWork,
-		"active_gpu_work": rm.activeWork,
-		"active_cpu_work": rm.activeCPUWork,
-		"total_admitted":  rm.totalAdmitted,
-		"total_rejected":  rm.totalRejected,
-		"dominant_ratio":  rm.dominantRatioLocked(),
-		"last_snapshot":   rm.lastSnapshot,
+		"concurrency":      rm.concurrency,
+		"queue_limit":      rm.queueLimit,
+		"cache_tier":       rm.cacheTier,
+		"power_policy":     rm.powerPolicy,
+		"active_work":      rm.activeWork + rm.activeCPUWork,
+		"active_gpu_work":  rm.activeWork,
+		"active_cpu_work":  rm.activeCPUWork,
+		"total_admitted":   rm.totalAdmitted,
+		"total_rejected":   rm.totalRejected,
+		"dominant_ratio":   rm.dominantRatioLocked(),
+		"adapt":            rm.Adapt.Stats(),
+		"last_snapshot":    rm.lastSnapshot,
 		"recent_decisions": decList,
 		"workloads": []string{
 			ShortInteractive, LongContext, HighThroughput, LowLatency,

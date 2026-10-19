@@ -215,6 +215,48 @@ int main(int argc, char** argv) {
         } catch (...) {}
         check(truncated && first_ok, "a truncated shard: its last tensor is out of bounds, the others are not");
     }
+    {   // DeepSeek-V4.1 (arch deepseek41): the metadata is recognized and validated, and a correct
+        // file is still refused - this engine has no CSA/HCA + engram forward graph for it.
+        TempDir d;
+        std::vector<fixture::Kv> kv = {
+            fixture::str("general.architecture", "deepseek41"),
+            fixture::u32("deepseek41.block_count", 40),
+            fixture::u32("deepseek41.embedding_length", 5120),
+            fixture::u32("deepseek41.expert_count", 384),
+            fixture::u32("deepseek41.expert_used_count", 6),
+            fixture::u32("deepseek41.attention.head_count", 64),
+            fixture::u32("deepseek41.attention.head_count_kv", 1),
+            fixture::u32("deepseek41.attention.key_length", 512),
+            fixture::u32("deepseek41.attention.value_length", 512),
+            fixture::u32("deepseek41.attention.q_lora_rank", 1280),
+            fixture::u32("deepseek41.attention.sliding_window", 128),
+            fixture::u32("deepseek41.attention.compress_ratios", 40),  // an array in the real file;
+            fixture::u32("deepseek41.expert_feed_forward_length", 2304), // the guard needs presence
+            fixture::u32("deepseek41.expert_shared_count", 1),
+            fixture::u32("deepseek41.hyper_connection.count", 4),
+            fixture::u32("deepseek41.engram.layers", 2),
+            fixture::u32("deepseek41.attention.kv_source_layers", 4),
+        };
+        auto write_one = [&](const fs::path& p, const std::vector<fixture::Kv>& kvs) {
+            fixture::write(p, kvs, {{"output_norm.weight", {4}, F32, 1}});
+            strata::GgufFile g(p.string());
+            return strata::check_architecture(g);
+        };
+        const std::string full = write_one(d.path / "v41.gguf", kv);
+        check(full.find("deepseek41") != std::string::npos && full.find("refusing to run") != std::string::npos,
+              "a complete deepseek41 file is recognized and refused, not run");
+
+        std::vector<fixture::Kv> missing = kv;
+        missing.erase(missing.begin() + 2);                 // no deepseek41.embedding_length
+        check(write_one(d.path / "v41-missing.gguf", missing).find("missing deepseek41.embedding_length") !=
+                  std::string::npos,
+              "a deepseek41 file missing a key is refused, naming the key");
+
+        std::vector<fixture::Kv> wrong = kv;
+        wrong[1].u = 42;                                    // a different block count
+        check(write_one(d.path / "v41-wrong.gguf", wrong).find("expected 40") != std::string::npos,
+              "a deepseek41 file whose geometry differs is refused, naming both values");
+    }
     std::printf(g_fail ? "gguf_split_test: %d FAILED\n" : "gguf_split_test: all passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

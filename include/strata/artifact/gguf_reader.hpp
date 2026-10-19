@@ -585,9 +585,55 @@ struct Qwen4ExpGuard {
                                   // fewer experts than the canonical 512; the graph reads the true value
 };
 
+// ---- DeepSeek-V4.1 guard. The GGUF metadata is validated so a broken or mislabeled download is
+// named precisely, and a correct one is recognized - but never executed, because this engine has no
+// CSA/HCA + engram forward graph.
+struct DeepSeek41Guard {
+    uint32_t block_count = 40, hidden = 5120, experts = 384, experts_used = 6, head_count = 64,
+             head_count_kv = 1;
+};
+
+inline std::string check_architecture_deepseek41(const GgufFile& g, const DeepSeek41Guard& want = {}) {
+    struct Req {
+        const char* key;
+        uint64_t want;
+    };
+    const Req reqs[] = {
+        {"deepseek41.block_count", want.block_count},
+        {"deepseek41.embedding_length", want.hidden},
+        {"deepseek41.expert_count", want.experts},
+        {"deepseek41.expert_used_count", want.experts_used},
+        {"deepseek41.attention.head_count", want.head_count},
+        {"deepseek41.attention.head_count_kv", want.head_count_kv},
+        {"deepseek41.attention.key_length", 0},
+        {"deepseek41.attention.value_length", 0},
+        {"deepseek41.attention.q_lora_rank", 0},
+        {"deepseek41.attention.sliding_window", 0},
+        {"deepseek41.attention.compress_ratios", 0},
+        {"deepseek41.expert_feed_forward_length", 0},
+        {"deepseek41.expert_shared_count", 0},
+        {"deepseek41.hyper_connection.count", 0},
+        {"deepseek41.engram.layers", 0},
+        {"deepseek41.attention.kv_source_layers", 0},
+    };
+    for (const auto& r : reqs) {
+        const MetaValue* v = g.get(r.key);
+        if (!v) return std::string("deepseek41: missing ") + r.key;
+        if (r.want && v->u != r.want)
+            return std::string(r.key) + " = " + std::to_string(v->u) + ", expected " + std::to_string(r.want);
+    }
+    return {}; // empty == the metadata is DeepSeek-V4.1's
+}
+
 inline std::string check_architecture(const GgufFile& g, const Qwen4ExpGuard& want = {}) {
     const MetaValue* arch = g.get("general.architecture");
     if (!arch) return "missing general.architecture";
+    if (arch->s == "deepseek41") {
+        const std::string detail = check_architecture_deepseek41(g);
+        if (!detail.empty()) return detail;
+        return "architecture is 'deepseek41' (DeepSeek-V4.1): recognized, but this engine has no "
+               "CSA/HCA + engram forward graph for it; refusing to run rather than mis-running";
+    }
     if (arch->s != "qwen4exp") return "architecture is '" + arch->s + "', this engine requires 'qwen4exp'";
     struct Req {
         const char* key;

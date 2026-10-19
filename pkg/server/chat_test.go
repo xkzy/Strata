@@ -558,4 +558,3 @@ func TestOnlineAbliterationHeaderAndBody(t *testing.T) {
 		t.Errorf("expected anReq.AbliterationStrength to be 1.1")
 	}
 }
-

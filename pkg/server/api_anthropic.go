@@ -49,7 +49,7 @@ type anRequest struct {
 		Type         string `json:"type"`
 		BudgetTokens int    `json:"budget_tokens"`
 	} `json:"thinking"`
-	Abliterate          *bool    `json:"abliterate"`
+	Abliterate           *bool    `json:"abliterate"`
 	AbliterationStrength *float64 `json:"abliteration_strength"`
 }
 
@@ -224,9 +224,13 @@ func anError(w http.ResponseWriter, err error) {
 	}
 	typ := "invalid_request_error"
 	switch {
-	case ae.Status == 503:
+	case ae.Status == 429 || ae.Status == 503:
 		typ = "overloaded_error"
-		w.Header().Set("Retry-After", "5")
+		retry := ae.RetryAfter
+		if retry <= 0 {
+			retry = 5
+		}
+		w.Header().Set("Retry-After", fmt.Sprint(retry))
 	case ae.Status >= 500:
 		typ = "api_error"
 	}
