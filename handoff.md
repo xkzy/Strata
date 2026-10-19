@@ -1,7 +1,12 @@
 # Handoff: GPU reliability audit (state after the second pass)
 
-State on 2026-10-19. Nothing is committed. Read `docs/audit/gpu-reliability-audit.md`,
-`gpu-resource-lifecycle.md` and `gpu-test-plan.md` first; they hold the evidence and the findings table.
+State on 2026-10-19. The audit's work is committed: `3b66c9c4` (engine and server code, tests, `docs/audit`,
+including this file) and `f781e9b1` (the rest of the working tree: start-up tuning, the telemetry fallback, model
+cards, the pack CLI, and the `/pack/` ignore fix - `pkg/pack` had been invisible to git because of that rule). At
+both commits `go build ./...` and `go test ./pkg/...` pass in a clean worktree; the C++ engine target was built in
+this tree at 21:11 with the same file contents, and `gpu_wait_test`/`gpu_skip_test` pass. Read
+`docs/audit/gpu-reliability-audit.md`, `gpu-resource-lifecycle.md` and `gpu-test-plan.md` first; they hold the
+evidence and the findings table.
 
 The 5060 Ti **serves with native sm_120 code and falls off with the PTX one**. 20:12 (`build-fat/strata`, 58 sm_120
 cubins): 3 chats at 38.6-56.7 tok/s and 131k/222k-token prompts at 1,354/1,174 tok/s prefill, 82 C, 154 W, no Xid.
@@ -29,6 +34,12 @@ two PTX passes dead in the same place.
 (877d86b8...); that binary is kept unchanged as `build/strata-sm89-ptx` for any further control run, and `build/` was
 reconfigured with `-DCMAKE_CUDA_ARCHITECTURES="89;120"` so a plain `ninja -C build strata` is native for both cards
 here (now 75f9670f..., 58 + 58). `bin/strata` and `bin/strata-server` were rebuilt from this tree at 21:11.
+
+One caution about this checkout: while the audit work was committed, git wrote several 0-byte objects into
+`.git/objects` (the `src/prefill` tree and the `prefill.cpp` blob among them), so the first commit had a missing
+subtree. It was rebuilt from a fresh index after the blob and tree were rewritten from the working tree, `git fsck`
+is clean, and a clean worktree at both commits builds. If another commit here ever reports "loose object ... is empty",
+check `find .git/objects -type f -size 0` and `git fsck` before trusting the tree.
 
 ## Ground rules (from the owner)
 
