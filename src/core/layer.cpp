@@ -856,7 +856,13 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     } else {
         strata::kernels::kv_ring_table(st.page_table, pages, p.slots, nullptr);
     }
-    cudaDeviceSynchronize();
+    // Setup is asynchronous (the memset/table kernels above run on the default stream); a failure here means the
+    // state is half built, and the caller must refuse it rather than compute on it.
+    const cudaError_t setup_err = cudaDeviceSynchronize();
+    if (setup_err != cudaSuccess) {
+        std::fprintf(stderr, "strata: QSA state init: the setup work failed: %s\n", cudaGetErrorString(setup_err));
+        return 0;   // the caller sees a zero byte count; a half-built state is worse than none
+    }
     return c.used;
 }
 
@@ -982,7 +988,13 @@ static void st_end(int64_t layer, int slot, void* stream) {
 
 void stage_timing_report(int64_t n_layers) {
     if (!g_st.on) return;
-    cudaDeviceSynchronize();
+    // Diagnostic, read once after the run: if the device does not sync, the event pairs hold no usable time, so
+    // print why instead of a table of numbers measured on work that never finished.
+    const cudaError_t sync_err = cudaDeviceSynchronize();
+    if (sync_err != cudaSuccess) {
+        std::fprintf(stderr, "\nper-stage GPU timing skipped: the device did not sync: %s\n", cudaGetErrorString(sync_err));
+        return;
+    }
     double tot[STAGE_SLOTS] = {};
     for (int s = 0; s < g_st.nslots; ++s) {
         for (int64_t l = 0; l < n_layers && l < 64; ++l) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -67,6 +68,29 @@ func TestCrashedEngineIsLoggedAndRestarted(t *testing.T) {
 	}
 }
 
+// A process stuck in the driver after SIGKILL still holds the GPU; Start must not load a second engine onto that card.
+func TestStartRefusesWhileTheOldEngineIsStillAlive(t *testing.T) {
+	old := reapEngine
+	reapEngine = func(*exec.Cmd, context.CancelFunc, <-chan struct{}) bool { return false }
+	defer func() { reapEngine = old }()
+	dir := t.TempDir()
+	script, counter := crashingEngine(t, dir, "exit 0\n")
+	eo := NewEngineOrchestrator(EngineConfig{BinaryPath: script, Args: []string{"x"}, Cwd: dir})
+	err := eo.Start(context.Background())
+	if err == nil {
+		t.Fatal("Start launched an engine while the previous process was still alive")
+	}
+	if !strings.Contains(err.Error(), "still alive after SIGKILL") {
+		t.Fatalf("the error does not say why: %v", err)
+	}
+	if n := starts(counter); n != 0 {
+		t.Fatalf("the engine binary was started %d times, want 0", n)
+	}
+	if st, why := eo.Status(); st != StateFailed || !strings.Contains(why, "still alive after SIGKILL") {
+		t.Fatalf("state %v, reason %q", st, why)
+	}
+}
+
 func TestStopPreventsRestart(t *testing.T) {
 	dir := t.TempDir()
 	script, counter := crashingEngine(t, dir, "exit 1\n")
@@ -109,6 +133,49 @@ func TestGPUFaultMarkers(t *testing.T) {
 	}
 }
 
+func TestPlanFaultMarkers(t *testing.T) {
+	// the line the 2026-10-19 19:45 run ended with
+	if m, ok := planFault([]string{"strata generate: expert cache auto", "strata serve: the GPU has too little free VRAM for the prompt path: turn images off"}); !ok || m != "the GPU has too little free VRAM for the prompt path" {
+		t.Fatalf("the prompt-path failure was not recognised: %q %v", m, ok)
+	}
+	if _, ok := planFault([]string{"strata serve: prefill: device buffers for a chunk of 512 tokens do not fit (42 of 7807 MiB free)"}); ok {
+		// a request's own chunk can fail to fit while the engine keeps serving: not evidence the plan is broken
+		t.Fatal("a per-request prefill line was taken for the plan failing")
+	}
+	if _, ok := planFault([]string{"strata serve: the prompt path's own buffers do not fit on CUDA0: 162 MiB free"}); !ok {
+		t.Fatal("the new prompt-path line was not recognised")
+	}
+	if _, ok := planFault([]string{"boom: out of memory"}); ok {
+		t.Fatal("an ordinary failure was taken for a plan failure")
+	}
+	if _, ok := planFault([]string{"prefill copy_i32: unspecified launch failure"}); ok {
+		t.Fatal("a GPU fault was taken for a plan failure")
+	}
+}
+
+// A VRAM plan that cannot fit is arithmetic, not a bad run: the same failure twice stops the restarts (the 19:45 run
+// reloaded the model four times for it) and the reason says which flags free the VRAM.
+func TestRepeatedPlanFailureStopsRestarts(t *testing.T) {
+	dir := t.TempDir()
+	script, counter := crashingEngine(t, dir, "echo 'strata serve: the GPU has too little free VRAM for the prompt path: turn images off' >&2\nexit 1\n")
+	eo := NewEngineOrchestrator(EngineConfig{BinaryPath: script, Args: []string{"x"}, Cwd: dir, RestartDelay: 10 * time.Millisecond})
+	if err := eo.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer eo.Stop()
+	time.Sleep(1500 * time.Millisecond)
+	if n := starts(counter); n != 2 {
+		t.Fatalf("started %d times, want 2 (the first run and one retry)", n)
+	}
+	if st, why := eo.Status(); st != StateFailed || !strings.Contains(why, "VRAM plan") {
+		t.Fatalf("state %v, reason %q", st, why)
+	}
+	logText, _ := os.ReadFile(filepath.Join(dir, "strata-engine-failures.log"))
+	if !strings.Contains(string(logText), "--kv-resident") || !strings.Contains(string(logText), "not restarting") {
+		t.Fatalf("failure log does not say what to change:\n%s", logText)
+	}
+}
+
 // The same GPU fault twice in a row stops the restarts after the one retry, instead of reloading the model eight times.
 func TestRepeatedGPUFaultStopsRestarts(t *testing.T) {
 	dir := t.TempDir()
@@ -128,6 +195,34 @@ func TestRepeatedGPUFaultStopsRestarts(t *testing.T) {
 	logText, _ := os.ReadFile(filepath.Join(dir, "strata-engine-failures.log"))
 	if !strings.Contains(string(logText), "not restarting") {
 		t.Fatalf("failure log does not say why it stopped:\n%s", logText)
+	}
+}
+
+// A GPU fault on crash 1 must not count against crash 2 if crash 2 is unrelated: logTail is cleared on each Start.
+func TestGPUFaultFromPreviousCrashDoesNotTriggerUnusable(t *testing.T) {
+	dir := t.TempDir()
+	run := filepath.Join(dir, "run")
+	script := filepath.Join(dir, "engine.sh")
+	body := "#!/bin/sh\n" +
+		"n=$(cat " + run + " 2>/dev/null || echo 0)\n" +
+		"echo $((n+1)) > " + run + "\n" +
+		`if [ "$n" = "0" ]; then` + "\n" +
+		"  echo 'prefill: unspecified launch failure' >&2\n" +
+		"else\n" +
+		"  echo 'plain startup failure' >&2\n" +
+		"fi\n" +
+		"exit 1\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	eo := NewEngineOrchestrator(EngineConfig{BinaryPath: script, Args: []string{"x"}, Cwd: dir, RestartDelay: 10 * time.Millisecond})
+	if err := eo.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer eo.Stop()
+	time.Sleep(500 * time.Millisecond)
+	if _, why := eo.Status(); strings.Contains(why, "GPU is unusable") {
+		t.Fatalf("a plain second failure was incorrectly treated as a repeated GPU fault: %q", why)
 	}
 }
 

@@ -124,6 +124,8 @@ func NewKVPageTable(budgets KVTierBudgets) *KVPageTable {
 	}
 }
 
+// Lookup returns the page for key, or nil. The result is a copy: UpdateResidency, EvictTier, Pin and RecordAccess
+// change the stored page under the table's lock, so handing out the pointer would let a reader race them.
 func (t *KVPageTable) Lookup(key KVBlockKey) *KVPage {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -136,21 +138,51 @@ func (t *KVPageTable) Lookup(key KVBlockKey) *KVPage {
 	if int(p.Residency) < 5 {
 		t.stats.Hits[p.Residency]++
 	}
-	return p
+	return copyPage(p)
 }
 
+// GetPage returns a copy of the page with id, or nil (see Lookup).
 func (t *KVPageTable) GetPage(id uint64) *KVPage {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return t.pageIndex[id]
+	return copyPage(t.pageIndex[id])
 }
 
+// copyPage copies a stored page (and its dependent list) for a caller outside the lock.
+func copyPage(p *KVPage) *KVPage {
+	if p == nil {
+		return nil
+	}
+	c := *p
+	if len(p.DependentPages) > 0 {
+		c.DependentPages = append([]uint64(nil), p.DependentPages...)
+	}
+	return &c
+}
+
+// RegisterPage adds p to the table. The table keeps p itself, not a copy: do not change it after registering it;
+// move it between tiers with UpdateResidency / EvictTier and read it back with Lookup or GetPage (which copy it).
 func (t *KVPageTable) RegisterPage(p *KVPage) bool {
 	if p == nil || p.ID == 0 {
 		return false
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if old, ok := t.pageIndex[p.ID]; ok {   // registered again: take the old entry out first, or the tier counts add up twice
+		if t.keyIndex[old.Key] == old {
+			delete(t.keyIndex, old.Key)
+		}
+		if tier := int(old.Residency); tier < 5 {
+			if t.stats.TierPages[tier] > 0 {
+				t.stats.TierPages[tier]--
+			}
+			if t.stats.TierBytes[tier] >= old.ByteSize {
+				t.stats.TierBytes[tier] -= old.ByteSize
+			} else {
+				t.stats.TierBytes[tier] = 0
+			}
+		}
+	}
 	t.keyIndex[p.Key] = p
 	t.pageIndex[p.ID] = p
 	t.stats.TotalPages = uint64(len(t.pageIndex))

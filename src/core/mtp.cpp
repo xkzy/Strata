@@ -2,6 +2,7 @@
 #include "strata/core/mtp.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/on_device.hpp"
+#include "strata/core/gpu_wait.hpp"
 
 #include "strata/core/native_head.hpp"
 #include "strata/core/peer_experts.hpp"
@@ -126,7 +127,21 @@ bool read_file(const std::string& path, std::vector<uint8_t>& out) {
 }  // namespace
 
 MtpDrafter::~MtpDrafter() {
-    if (cs_) cudaStreamSynchronize(cs_);
+    if (failed_) return;   // quarantined: a stuck stream may still read these buffers, so none is synced or freed
+    if (cs_) {
+        // Bounded, like the verifier's destructor: a stream that does not drain within the wait limit may still read
+        // these buffers, so nothing is freed (the process exits afterwards and the driver frees it).
+        const WaitResult w = wait_bounded(
+            [this] {
+                const cudaError_t q = cudaStreamQuery(cs_);
+                return q == cudaSuccess ? PollState::Ready : q == cudaErrorNotReady ? PollState::Pending : PollState::Failed;
+            },
+            gpu_wait_limit());
+        if (w == WaitResult::TimedOut) {
+            std::fprintf(stderr, "strata: mtp: a GPU stream did not finish within the wait limit; its memory is left as it is\n");
+            return;
+        }
+    }
     for (auto& e : prefill_exec_) if (e) cudaGraphExecDestroy(e);
     for (auto& e : prefill_dev_exec_) if (e) cudaGraphExecDestroy(e);
     if (pf_dev_) cudaFree(pf_dev_);
@@ -349,7 +364,11 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     qsa_set_kv_int8(kv_int8_was);
     qsa_set_kv_hybrid(kv_hybrid_was);
     qsa_state_zero(st_, g, nullptr);
-    cudaDeviceSynchronize();
+    const cudaError_t zero_err = cudaDeviceSynchronize();
+    if (zero_err != cudaSuccess) {   // the drafter would read uninitialised K/V: refuse it
+        err = std::string("mtp: zeroing the K/V state failed: ") + cudaGetErrorString(zero_err);
+        return false;
+    }
     vram_ += sb;
 
     // ---- buffers
@@ -630,7 +649,11 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
             dvocab_host_.resize((size_t) n_dvocab_);
             std::memcpy(dvocab_host_.data(), raw.data(), raw.size());
             strata::kernels::gather_rows((const uint8_t*) head->weights(), row_bytes, dvocab_, n_dvocab_, dhead_, nullptr);
-            cudaDeviceSynchronize();
+            const cudaError_t gather_err = cudaDeviceSynchronize();
+            if (gather_err != cudaSuccess) {   // an unanswered gather leaves the draft head garbage
+                err = std::string("mtp: the draft head gather failed: ") + cudaGetErrorString(gather_err);
+                return false;
+            }
             vram_ += (uint64_t) (n_dvocab_ * row_bytes) + raw.size();
             std::fprintf(stderr, "strata mtp: draft head over %lld tokens (%.1f MiB)\n", (long long) n_dvocab_,
                          (double) (n_dvocab_ * row_bytes) / 1048576.0);
@@ -991,9 +1014,16 @@ bool finish_capture(cudaStream_t cs, bool ok, cudaGraphExec_t& exec, const char*
         return false;
     }
     cudaGraphDestroy(graph);
-    // an explicit upload: the first launch's implicit one blocked behind a device-side spin (verify.cpp)
-    cudaGraphUpload(exec, cs);
-    cudaStreamSynchronize(cs);
+    // an explicit upload: the first launch's implicit one blocked behind a device-side spin (verify.cpp).  A failed
+    // upload or drain means the graph may not run as captured, so the capture fails instead of keeping the exec.
+    cudaError_t ue = cudaGraphUpload(exec, cs);
+    if (ue == cudaSuccess) ue = cudaStreamSynchronize(cs);
+    if (ue != cudaSuccess) {
+        cudaGraphExecDestroy(exec);
+        exec = nullptr;
+        err = std::string("mtp: ") + what + " capture upload: " + cudaGetErrorString(ue);
+        return false;
+    }
     return true;
 }
 }  // namespace
@@ -1093,7 +1123,11 @@ void MtpDrafter::kv_restore(int64_t upto) {
     const strata::kernels::QsaShapes s = shapes_of(*g_);
     const int64_t b1 = (upto + s.page_size - 1) / s.page_size, b0 = std::max<int64_t>(0, b1 - st_.n_slots);
     strata::kernels::kv_ring_restore(qsa_attn_pools(st_), st_.host, qsa_kv_format(st_), b0, b1, st_.n_slots, s, cs_);
-    cudaStreamSynchronize(cs_);
+    const cudaError_t e = cudaStreamSynchronize(cs_);
+    if (e != cudaSuccess) {   // the ring may hold wrong cells: drafting from it would only produce wrong drafts
+        std::fprintf(stderr, "strata: mtp: restoring the KV ring failed (%s); the drafter is stopped\n", cudaGetErrorString(e));
+        failed_ = true;
+    }
 }
 
 bool MtpDrafter::prepare_prefill(std::string& err) {
@@ -1225,6 +1259,7 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
 bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* drafts, std::string& err,
                        float* probs, float min_p, int* n_drafts) {
     const OnDevice on_device(device_);
+    if (failed_) { err = "mtp: the drafter was stopped after an earlier GPU failure"; return false; }
     if (T < 1 || T > max_t_ || a < 0 || a >= T) { err = "mtp: draft arguments out of range"; return false; }
     if (chain_live_) { err = "mtp: a pipelined chain is still in flight"; return false; }
     // #783 PR-i (stuchapin909): the round runs for the cells up to the accepted row a (T = a + 1): the K/V of the rejected
@@ -1272,6 +1307,30 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         pss->ple.table->prefetch_rows(rows16);
     };
 
+    // Waits for draft token j to land in the mapped output.  Bounded: a stream that stopped (error) or never
+    // finishes (hang) ends the draft with a message instead of spinning the host thread forever.
+    auto wait_step = [&](int j) {
+        const auto t_start = std::chrono::steady_clock::now();
+        const auto limit = strata::core::gpu_wait_limit();
+        uint32_t spins = 0;
+        while (((volatile int32_t*) h_out_)[j] < 0) {
+#if defined(_WIN32) || defined(__x86_64__)
+            _mm_pause();
+#endif
+            if ((++spins & 1023u) != 0) continue;
+            const cudaError_t q = cudaStreamQuery(cs_);
+            if (q != cudaErrorNotReady) {
+                if (q != cudaSuccess) { err = std::string("mtp draft: ") + cudaGetErrorString(q); failed_ = true; return false; }
+                break;   // the stream finished; the value is there or the kernel produced none
+            }
+            if (limit.count() > 0 && std::chrono::steady_clock::now() - t_start > limit) {
+                err = "mtp draft: the GPU did not produce draft token " + std::to_string(j) + " within the wait limit";
+                failed_ = true;
+                return false;
+            }
+        }
+        return true;
+    };
     int n = 0;
     if (min_p <= 0.0f && max_steps > 0) {
         if (cudaGraphLaunch(cp ? round_exec_c_[T] : round_exec_[T], cs_) != cudaSuccess) {
@@ -1287,13 +1346,7 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         (void) cudaStreamQuery(cs_);
         prefetch_ple(tokens[a]);
         for (int j = 0; j + 1 < max_steps; ++j) {
-            uint32_t spins = 0;
-            while (((volatile int32_t*) h_out_)[j] < 0) {
-#if defined(_WIN32) || defined(__x86_64__)
-                _mm_pause();
-#endif
-                if ((++spins & 1023u) == 0 && cudaStreamQuery(cs_) != cudaErrorNotReady) break;
-            }
+            if (!wait_step(j)) return false;
             drafts[j] = ((volatile int32_t*) h_out_)[j];
             if (probs) probs[j] = ((volatile float*) h_prob_)[j];
             prefetch_ple(drafts[j]);
@@ -1314,16 +1367,7 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         }
         (void) cudaStreamQuery(cs_);
         prefetch_ple(tokens[a]);
-        auto wait_step = [&](int j) {
-            uint32_t spins = 0;
-            while (((volatile int32_t*) h_out_)[j] < 0) {
-#if defined(_WIN32) || defined(__x86_64__)
-                _mm_pause();
-#endif
-                if ((++spins & 1023u) == 0 && cudaStreamQuery(cs_) != cudaErrorNotReady) break;
-            }
-        };
-        wait_step(0);
+        if (!wait_step(0)) return false;
         drafts[0] = ((volatile int32_t*) h_out_)[0];
         float pj = ((volatile float*) h_prob_)[0];
         if (probs) probs[0] = pj;
@@ -1335,7 +1379,7 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
             }
             (void) cudaStreamQuery(cs_);
             prefetch_ple(drafts[j - 1]);
-            wait_step(j);
+            if (!wait_step(j)) return false;
             drafts[j] = ((volatile int32_t*) h_out_)[j];
             pj = ((volatile float*) h_prob_)[j];
             if (probs) probs[j] = pj;

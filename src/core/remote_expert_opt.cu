@@ -53,6 +53,16 @@ void RemoteExpertOpt::attach(RemoteExperts& remote) {
     peers_.push_back({&remote});
 }
 
+void RemoteExpertOpt::detach(RemoteExperts& remote) {
+    if (remote.remote_opt_ == this) remote.remote_opt_ = nullptr;
+    for (auto it = peers_.begin(); it != peers_.end(); ++it) {
+        if (it->remote == &remote) {
+            peers_.erase(it);
+            break;
+        }
+    }
+}
+
 bool RemoteExpertOpt::init(std::string& err) {
     void* mapped = nullptr;
     if (!check(cudaHostAlloc((void**) &h_sum_, MAXT * (H + K) * sizeof(float),

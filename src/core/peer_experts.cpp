@@ -1,6 +1,8 @@
 // src/core/peer_experts.cpp - see include/strata/core/peer_experts.hpp.
 #include "strata/core/peer_experts.hpp"
 
+#include "strata/core/gpu_wait.hpp"
+
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/iq_kernels.hpp"
@@ -8,10 +10,13 @@
 #include "strata/kernels/s2_expert_grouped.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <string>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <limits.h>
 #include <stdexcept>
 #include <vector>
 
@@ -81,6 +86,63 @@ bool p2p_copies_data(int device) {
     return ok;
 }
 
+/// Where the two GPUs sit on the PCIe tree (Linux sysfs): the deepest bridge both hang under.  "" = not known.
+std::string pcie_shared_ancestor(int a, int b) {
+#if defined(__linux__)
+    auto real = [](int dev) -> std::string {
+        char id[32] = {0}, path[PATH_MAX];
+        if (cudaDeviceGetPCIBusId(id, (int) sizeof id, dev) != cudaSuccess) { cudaGetLastError(); return {}; }
+        for (char* c = id; *c; ++c) *c = (char) std::tolower((unsigned char) *c);
+        const std::string link = std::string("/sys/bus/pci/devices/") + (id[4] == ':' ? std::string(id) : "0000:" + std::string(id));
+        return realpath(link.c_str(), path) != nullptr ? std::string(path) : std::string();
+    };
+    const std::string pa = real(a), pb = real(b);
+    if (pa.empty() || pb.empty()) return {};
+    size_t i = 0, last = 0;
+    while (i < pa.size() && i < pb.size() && pa[i] == pb[i]) { if (pa[i] == '/') last = i; ++i; }
+    return pa.substr(0, last);   // e.g. /sys/devices/pci0000:00 = only the host bridge is shared
+#else
+    (void) a; (void) b;
+    return {};
+#endif
+}
+
+bool peer_direct_enabled() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_PEER_DIRECT"); return v == nullptr || std::atoi(v) != 0; }();
+    return on;
+}
+
+/// Startup self-test of the zero-copy result path: the peer card scatters 4 small rows into pinned host memory and the host checks
+/// them.  A card or platform where that does not work is told by an error or wrong rows, and then the staged copy route is used.
+bool direct_scatter_works(const float* d_src, cudaStream_t s, std::string& why) {
+    constexpr int kRows = 4;
+    const size_t n = (size_t) kRows * H;
+    float* dst = nullptr;
+    int32_t* d_rows = nullptr;
+    bool ok = false;
+    do {
+        if (cudaHostAlloc((void**) &dst, n * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess) { why = "no pinned test buffer"; break; }
+        std::vector<float> pat(n);
+        for (size_t i = 0; i < n; ++i) pat[i] = 1.0f + (float) (i % 977);
+        std::memset(dst, 0, n * sizeof(float));
+        const int32_t rows[kRows] = {3, 2, 1, 0};
+        if (cudaMalloc((void**) &d_rows, sizeof rows) != cudaSuccess) { why = "no test memory"; break; }
+        if (cudaMemcpyAsync(const_cast<float*>(d_src), pat.data(), n * sizeof(float), cudaMemcpyHostToDevice, s) != cudaSuccess ||
+            cudaMemcpyAsync(d_rows, rows, sizeof rows, cudaMemcpyHostToDevice, s) != cudaSuccess) { why = "test upload failed"; break; }
+        try { strata::kernels::scatter_rows_f32(d_src, dst, d_rows, kRows, H, s); } catch (const std::exception& e) { why = e.what(); break; }
+        const cudaError_t e = cudaStreamSynchronize(s);
+        if (e != cudaSuccess) { why = std::string("scatter: ") + cudaGetErrorString(e); break; }
+        ok = true;
+        for (int r = 0; r < kRows && ok; ++r)   // src row r lands in dst row rows[r]
+            ok = std::memcmp(dst + (size_t) rows[r] * H, pat.data() + (size_t) r * H, (size_t) H * sizeof(float)) == 0;
+        if (!ok) why = "the rows arrived wrong";
+    } while (false);
+    cudaGetLastError();
+    if (d_rows != nullptr) cudaFree(d_rows);
+    if (dst != nullptr) cudaFreeHost(dst);
+    return ok;
+}
+
 bool ck(cudaError_t e, const char* what, std::string& err) {
     if (e == cudaSuccess) return true;
     err = std::string("peer experts: ") + what + ": " + cudaGetErrorString(e);
@@ -93,6 +155,11 @@ PeerExperts::~PeerExperts() { close(); }
 
 void PeerExperts::close() {
     if (device_ < 0) return;
+    if (failed_) {   // the card may still be running our work: waiting for it or freeing what it reads would hang or fault; the process is ending
+        std::fprintf(stderr, "strata: peer GPU %d is quarantined; its memory is left as it is\n", device_);
+        device_ = -1;
+        return;
+    }
     {
         On on(device_);
         if (stream_) cudaStreamSynchronize(stream_);
@@ -122,6 +189,7 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
                        ExpertSource& src, int64_t n_layers, int64_t n_expert, int reserve_mib, int64_t max_slots,
                        std::string& err) {
     close();
+    failed_ = false;
     int count = 0;
     if (!ck(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err)) return false;
     if (device < 1 || device >= count) {
@@ -139,6 +207,28 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
         cudaDeviceCanAccessPeer(&a, 0, device);
         cudaDeviceCanAccessPeer(&b, device, 0);
         p2p_ = a && b;
+        // STRATA_PEER_NO_P2P=1: skip P2P entirely; the host staging route is used instead
+        static const bool no_p2p_env = [] {
+            const char* v = std::getenv("STRATA_PEER_NO_P2P"); return v != nullptr && std::atoi(v) != 0;
+        }();
+        if (p2p_ && no_p2p_env) p2p_ = false;
+        // Cross-architecture pair (seen on RTX 5060 Ti SM 12.0 + RTX 4060 SM 8.9, driver 595.91.07, behind a host bridge): no P2P is tried.
+        // cudaDeviceCanAccessPeer says 1 for any PCIe pair, so it is no proof.  The crashes on that machine were Xid 79 with no warning in the
+        // kernel log before them; this guard is a precaution, not a confirmed cure.  STRATA_PEER_NO_P2P=0 overrides it.
+        if (p2p_) {
+            const char* force_env = std::getenv("STRATA_PEER_NO_P2P");
+            const bool force_on = force_env != nullptr && std::atoi(force_env) == 0;
+            int maj0 = 0, majD = 0;
+            if (!force_on &&
+                cudaDeviceGetAttribute(&maj0, cudaDevAttrComputeCapabilityMajor, 0) == cudaSuccess &&
+                cudaDeviceGetAttribute(&majD, cudaDevAttrComputeCapabilityMajor, device) == cudaSuccess &&
+                maj0 != majD) {
+                std::fprintf(stderr, "strata: peer GPU %d: skipping P2P (SM %d.x vs SM %d.x: different GPU "
+                                     "architectures crash the NVIDIA UVM module with Xid 96 on peer-access setup; "
+                                     "STRATA_PEER_NO_P2P=0 to force)\n", device, maj0, majD);
+                p2p_ = false;
+            }
+        }
         if (p2p_) {
             On on0(0);
             cudaError_t e0 = cudaDeviceEnablePeerAccess(device, 0);
@@ -156,6 +246,24 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
                 { On q1(device); cudaDeviceDisablePeerAccess(0); cudaGetLastError(); }
                 p2p_ = false;
             }
+        }
+        {   // tell the user plainly whether the two GPUs have a direct link, and where they sit
+            int sup = 0, rank = -1;
+            cudaDeviceGetP2PAttribute(&sup, cudaDevP2PAttrAccessSupported, 0, device);
+            cudaDeviceGetP2PAttribute(&rank, cudaDevP2PAttrPerformanceRank, 0, device);
+            cudaGetLastError();
+            const std::string anc = pcie_shared_ancestor(0, device);
+            const bool via_host = anc.empty() || (anc.rfind("/sys/devices/pci", 0) == 0 && anc.find('/', 16) == std::string::npos);
+            if (!p2p_ || !sup || via_host)
+                std::fprintf(stderr,
+                             "strata: WARNING peer GPU %d: no direct GPU-to-GPU link (%s%s). Activations take the host-memory route "
+                             "(slower prompt processing). Put both cards on CPU-attached x16/x8 slots, or on a board that splits the "
+                             "CPU's x16 as x8/x8; a slot behind the chipset always goes through the host. GeForce cards often have "
+                             "no P2P even then. Check: nvidia-smi topo -m (PHB/NODE/SYS = no direct link; PIX/PXB/NV# = direct)\n",
+                             device, via_host ? "the cards only meet at the CPU's host bridge" : "P2P is off or refused",
+                             sup ? "" : "; the driver reports peer access unsupported");
+            else
+                std::fprintf(stderr, "strata: peer GPU %d: direct link ok (P2P supported, performance rank %d, shared bridge %s)\n", device, rank, anc.c_str());
         }
     }
     On on(device);
@@ -179,6 +287,13 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
         ck(cudaMalloc((void**) &d_q8_, (size_t) CAP * (H / 32) * 36), "activations", err) &&
         ck(cudaMalloc(&d_scratch_, scratch), "scratch", err);
     if (!alloc_ok) { close(); return false; }
+    direct_ok_ = false;
+    if (peer_direct_enabled()) {
+        std::string why;
+        direct_ok_ = direct_scatter_works(d_out_, stream_, why);
+        if (!direct_ok_)
+            std::fprintf(stderr, "strata: peer GPU %d: zero-copy results are off (%s); the staged copy route is used\n", device, why.c_str());
+    }
 
     // the pairs the primary does not hold, in rank order, as many as fit
     size_t free_b = 0, total_b = 0;
@@ -234,8 +349,26 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
 
 bool PeerExperts::launch(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok, int64_t k,
                          const int32_t* kind, std::string& err, float* out) {
-    static const bool direct_env = [] { const char* v = std::getenv("STRATA_PEER_DIRECT"); return v == nullptr || std::atoi(v) != 0; }();
-    const bool direct = direct_env && out != nullptr;
+    // zero-copy needs no P2P: pinned portable host memory is reachable from the peer card over plain PCIe.  Only pointers the
+    // driver knows as pinned host memory qualify (an ordinary heap pointer written from a GPU kernel is a fault); the answer is cached.
+    static thread_local const void* ok_x = nullptr;
+    static thread_local const void* ok_out = nullptr;
+    auto pinned = [](const void* q) {
+        cudaPointerAttributes a{};
+        const bool good = cudaPointerGetAttributes(&a, q) == cudaSuccess && a.type == cudaMemoryTypeHost;
+        cudaGetLastError();
+        return good;
+    };
+    bool direct = direct_ok_ && out != nullptr;
+    if (direct && !(ok_out == out && ok_x == x)) {
+        direct = pinned(out) && pinned(x);
+        if (direct) { ok_out = out; ok_x = x; }
+        else if (!warned_unpinned_) {
+            warned_unpinned_ = true;
+            std::fprintf(stderr, "strata: peer GPU %d: the expert buffers are not pinned host memory; using the staged copy route\n", device_);
+        }
+    }
+    if (failed_) { err = "peer experts: the peer GPU was stopped after an earlier failure"; return false; }
     launched_direct_ = false;
     launched_rows_ = 0;
     row_of_.clear();
@@ -306,10 +439,20 @@ bool PeerExperts::finish(float* out, std::string& err) {
     const auto t0 = std::chrono::steady_clock::now();
     {
         On on(device_);
-        // spin on the stream (a blocking sync would sleep the pool thread and wake it late)
-        cudaError_t e;
-        while ((e = cudaStreamQuery(stream_)) == cudaErrorNotReady) {
+        // spin on the stream (a blocking sync would sleep the pool thread and wake it late), but not forever: a card that stopped
+        // answering is quarantined (no more submissions, nothing it may still touch is freed) instead of pinning a thread
+        cudaError_t e = cudaSuccess;
+        const WaitResult w = wait_bounded([&] {
+            e = cudaStreamQuery(stream_);
+            return e == cudaSuccess ? PollState::Ready : e == cudaErrorNotReady ? PollState::Pending : PollState::Failed;
+        }, gpu_wait_limit());
+        if (w == WaitResult::TimedOut) {
+            failed_ = true;
+            err = "peer experts: GPU " + std::to_string(device_) + " did not finish its work within " +
+                  std::to_string(gpu_wait_limit().count() / 1000) + " s; the peer is stopped and nothing more is sent to it";
+            return false;
         }
+        if (w == WaitResult::Failed) failed_ = true;
         if (!ck(e, "finish", err)) return false;
     }
     ms_wait += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();

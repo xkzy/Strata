@@ -775,13 +775,28 @@ StreamStats stream_bandwidth(const uint8_t* src, uint64_t bytes, uint64_t chunk,
         st.seconds = -1.0;
         return st;
     }
-    cudaStreamCreate(&s);
+    cudaError_t e = cudaStreamCreate(&s);
+    if (e != cudaSuccess) {
+        std::fprintf(stderr, "stream_bandwidth: cudaStreamCreate failed: %s\n", cudaGetErrorString(e));
+        cudaFree(dst);
+        st.seconds = -1.0;
+        return st;
+    }
 
     // one untimed pass so the first transfer's page-fault and setup cost is not in the measurement
     for (uint64_t off = 0; off + chunk <= bytes; off += chunk) {
         cudaMemcpyAsync(dst, src + off, (size_t) chunk, cudaMemcpyHostToDevice, s);
     }
-    cudaStreamSynchronize(s);
+    // A failed pass means the stream is dead (or a copy failed), and a time measured after it says nothing: report
+    // the failure as seconds < 0, which load_main.cpp skips, instead of a bandwidth number.
+    e = cudaStreamSynchronize(s);
+    if (e != cudaSuccess) {
+        std::fprintf(stderr, "stream_bandwidth: the untimed pass failed: %s\n", cudaGetErrorString(e));
+        cudaStreamDestroy(s);
+        cudaFree(dst);
+        st.seconds = -1.0;
+        return st;
+    }
 
     const auto t0 = std::chrono::steady_clock::now();
     for (int it = 0; it < iters; ++it) {
@@ -789,8 +804,13 @@ StreamStats stream_bandwidth(const uint8_t* src, uint64_t bytes, uint64_t chunk,
             cudaMemcpyAsync(dst, src + off, (size_t) chunk, cudaMemcpyHostToDevice, s);
         }
     }
-    cudaStreamSynchronize(s);
-    st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    e = cudaStreamSynchronize(s);
+    if (e == cudaSuccess) {
+        st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    } else {
+        std::fprintf(stderr, "stream_bandwidth: the measured pass failed: %s\n", cudaGetErrorString(e));
+        st.seconds = -1.0;
+    }
 
     cudaStreamDestroy(s);
     cudaFree(dst);

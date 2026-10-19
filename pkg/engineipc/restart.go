@@ -49,9 +49,11 @@ func restartDelay(base time.Duration, attempt int) time.Duration {
 }
 
 // gpuFaultMarkers are engine/driver messages that say the GPU itself is unusable (it fell off the bus, a driver
-// reset), not that the engine is misconfigured. Reloading the model into a dead GPU cannot work.
+// reset, a UVM fatal error), not that the engine is misconfigured. Reloading the model into a dead GPU cannot work.
 var gpuFaultMarkers = []string{
 	"unspecified launch failure",
+	"illegal memory access",          // UVM fatal error 0x60 surfaces as CUDA error 700 in the engine's stderr
+	"Unable to determine the device", // nvidia-smi / driver lost the device handle; module reload required
 	"nor place it in VRAM",
 	"no CUDA-capable device",
 	"fallen off the bus",
@@ -70,12 +72,39 @@ func gpuFault(tail []string) (string, bool) {
 	return "", false
 }
 
+// planFailMarkers are engine messages that say the run's own VRAM plan does not fit this card. Not a GPU fault (no
+// snapshot, no "unusable" reason) and not something a restart can change: the plan is arithmetic over the card's size
+// and the flags, so a restart reloads a 25 GB model to compute the same numbers and fail in the same place. On
+// 2026-10-19 19:45 the engine failed this way four times in 1 m 45 s (restarts 1/8 to 4/8, finding 21) and the 09:53
+// log before it shows five more; the message a user needs at that point is which flag frees the VRAM, not another
+// 503 loop.
+// Both lines are printed only by the startup path that gives up on the prompt path; `prefill: device buffers for a
+// chunk of ... do not fit` is NOT one of them, because a request whose own chunk does not fit prints it and the
+// engine keeps serving afterwards (prefill.cpp `relayout`).
+var planFailMarkers = []string{
+	"the GPU has too little free VRAM for the prompt path",
+	"the prompt path's own buffers do not fit",
+}
+
+// planFault reports whether the engine's last output shows its VRAM plan does not fit, and which message it was.
+func planFault(tail []string) (string, bool) {
+	for i := len(tail) - 1; i >= 0; i-- {
+		for _, m := range planFailMarkers {
+			if strings.Contains(tail[i], m) {
+				return m, true
+			}
+		}
+	}
+	return "", false
+}
+
 // afterFailure runs from watchProcess with eo.mu held, once the process `cmd` has ended and the state is Failed.
 // It records the failure and, unless auto restart is off, schedules the restart.
 func (eo *EngineOrchestrator) afterFailure(cmd *exec.Cmd, why string) {
 	if !eo.readyAt.IsZero() && time.Since(eo.readyAt) >= stableRun {
 		eo.failsInRow = 0
 		eo.gpuFaultsInRow = 0
+		eo.planFailsInRow = 0
 	}
 	eo.failsInRow++
 	marker, faulted := gpuFault(eo.logTail)
@@ -83,6 +112,12 @@ func (eo *EngineOrchestrator) afterFailure(cmd *exec.Cmd, why string) {
 		eo.gpuFaultsInRow++
 	} else {
 		eo.gpuFaultsInRow = 0
+	}
+	planMarker, planBroken := planFault(eo.logTail)
+	if planBroken {
+		eo.planFailsInRow++
+	} else {
+		eo.planFailsInRow = 0
 	}
 	attempt := eo.failsInRow
 	note := "auto restart is off"
@@ -92,8 +127,16 @@ func (eo *EngineOrchestrator) afterFailure(cmd *exec.Cmd, why string) {
 		// One restart is worth trying (a single launch failure can leave only that process's context dead); the same
 		// fault again in a fresh process means the GPU is gone, and reloading a 25 GB model into it just repeats it.
 		restart = false
-		note = fmt.Sprintf("the GPU is unusable (%q twice in a row): not restarting; reset or reboot, or run on a healthy card (CUDA_VISIBLE_DEVICES); the next request starts it", marker)
+		note = fmt.Sprintf("the GPU is unusable (%q twice in a row): not restarting; try: sudo rmmod nvidia_uvm && sudo modprobe nvidia_uvm — or reboot — then the next request starts it automatically", marker)
 		eo.reason = "the GPU is unusable (" + marker + "): " + why
+	} else if restart && eo.planFailsInRow >= 2 {
+		// One restart is worth trying (a process can die before it prints the fuller picture).  The same plan failure in
+		// a fresh process is the same arithmetic over the same card: say what to change instead of reloading the model.
+		restart = false
+		note = fmt.Sprintf("the VRAM plan does not fit this card (%q twice in a row): not restarting - free VRAM (close "+
+			"other GPU users, --vision no) or ask the plan for less (--kv-resident, --max-context, --vram-reserve-mib); "+
+			"the next request starts it", planMarker)
+		eo.reason = "the engine's VRAM plan does not fit this card: " + why
 	} else if restart && attempt > maxRestarts {
 		restart = false
 		note = fmt.Sprintf("giving up after %d failures in a row; the next request starts it", maxRestarts)
@@ -103,6 +146,9 @@ func (eo *EngineOrchestrator) afterFailure(cmd *exec.Cmd, why string) {
 	}
 	eo.writeFailureLog(why, note)
 	if !restart {
+		if faulted {
+			eo.startGPUSnapshot("after the engine died, not restarting") // off the lock: nvidia-smi may hang
+		}
 		return
 	}
 	time.AfterFunc(delay, func() {
@@ -111,6 +157,21 @@ func (eo *EngineOrchestrator) afterFailure(cmd *exec.Cmd, why string) {
 		again := eo.state == StateFailed && eo.cmd == cmd
 		eo.mu.RUnlock()
 		if !again {
+			return
+		}
+		snap := eo.writeGPUSnapshot(fmt.Sprintf("before restart %d/%d", attempt, maxRestarts))
+		// The engine died on a GPU fault and the driver says it lost a card: loading a model into a card in that
+		// state repeats the fault, so the restart waits for a request (which starts the engine, as before).
+		if line, lost := deviceLost(snap); faulted && lost {
+			msg := "not restarting: the driver reports a lost or faulted GPU (" + line + "); the next request starts the engine"
+			reason := "the GPU is unusable: " + why
+			if s := gpuFaultSummary(snap); s != "" { // name the card and the Xid, not only the engine's own text
+				reason += "; " + s
+			}
+			eo.mu.Lock()
+			eo.reason = reason
+			eo.mu.Unlock()
+			eo.writeFailureLine(msg)
 			return
 		}
 		if err := eo.Start(context.Background()); err != nil {

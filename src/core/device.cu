@@ -24,6 +24,16 @@ __global__ void poison_kernel(float* p, uint64_t n_floats) {
     if (i < n_floats) p[i] = __int_as_float(0x7fc00000);
 }
 
+// Writes the architecture this copy of the code was compiled for (890 = sm_89 ...).  When the binary has no native
+// code for the card, the driver compiles an older PTX for it and this still runs, but it reports the older number.
+__global__ void arch_probe_kernel(int* out) {
+#if defined(__CUDA_ARCH__)
+    *out = __CUDA_ARCH__;
+#else
+    *out = 0;
+#endif
+}
+
 #if defined(STRATA_USE_HIP)
 #if !defined(STRATA_HIP_ARCHS)
 #error "STRATA_HIP_ARCHS (the compiled HIP architectures) is set by cmake/hip_backend.cmake"
@@ -228,6 +238,44 @@ std::string gpu_arch_problem(int ordinal) {
 #else
     (void) ordinal;
     return "";
+#endif
+}
+
+std::string device_code_arch_note(int ordinal) {
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+    (void) ordinal;
+    return "";
+#else
+    int count = 0, prev = 0;
+    if (cudaGetDeviceCount(&count) != cudaSuccess || ordinal < 0 || ordinal >= count) {
+        cudaGetLastError();
+        return "";
+    }
+    cudaDeviceProp p{};
+    if (cudaGetDeviceProperties(&p, ordinal) != cudaSuccess) {
+        cudaGetLastError();
+        return "";
+    }
+    if (cudaGetDevice(&prev) != cudaSuccess || cudaSetDevice(ordinal) != cudaSuccess) {
+        cudaGetLastError();
+        return "";
+    }
+    int* d = nullptr;
+    int got = -1;
+    bool ok = cudaMalloc(&d, sizeof(int)) == cudaSuccess;
+    if (ok) {
+        arch_probe_kernel<<<1, 1>>>(d);
+        ok = cudaMemcpy(&got, d, sizeof(int), cudaMemcpyDeviceToHost) == cudaSuccess;
+        cudaFree(d);
+    }
+    if (!ok) cudaGetLastError();
+    cudaSetDevice(prev);
+    const int want = p.major * 100 + p.minor * 10;
+    if (!ok || got == want) return "";
+    return std::string("GPU ") + std::to_string(ordinal) + " (" + p.name + ", sm_" + std::to_string(want / 10) +
+           ") runs code compiled for sm_" + std::to_string(got / 10) + ": this engine has no native code for it, so the "
+           "driver compiles PTX at run time (slower, and not the code path built and tested for this card). Build with "
+           "-DCMAKE_CUDA_ARCHITECTURES=\"" + std::to_string(got / 10) + ";" + std::to_string(want / 10) + "\"";
 #endif
 }
 

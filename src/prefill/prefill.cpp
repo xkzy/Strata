@@ -30,6 +30,7 @@
 #include "strata/prefill/moe_fused_iq.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/core/peer_experts.hpp"
+#include "strata/core/gpu_wait.hpp"
 #include "strata/prefill/kernels.hpp"
 
 #include <cuda_runtime.h>
@@ -587,7 +588,9 @@ struct Prefill::Impl {
     // The grouping tables in mapped pinned memory, [ids | slot | src] of T_max * K each, then the MMQ bounds: kernels
     // read and write them in place.  A cudaMemcpyAsync of them queues behind the expert blobs the copy stream already
     // holds (up to `ring` of them, ~70 us each), and the GPU idles meanwhile - measured 4.2 s of a 128K prompt's
-    // 70 s at the default ring, 0.7 s with a 16-slot one.  STRATA_GROUP_COPY=1: the copies (the A/B arm).
+    // 70 s at the default ring, 0.7 s with a 16-slot one.  Off by default (the copies); STRATA_GROUP_MAPPED=1: this
+    // route.  The GPU reads host memory over PCIe here, and a RTX 5060 Ti fell off the bus (Xid 79) in prefill's
+    // copy_i32 on it after long streamed contexts, so it is opt-in until that is understood.
     int32_t* grp_host = nullptr;
     int32_t* grp_dev = nullptr;          // its device alias
     size_t grp_n = 0, grp_tk = 0;        // int32s allocated; T_max * K (the offset of slot, and of src past it)
@@ -678,11 +681,28 @@ void Prefill::reset() {
     stats_ = PrefillStats{};
 }
 
+namespace {
+// A stream that does not drain within the wait limit may still be reading what release() would free: then nothing is
+// freed (the process is the only owner, so leaving the memory mapped is safe; the driver frees it at exit).
+bool stream_drains(cudaStream_t s) {
+    if (!s) return true;
+    return strata::core::wait_bounded(
+               [s] {
+                   const cudaError_t q = cudaStreamQuery(s);
+                   return q == cudaSuccess ? strata::core::PollState::Ready
+                          : q == cudaErrorNotReady ? strata::core::PollState::Pending
+                                                   : strata::core::PollState::Failed;
+               },
+               strata::core::gpu_wait_limit()) != strata::core::WaitResult::TimedOut;
+}
+}  // namespace
+
 void Prefill::release() {
     if (!impl_) return;
-    if (impl_->cs) cudaStreamSynchronize(impl_->cs);
-    if (impl_->copy) cudaStreamSynchronize(impl_->copy);
-    if (impl_->kv_copy) cudaStreamSynchronize(impl_->kv_copy);
+    if (!stream_drains(impl_->cs) || !stream_drains(impl_->copy) || !stream_drains(impl_->kv_copy)) {
+        std::fprintf(stderr, "strata: prefill: a GPU stream did not finish within the wait limit; its memory is left as it is\n");
+        return;
+    }
     for (int i = 0; i < RING_MAX; ++i) {
         if (impl_->copied[i]) cudaEventDestroy(impl_->copied[i]);
         if (impl_->used[i]) cudaEventDestroy(impl_->used[i]);
@@ -866,8 +886,8 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     m.ids_host.resize(T * K); m.slot_host.resize(T * K); m.src_host.resize(T * K); m.cnt.resize(m.g->n_expert); m.off.resize(m.g->n_expert + 1);
     {
         const size_t need = 3 * T * K + (size_t) (2 * (m.g->n_expert + m.g->n_expert / MMQ_GROUP + 2));
-        const char* gc = std::getenv("STRATA_GROUP_COPY");
-        if (m.grp_n < need && !(gc && gc[0] == '1')) {
+        const char* gm = std::getenv("STRATA_GROUP_MAPPED");
+        if (m.grp_n < need && gm && gm[0] == '1') {
             if (m.grp_host) cudaFreeHost(m.grp_host);
             m.grp_host = m.grp_dev = nullptr;
             m.grp_n = m.grp_tk = 0;
@@ -1368,10 +1388,10 @@ bool Prefill::bind_stage_helper(int64_t T) {
 bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& err) {
     Impl& m = *impl_;
     if (peer == nullptr || !peer->valid()) { m.pp.reset(); return true; }
-    if (!peer->p2p()) { err = "prefill peer: the two GPUs cannot access each other (no P2P)"; return false; }
     if (!mmq_plan().any) { err = "prefill peer: needs the MMQ prompt path"; return false; }
     auto pp = std::make_unique<PeerPrefill>();
     pp->peer = peer;
+    pp->p2p = peer->p2p();   // false: activations go through mapped pinned host memory (same path as the layer-split helper)
     pp->T_max = m.T_max;
     pp->cap_rows = std::max<int64_t>(1, std::min<int64_t>(cap_rows, m.T_max * K));
     const int64_t R = pp->cap_rows;
@@ -1401,7 +1421,9 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
     pp->mixed = (float*) take((size_t) m.T_max * N * 4);
     {
         const char* v = std::getenv("STRATA_PF_PEER_COMPACT");
-        pp->compact = v == nullptr || std::atoi(v) != 0;
+        // The non-compact route copies results with cudaMemcpyPeerAsync, which on a pair without a working direct
+        // link can report success having moved nothing (see peer_experts.cpp), so it is used only with P2P.
+        pp->compact = v == nullptr || std::atoi(v) != 0 || !pp->p2p;
     }
     if (pp->compact) {
         pp->cap_rows = m.T_max * K;   // no row cap: only the row tables grow with it
@@ -1455,6 +1477,24 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
     cudaMemGetInfo(&fb, &tb);
     cudaSetDevice(prev);
     if (!ok) { err = "prefill peer: the peer's buffers do not fit (raise --peer-reserve-mib or lower --peer-prefill-rows)"; return false; }
+    if (!pp->p2p) {
+        // no P2P: allocate mapped portable host buffers so the peer GPU reads activations via host memory instead of
+        // cudaMemcpyPeerAsync (same path as the layer-split helper uses; the loop already handles !P.p2p)
+        auto halloc = [](auto*& p, size_t n) -> bool {
+            return cudaHostAlloc((void**) &p, n * sizeof(*p), cudaHostAllocPortable | cudaHostAllocMapped) == cudaSuccess;
+        };
+        if (!halloc(pp->host_x,      (size_t) pp->T_max * N)     ||
+            !halloc(pp->host_rows,   (size_t) pp->T_max * K * N) ||
+            !halloc(pp->host_src,    (size_t) pp->T_max * K)      ||
+            !halloc(pp->host_bounds, PeerPrefill::kHostBounds)) {
+            err = "prefill peer: host staging buffers for no-P2P path do not fit";
+            return false;
+        }
+        pp->host_x_cap    = (size_t) pp->T_max * N;
+        pp->host_rows_cap = (size_t) pp->T_max * K * N;
+        pp->host_src_cap  = (size_t) pp->T_max * K;
+        std::fprintf(stderr, "strata prefill: peer GPU %d: no P2P — activations go through host memory\n", pp->dev);
+    }
     std::fprintf(stderr, "strata prefill: peer GPU %d computes its experts' rows of each prompt chunk (up to %lld rows per "
                          "layer%s); %zu MiB left free on it\n", pp->dev, (long long) pp->cap_rows,
                  pp->compact ? (pp->ps_frac > 0.0 ? (", compact group buffers, streams " + std::to_string((int) (pp->ps_frac * 100 + 0.5)) +
@@ -3131,6 +3171,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         };
                         // (fused: GU and H hold the grouping tables and int8 rows, not floats)
                         // (the CPU's rows, the last rows_cpu of GU and H, are never written by the GPU: not checked)
+                        const int64_t rows_cpu = 0;   // no CPU-computed rows in current paths; fused_l gates GU/H checks
                         const int64_t gpu_rows = T * K - rows_cpu;
                         const int64_t bgu = fused_l ? 0 : bad(m.GU, gpu_rows * 1280), bdm = bad(m.Dm, T * K * N),
                                       bbo = bad(m.bo, T * N);

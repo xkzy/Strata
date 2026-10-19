@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"strata/pkg/tokenizer"
@@ -266,7 +267,14 @@ type EngineOrchestrator struct {
 	reqSem     chan struct{} // one request at a time: the engine has one session
 	readyAt    time.Time     // when the running process became ready (zero before)
 	gpuFaultsInRow int       // consecutive failures whose log tail shows a dead GPU (see gpuFault)
+	planFailsInRow int       // consecutive failures whose log tail shows the VRAM plan cannot fit this card (see planFault)
 	failsInRow int           // failures since the engine last ran for stableRun; the restart back-off counts these
+	// snapshotMu guards stopping; snapshotWG counts the GPU snapshots still being written to the failure log in the
+	// background (nvidia-smi and journalctl can take seconds). Stop waits for them and lets no new one start, so no
+	// write lands after the process that owns the log is gone.
+	snapshotMu sync.Mutex
+	snapshotWG sync.WaitGroup
+	stopping   bool
 }
 
 func NewEngineOrchestrator(cfg EngineConfig) *EngineOrchestrator {
@@ -333,11 +341,23 @@ func (eo *EngineOrchestrator) Start(ctx context.Context) error {
 	// A failed or timed-out start can leave the old engine alive and holding the GPU: end it before launching the next.
 	oldCmd, oldCancel, oldDone := eo.cmd, eo.cancelFunc, eo.exited
 	eo.mu.Unlock()
-	reapProcess(oldCmd, oldCancel, oldDone)
+	reaped := reapEngine(oldCmd, oldCancel, oldDone)
 	eo.mu.Lock()
 	if eo.state == StateStarting || eo.state == StateReady { // another Start won the race while unlocked
 		eo.mu.Unlock()
 		return nil
+	}
+	if !reaped {
+		// SIGKILL was sent but the process is still there, so it is stuck in the driver (D state) and still holds the
+		// GPU and its VRAM. A second engine on the same card would fail to allocate, or worse, both would use it.
+		which := "the previous engine process"
+		if oldCmd != nil && oldCmd.Process != nil {
+			which = fmt.Sprintf("the previous engine process (pid %d)", oldCmd.Process.Pid)
+		}
+		eo.state = StateFailed
+		eo.reason = which + " is still alive after SIGKILL and may still hold the GPU: not starting a second engine onto the same card"
+		eo.mu.Unlock()
+		return errors.New(eo.reason)
 	}
 	args := []string{"--serve"}
 	switch {
@@ -393,7 +413,11 @@ func (eo *EngineOrchestrator) Start(ctx context.Context) error {
 	stderrDone := make(chan struct{})
 	eo.cmd, eo.stdin, eo.cancelFunc, eo.exited = cmd, stdin, cancel, exited
 	eo.state, eo.reason = StateStarting, ""
+	eo.snapshotMu.Lock()
+	eo.stopping = false // a new process: its failure log writes must be waited for again
+	eo.snapshotMu.Unlock()
 	eo.readyAt = time.Time{}
+	eo.logTail = nil // new process: clear old stderr so a GPU fault from a previous crash cannot count against it
 	eo.lines = make(chan string, 8192)
 	eo.readyCh = make(chan struct{})
 	lines, readyCh := eo.lines, eo.readyCh
@@ -796,33 +820,65 @@ func (eo *EngineOrchestrator) GenerateIDs(ctx context.Context, ids []int, sampli
 	}
 }
 
-// Stop ends the engine process.
+// Stop ends the engine process and waits for the failure-log writes still running in the background, so that when
+// Stop returns the log is complete and nothing writes to it again.
 func (eo *EngineOrchestrator) Stop() error {
 	eo.mu.Lock()
 	eo.state = StateStopped
 	cancel, stdin, cmd, done := eo.cancelFunc, eo.stdin, eo.cmd, eo.exited
 	eo.mu.Unlock()
+	eo.snapshotMu.Lock()
+	eo.stopping = true // no new snapshot starts now; one that already did is counted in snapshotWG
+	eo.snapshotMu.Unlock()
 	if stdin != nil {
 		_, _ = io.WriteString(stdin, "QUIT\n")
 		stdin.Close()
 	}
-	reapProcess(cmd, cancel, done)
+	_ = reapEngine(cmd, cancel, done)
+	eo.snapshotWG.Wait()
 	return nil
 }
 
-// reapProcess kills an engine process and waits (bounded) until it has exited, so that its GPU and pinned memory
-// are released before a new engine starts. A nil or already-reaped process is a no-op.
-func reapProcess(cmd *exec.Cmd, cancel context.CancelFunc, done <-chan struct{}) {
-	if cancel != nil {
-		cancel()
+// reapProcess ends an engine process and waits (bounded) until it has exited, so that its GPU and pinned memory
+// are released before a new engine starts. A nil or already-reaped process is a no-op. It reports whether the process
+// is gone: false means it is still alive after SIGKILL (stuck in the driver, D state) and so still holds the GPU.
+// SIGTERM is sent first: it gives CUDA time to call cuCtxDestroy and unmap UVM regions cleanly, which prevents
+// the nvidia-uvm driver from entering a fatal state (Xid 96 / UVM error 0x60) that requires a reboot to clear.
+// SIGKILL follows after a short grace period if the process has not yet exited.
+func reapProcess(cmd *exec.Cmd, cancel context.CancelFunc, done <-chan struct{}) bool {
+	if cmd == nil || cmd.Process == nil {
+		return true
 	}
-	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
-	}
+	_ = cmd.Process.Signal(syscall.SIGTERM)
 	if done != nil {
 		select {
 		case <-done:
+			return true // exited cleanly on SIGTERM; skip SIGKILL so the GPU driver finishes its own cleanup
+		case <-time.After(5 * time.Second):
+		}
+	}
+	if cancel != nil {
+		cancel()
+	}
+	_ = cmd.Process.Kill()
+	if done != nil {
+		select {
+		case <-done:
+			return true
 		case <-time.After(15 * time.Second):
 		}
 	}
+	return !processAlive(cmd)
+}
+
+// reapEngine is a seam for tests; it must not need the engine lock.
+var reapEngine = reapProcess
+
+// processAlive asks the kernel whether the process still exists. Signal 0 delivers nothing; os.ErrProcessDone means
+// cmd.Wait has already reaped it.
+func processAlive(cmd *exec.Cmd) bool {
+	if cmd == nil || cmd.Process == nil {
+		return false
+	}
+	return cmd.Process.Signal(syscall.Signal(0)) == nil
 }

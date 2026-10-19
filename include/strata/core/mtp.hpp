@@ -40,6 +40,10 @@ public:
     MtpDrafter(const MtpDrafter&) = delete;
     MtpDrafter& operator=(const MtpDrafter&) = delete;
 
+    /// True after a draft wait timed out: the device may still be running this drafter's work, so nothing more is
+    /// submitted and the destructor leaves its streams, graphs and memory alone (the process frees them at exit).
+    bool failed() const { return failed_; }
+
     /// Loads `rt_dir` (from tools/mtp_rt.py) and allocates the layer's K/V and buffers for up to `max_t` rows.
     /// Call before the VRAM expert tier is sized: this takes ~0.9 GB.
     bool load(const std::string& rt_dir, const ModelGeometry& g, SessionState& ss, int max_t, std::string& err,
@@ -131,6 +135,12 @@ public:
     bool chain_live() const { return chain_live_; }
     const int32_t* chain_tok() const { return chain_tok_; }
     const float* chain_prob() const { return chain_prob_; }
+    /// Experimental: bias the draft router toward the primary layer's resident experts.
+    /// `d_res`: device pointer to the layer's resident-expert bitmap; `margin`: logit nudge;
+    /// `lo`/`hi`: rank window.  No-op until a concrete implementation is wired up.
+    void set_route_resident(const int32_t* d_res, float margin, int lo, int hi) {
+        (void) d_res; (void) margin; (void) lo; (void) hi;
+    }
 
     double ms_draft = 0, ms_prefill = 0;
     int64_t rounds = 0;
@@ -149,6 +159,7 @@ public:
     }
 
 private:
+    bool failed_ = false;
     bool record_forward(int T, int step_row0, cudaStream_t cs, std::string& err);
     /// The layer's front for T rows at step rows [row0, +T): the embedding, the fc projections, the attention
     /// hyper-connection read (R_, inj_, mixed_) and the K/V appended.

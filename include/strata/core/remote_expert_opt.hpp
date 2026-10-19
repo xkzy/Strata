@@ -19,6 +19,7 @@ public:
     RemoteExpertOpt& operator=(const RemoteExpertOpt&) = delete;
 
     void attach(RemoteExperts& remote); // before RemoteExperts::open
+    void detach(RemoteExperts& remote); // after a failed open: that helper is skipped, not used
     bool init(std::string& err);        // after all helper caches are open
     bool owns(int64_t layer, int32_t expert) const;
     bool adapt(const std::vector<float>& usage, const std::vector<int32_t>& primary,

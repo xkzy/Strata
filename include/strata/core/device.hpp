@@ -29,6 +29,18 @@ struct DeviceInfo {
     std::string arch;              // HIP: gcnArchName without its feature suffix ("gfx1201"); empty on CUDA
 };
 
+/// "" when CUDA device `ordinal` is one the driver lists (`visible` = the count from cudaGetDeviceCount), else one
+/// sentence naming the device and how many the driver lists.  A peer or helper GPU that is no longer there (a card
+/// that fell off the bus, or a driver reloaded with fewer cards) is a speed tier: the caller prints this and goes on
+/// with the primary GPU instead of refusing to start.  Pure, so the decision is tested without a GPU
+/// (tests/core/gpu_skip_test.cpp).
+inline std::string gpu_missing_note(int ordinal, int visible) {
+    if (ordinal >= 0 && ordinal < visible) return {};
+    return "CUDA" + std::to_string(ordinal) + " is not there: the driver lists " +
+           (visible > 0 ? std::to_string(visible) + (visible == 1 ? " CUDA device" : " CUDA devices")
+                        : std::string("no CUDA device"));
+}
+
 // HIP builds: whether GPU `ordinal` can run this binary - its architecture must be one the binary was COMPILED
 // for (STRATA_HIP_ARCHS, set by cmake/hip_backend.cmake) and it must run wave32.  "" when it can (or when there
 // is no such device: the caller's own device errors apply), else the reason in a sentence.  A binary carried to
@@ -56,6 +68,11 @@ DeviceInfo device_info(int ordinal = 0);
 /// "" when this build has device code for the current device, else CUDA's error: a build for other GPUs would
 /// otherwise fail at its first kernel launch, with nothing that names the cause.
 std::string device_code_error();
+
+/// CUDA builds: "" when the code that runs on GPU `ordinal` was compiled for its own architecture, else a sentence
+/// saying it runs another architecture's code (JIT from PTX). A kernel is launched to find out, so call it only
+/// when the device is in use anyway. HIP builds: "".
+std::string device_code_arch_note(int ordinal);
 
 class CudaError : public std::runtime_error {
 public:

@@ -1939,6 +1939,19 @@ int main(int argc, char** argv) {
             if (const char* e = std::getenv("STRATA_HOST_CORE")) hc = e;
         if (hc == "last") strata::kernels::cpu::set_host_core(strata::kernels::cpu::HostCore::Last);
     }
+    // A peer GPU the driver no longer lists (the card fell off the bus, or a reloaded driver numbers fewer cards)
+    // must not stop the run: the peer tier is a speed tier, and the primary GPU still serves.  Skipping it HERE,
+    // before it shapes the profile order or the buffer flags, keeps every later `--peer-device` test in step with
+    // what the run actually has.  On 2026-10-19 the 5060 Ti fell off, the driver was reloaded with the 4060 only,
+    // and `--peer-device 1` refused to start the engine instead of serving on the card that was there.
+    int visible_devices = 0;
+    if (cudaGetDeviceCount(&visible_devices) != cudaSuccess) { cudaGetLastError(); visible_devices = 0; }
+    if (o.peer_device >= 1 && o.peer_device >= visible_devices) {
+        std::fprintf(stderr, "strata generate: WARNING --peer-device %d: %s; continuing on the primary GPU without "
+                             "the peer expert tier\n",
+                     o.peer_device, strata::core::gpu_missing_note(o.peer_device, visible_devices).c_str());
+        o.peer_device = -1;
+    }
     strata::core::set_peer_portable(o.peer_device >= 1);   // multi-GPU: the Portable flag on mapped host buffers only with a peer device (before any allocation)
     if (o.serve && o.conversation_cache_mib > 0 && (o.prompt_cache == 0 || o.conversation_cache_slots == 0))
         std::fprintf(stderr, "strata serve: warning: conversation caching is disabled by %s\n",
@@ -2093,9 +2106,13 @@ int main(int argc, char** argv) {
             while (next_free < n_vis &&
                    std::find(split_devs.begin(), split_devs.end(), next_free) != split_devs.end()) ++next_free;
             if (next_free >= n_vis) {
-                std::fprintf(stderr, "strata generate: --expert-cache-remote with a layer split needs a GPU that runs no "
-                                     "stage (%d visible, %zu used by the split)\n", n_vis, split_devs.size() + 1);
-                return 2;
+                // No GPU is left for this helper: skip the tier rather than refuse the whole run (the same rule as a
+                // peer device the driver no longer lists).  The helper's pairs stay with the primary and the RAM copy.
+                std::fprintf(stderr, "strata generate: WARNING --expert-cache-remote %d: %s (%zu GPU(s) run a split "
+                                     "stage); continuing without that helper expert cache\n",
+                             r + 1, strata::core::gpu_missing_note(next_free, n_vis).c_str(), split_devs.size() + 1);
+                o.expert_cache_remote[(size_t) r] = 0;
+                continue;
             }
             remote_dev[r] = next_free++;
         }
@@ -2120,6 +2137,22 @@ int main(int argc, char** argv) {
         }
     }
 #endif
+    {
+        // a binary built for another GPU still runs (the driver compiles its PTX), which hides the mismatch.
+        // EVERY GPU this run uses is named, the peer tier and the helper caches included: the card that falls off is
+        // often the peer one, and on 2026-10-19 the 5060 Ti ran a peer tier built for sm_89 while this check covered
+        // only CUDA0, so the mismatch that finding 0 is about went unsaid for the card in question.
+        std::vector<int> used{0};
+        if (multi_gpu) used.insert(used.end(), split_devs.begin(), split_devs.end());
+        for (int r = 0; r < 3; ++r)
+            if (o.expert_cache_remote[(size_t) r] > 0) used.push_back(remote_dev[r]);
+        if (o.peer_device >= 1) used.push_back(o.peer_device);
+        std::sort(used.begin(), used.end());
+        used.erase(std::unique(used.begin(), used.end()), used.end());
+        for (const int d : used)
+            if (const std::string note = strata::core::device_code_arch_note(d); !note.empty())
+                std::fprintf(stderr, "strata generate: WARNING %s\n", note.c_str());
+    }
     if (o.prefill_auto && (o.no_prefill_borrow || o.expert_profile.empty())) {
         o.prefill_auto = false;       // nothing to lend from: the buffers are reserved for the session, so keep them small
         o.prefill_chunk = 2048;
@@ -4413,18 +4446,30 @@ int main(int argc, char** argv) {
             for (const auto& pr : st->profile)
                 if (st->cache.slot_of(pr.first, pr.second) >= 0)
                     claimed[(size_t) pr.first * (size_t) g.n_expert + (size_t) pr.second] = 1;
+        bool any_helper = false;
         for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0) {
+            // attach() before open(): open() sizes its metadata from the optimization it will use.
             if (remote_opt) remote_opt->attach(remote_experts[(size_t) r]);
             if (!remote_experts[(size_t) r].open(remote_dev[r], o.expert_cache_remote[(size_t) r],
                      g.n_layers, g.n_expert, by_device[(size_t) r], xcache, *srcp, claimed, err,
                      o.expert_cache_remote_auto[(size_t) r])) {
-                std::fprintf(stderr, "strata generate: %s\n", err.c_str());
-                return 1;
+                // Same rule as the peer tier: a helper GPU that fails to open is skipped, not a reason to refuse to
+                // serve.  Its pairs stay with the primary cache, the RAM copy and the file tier.  Clearing the slot
+                // is what later keeps it out of `drive.d.remote`; detach() keeps the optimization off a device that
+                // is not there.
+                std::fprintf(stderr, "strata generate: WARNING --expert-cache-remote (rank %d): %s; continuing "
+                                     "without that helper expert cache\n",
+                             r + 1, err.c_str());
+                o.expert_cache_remote[(size_t) r] = 0;
+                if (remote_opt) remote_opt->detach(remote_experts[(size_t) r]);
+                continue;
             }
+            any_helper = true;
             std::fprintf(stderr, "strata generate: CUDA%d: %lld additional experts, %.2f GiB; "
                                  "results return through pinned host rows\n", remote_dev[r],
                          (long long) remote_experts[(size_t) r].resident(), remote_experts[(size_t) r].gib());
         }
+        if (remote_opt && !any_helper) remote_opt.reset();   // no helper left: the decode optimization has nothing to do
     }
 
     // ---- Multi-GPU: the second GPU's expert tier, filled with the ranked pairs the primary does not hold
@@ -4437,13 +4482,19 @@ int main(int argc, char** argv) {
         const auto tp0 = Clock::now();
         if (!peer.open(o.peer_device, profile, xcache, *srcp, g.n_layers, g.n_expert, o.peer_reserve_mib, o.peer_slots,
                        err)) {
-            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
-            return 1;
+            // A device that fails to open (the driver does not list it, its context does not start, or it has no
+            // room) is skipped: this tier is a speed tier, and the primary GPU, the RAM copy and the file tier still
+            // serve the request.  The option is cleared so every later test of it agrees with what is running.
+            std::fprintf(stderr, "strata generate: WARNING --peer-device %d: %s; continuing on the primary GPU "
+                                 "without the peer expert tier\n",
+                         o.peer_device, err.c_str());
+            o.peer_device = -1;
+        } else {
+            std::fprintf(stderr, "strata generate: peer GPU %d: %lld experts, %.2f GiB (filled in %.1f s); with the primary's "
+                                 "%lld that is %lld of %lld on the GPUs\n", o.peer_device, (long long) peer.resident(), peer.gib(),
+                         std::chrono::duration<double>(Clock::now() - tp0).count(), (long long) xcache.slots(),
+                         (long long) (peer.resident() + xcache.slots()), (long long) (g.n_layers * g.n_expert));
         }
-        std::fprintf(stderr, "strata generate: peer GPU %d: %lld experts, %.2f GiB (filled in %.1f s); with the primary's "
-                             "%lld that is %lld of %lld on the GPUs\n", o.peer_device, (long long) peer.resident(), peer.gib(),
-                     std::chrono::duration<double>(Clock::now() - tp0).count(), (long long) xcache.slots(),
-                     (long long) (peer.resident() + xcache.slots()), (long long) (g.n_layers * g.n_expert));
     }
 
     if (remote_opt && !remote_opt->init(err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
@@ -5979,6 +6030,11 @@ int main(int argc, char** argv) {
             return 0;
         };
         static constexpr int64_t kStepChunks[] = {6144, 4096, 3072, 2048, 1536, 1024, 512};
+        // The most favourable failing size, for the message at the end of the loop below: on 2026-10-19 the run on the
+        // RTX 4060 ended with "use a shorter context, or read prompts in smaller chunks (--prefill 512)" after it had
+        // already tried 512 - the one size it could still name was the one it could not use.
+        int gap_dev = -1;
+        int64_t gap_need = 0, gap_free = 0;
         {
             // First by arithmetic: a prompt path without a loan allocates its buffers, so the chunk must leave
             // headroom on that device (a chunk that fits to the last MiB left hipBLAS nothing: its GEMMs then
@@ -5995,6 +6051,9 @@ int main(int argc, char** argv) {
                     const int64_t need = (int64_t) strata::prefill::Prefill::bytes_needed(g, i == 0 ? ss : stages[i - 1]->ss, c);
                     if (need + kHeadroom > (int64_t) fb) {
                         dev_out = dev < 0 ? 0 : dev; need_out = need; free_out = (int64_t) fb;
+                        if (gap_dev < 0 || need - free_out < gap_need - gap_free) {
+                            gap_dev = dev_out; gap_need = need; gap_free = free_out;
+                        }
                         return false;
                     }
                 }
@@ -6017,12 +6076,29 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        // Whether a smaller chunk is worth another full init: only when the plan's own count says it needs fewer
+        // bytes on at least one device.  The own-buffer layout is NOT monotone in the chunk (2026-10-19, RTX 4060: the
+        // 512-token layout took 657 + a 256 MiB buffer where the 1024-token one took 539 + 256), so stepping down from
+        // a size that failed can only repeat the failure - the loop below walked to 512, failed, and exited.
+        auto cheaper_than_current = [&](int64_t next) -> bool {
+            for (size_t i = 0; i <= stages.size(); ++i)
+                if (strata::prefill::Prefill::bytes_needed(g, i == 0 ? ss : stages[i - 1]->ss, next) <
+                    strata::prefill::Prefill::bytes_needed(g, i == 0 ? ss : stages[i - 1]->ss, o.prefill_chunk))
+                    return true;
+            return false;
+        };
         for (;;) {
             const int r = init_prompt_paths();
             if (r == 0) break;
             int64_t next = 0;
             for (const int64_t c : kStepChunks)
                 if (c < o.prefill_chunk) { next = c; break; }
+            if (r == 2 && next > 0 && !cheaper_than_current(next)) {
+                std::fprintf(stderr, "strata serve: a %lld-token chunk's buffers need no less than the %lld-token "
+                                     "one's; not stepping down again\n",
+                             (long long) next, (long long) o.prefill_chunk);
+                next = 0;
+            }
             if (r == 2 && next > 0) {
                 std::fprintf(stderr, "strata serve: %s: trying a %lld-token chunk\n", err.c_str(), (long long) next);
                 // start the prompt paths over (a failed init may hold buffers), and consume the failed allocation's
@@ -6049,10 +6125,19 @@ int main(int argc, char** argv) {
                 continue;
             }
             std::fprintf(stderr, "strata serve: %s\n", err.c_str());
-            if (err.find("fit") != std::string::npos)   // #85: say what frees VRAM
+            if (err.find("fit") != std::string::npos) {   // #85: say what frees VRAM
+                if (gap_dev >= 0)
+                    std::fprintf(stderr, "strata serve: the prompt path's own buffers do not fit on CUDA%d: %lld MiB "
+                                         "free, %lld MiB needed for a %lld-token chunk (the plan's own count; every "
+                                         "size down to 512 tokens was priced)\n",
+                                 gap_dev, (long long) (gap_free >> 20), (long long) (gap_need >> 20),
+                                 (long long) o.prefill_chunk);
                 std::fprintf(stderr, "strata serve: the GPU has too little free VRAM for the prompt path: turn images "
                                      "off (setup: --vision no), close other programs using the GPU, use a shorter "
-                                     "context, or read prompts in smaller chunks (--prefill 512)\n");
+                                     "context, or ask the plan for less VRAM (--kv-resident, --max-context, "
+                                     "--vram-reserve-mib).  A smaller --prefill does not always help: the prompt "
+                                     "path's buffers are not all proportional to the chunk\n");
+            }
             return 1;
         }
         if (peer.valid() && o.peer_prefill_rows != 0) {

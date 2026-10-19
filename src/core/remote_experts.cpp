@@ -6,13 +6,30 @@
 #include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
 
+#include "strata/core/gpu_wait.hpp"
+
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 namespace strata::core {
 namespace {
+// A stream that does not drain within the wait limit may still be reading or writing what close() would free: then
+// nothing is freed (the process is the only owner; the driver frees it at exit).  A stream that failed has ended, so
+// its memory is safe to free.
+bool stream_drains(cudaStream_t s) {
+    return strata::core::wait_bounded(
+               [s] {
+                   const cudaError_t q = cudaStreamQuery(s);
+                   return q == cudaSuccess ? strata::core::PollState::Ready
+                          : q == cudaErrorNotReady ? strata::core::PollState::Pending
+                                                   : strata::core::PollState::Failed;
+               },
+               strata::core::gpu_wait_limit()) != strata::core::WaitResult::TimedOut;
+}
+
 constexpr int64_t H = strata::kernels::cpu::H;
 constexpr int64_t FF = strata::kernels::cpu::FF;
 constexpr int64_t CAP = strata::kernels::cpu::MAXT * 10;
@@ -90,21 +107,35 @@ bool RemoteExperts::preflight(int device, double& free_gib, std::string& err) {
 
 void RemoteExperts::close() {
     if (device_ < 0) return;
-    DeviceScope scope(device_);
-    if (scope.ok) {
-        if (stream_) cudaStreamSynchronize(stream_);
-        cache_.close();
-        if (d_x_) cudaFree(d_x_);
-        if (d_out_) cudaFree(d_out_);
-        if (d_q8_) cudaFree(d_q8_);
-        if (d_scales_) cudaFree(d_scales_);
-        if (d_scratch_) cudaFree(d_scratch_);
-        if (d_meta_) cudaFree(d_meta_);
-        if (h_x_) cudaFreeHost(h_x_);
-        if (h_out_) cudaFreeHost(h_out_);
-        if (h_meta_) cudaFreeHost(h_meta_);
-        if (stream_) cudaStreamDestroy(stream_);
+    bool freed = true;
+    {
+        DeviceScope scope(device_);
+        if (!scope.ok) {
+            freed = false;   // cannot even enter the device: nothing can be freed safely from here
+        } else if (failed_ || (stream_ && !stream_drains(stream_))) {
+            // A quarantined device may still be running the work that made it fail: nothing is freed.  (A stream that
+            // errored has ended, but the rule here is the simple one: a failed helper keeps its memory until exit.)
+            freed = false;
+        } else {
+            cache_.close();
+            if (d_x_) cudaFree(d_x_);
+            if (d_out_) cudaFree(d_out_);
+            if (d_q8_) cudaFree(d_q8_);
+            if (d_scales_) cudaFree(d_scales_);
+            if (d_scratch_) cudaFree(d_scratch_);
+            if (d_meta_) cudaFree(d_meta_);
+            if (h_x_) cudaFreeHost(h_x_);
+            if (h_out_) cudaFreeHost(h_out_);
+            if (h_meta_) cudaFreeHost(h_meta_);
+            if (stream_) cudaStreamDestroy(stream_);
+        }
     }
+    if (!freed) {
+        std::fprintf(stderr, "strata: remote experts (CUDA%d): the helper GPU failed or its stream did not finish "
+                             "within the wait limit; its memory is left as it is\n", device_);
+    }
+    // Forget the handles either way: when freed is false the driver keeps the allocations, which the stuck work may
+    // still read, so a later open() must not reuse or free them.
     device_ = -1;
     stream_ = nullptr;
     h_x_ = h_out_ = d_x_ = d_out_ = nullptr;
@@ -123,6 +154,7 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
                          const ExpertCache& primary, ExpertSource& source,
                          std::vector<uint8_t>& claimed, std::string& err, bool auto_size) {
     close();
+    failed_ = false;   // a new open() is the caller's decision to try this object again
     int count = 0;
     if (!check(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err, device)) return false;
     if (device < 1 || device >= count || slots <= 0 || ranked.empty() ||
@@ -239,6 +271,10 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
 bool RemoteExperts::begin(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok,
                           int64_t k, const int32_t* kind, const int32_t* primary_res,
                           std::string& err) {
+    if (failed_) {
+        err = "CUDA" + std::to_string(device_) + " experts: the helper GPU failed earlier in this run; its work is no longer used";
+        return false;
+    }
     // cumulative host time in here (staging and launches), reported per request by the driver
     struct Timer { double& acc; std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
         ~Timer() { acc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); } } timer{ms_begin_};
@@ -327,10 +363,35 @@ bool RemoteExperts::begin(int64_t layer, const float* x, const int32_t* ids, int
 
 bool RemoteExperts::finish(float* out, std::string& err) {
     if (group_id_.empty()) return true;
+    if (failed_) {
+        err = "CUDA" + std::to_string(device_) + " experts: the helper GPU failed earlier in this run; its work is no longer used";
+        return false;
+    }
     DeviceScope scope(device_);
-    if (!scope.ok) { err = scope.error(device_); return false; }
+    if (!scope.ok) { failed_ = true; err = scope.error(device_); return false; }
     const auto w0 = std::chrono::steady_clock::now();
-    if (!check(cudaStreamSynchronize(stream_), "finish", err, device_)) return false;
+    // Bounded: the layer waits for this GPU on the critical path, so a helper that stopped answering must fail the
+    // request (and be dropped from the run) instead of hanging it.
+    cudaError_t q = cudaSuccess;
+    const WaitResult w = strata::core::wait_bounded(
+        [&] {
+            q = cudaStreamQuery(stream_);
+            return q == cudaSuccess ? strata::core::PollState::Ready
+                   : q == cudaErrorNotReady ? strata::core::PollState::Pending
+                                            : strata::core::PollState::Failed;
+        },
+        strata::core::gpu_wait_limit());
+    if (w == strata::core::WaitResult::TimedOut) {
+        failed_ = true;
+        err = "CUDA" + std::to_string(device_) + " experts: the GPU did not finish its layer work within the wait limit; "
+              "it is dropped from this run";
+        return false;
+    }
+    if (q != cudaSuccess) {
+        failed_ = true;
+        err = "CUDA" + std::to_string(device_) + " experts: finish: " + cudaGetErrorString(q);
+        return false;
+    }
     ms_wait_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - w0).count();
     if (remote_opt_ && remote_opt_->active()) { remote_opt_->accumulate(*this); return true; }
     for (size_t i = 0; i < original_row_.size(); ++i)

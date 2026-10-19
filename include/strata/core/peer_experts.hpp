@@ -100,6 +100,9 @@ private:
     void* d_scratch_ = nullptr;
     std::vector<int32_t> row_of_;                     ///< compact row -> original entry
     int64_t launched_rows_ = 0;
+    bool failed_ = false;      ///< a wait on this card timed out or errored: no more submissions, no frees
+    bool direct_ok_ = false;   ///< the startup self-test of the zero-copy result path passed
+    bool warned_unpinned_ = false;
     bool launched_direct_ = false;
 };
 

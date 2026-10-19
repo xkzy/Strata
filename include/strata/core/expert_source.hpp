@@ -178,6 +178,10 @@ public:
     virtual void warm(int64_t layer, const int64_t* experts, int64_t n) { (void) layer; (void) experts; (void) n; }
     /// Whether `warm` does anything (the predictor is not run otherwise).
     virtual bool warms() const { return false; }
+    /// #1237: the caller queued an async copy out of `blob`.  A no-op is correct while the stage buffers are pageable (the driver
+    /// copies those before the call returns, as here).  If upstream 475912c6 (pinned stage buffers) is ported, port its fence
+    /// from f71c5307 with it, or a buffer can be refilled under a queued copy (wrong expert weights).
+    virtual void note_async_read(const uint8_t* blob, const void* event) { (void) blob; (void) event; }
 protected:
     /// What model_inputs() returns; set by a source's open().
     void record_inputs(const std::string& pack_experts, const std::string& gguf,

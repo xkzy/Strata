@@ -40,7 +40,11 @@ public:
     /// This helper's cache holds (layer, expert): begin() will take its rows unless the plan gave them away.
     bool holds(int64_t layer, int32_t expert) const { return cache_.slot_of(layer, expert) >= 0; }
     bool optimized_decode() const { return remote_opt_ != nullptr; }
+    /// finish() waits for this GPU's layer work, bounded by gpu_wait_limit().  A GPU that does not answer in time
+    /// is quarantined: no more work is sent to it (begin()/finish() refuse), so one stuck helper cannot hang every
+    /// request or make the token path wait forever.
     bool finish(float* out, std::string& err);
+    bool failed() const { return failed_; }
     int64_t resident() const { return cache_.resident(); }
     int64_t computed() const { return computed_; }
     int64_t launched_layers() const { return launched_layers_; }
@@ -55,6 +59,7 @@ private:
     friend class RemoteExpertOpt;
     RemoteExpertOpt* remote_opt_ = nullptr;
     int device_ = -1;
+    bool failed_ = false;   ///< the GPU stopped answering or its stream errored: no more work, nothing freed
     int64_t n_expert_ = 0;
     int32_t groups_ = 0;
     int64_t computed_ = 0;

@@ -45,6 +45,8 @@ func TestMain(m *testing.M) {
 		fakeEngine(mode)
 		return
 	}
+	// The tests must not read this PC's GPU state: a missing card here would change what a restart does.
+	gpuSnapshot = func() []string { return []string{"gpu: test", "kernel: no Xid / fallen-off-the-bus lines this boot"} }
 	os.Exit(m.Run())
 }
 

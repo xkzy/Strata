@@ -2,6 +2,7 @@
 #include "strata/core/session.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/core/progress.hpp"
+#include "strata/core/gpu_wait.hpp"
 
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/elementwise.hpp"
@@ -677,6 +678,9 @@ bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, Session
         // never see it.  Read through a volatile pointer so the compiler re-issues the load every iteration -
         // otherwise this whole spin collapses into `while (true) { }`.
         volatile uint32_t* const seq = s.db->h_seq;
+        const auto ring_t0 = std::chrono::steady_clock::now();
+        const auto ring_limit = strata::core::gpu_wait_limit();
+        uint32_t ring_spins = 0;
         for (;;) {
             // **THE PER-ITERATION DRIVER CALL IS REQUIRED, AND THREE EXPERIMENTS NOW SAY SO.**  Round 287
             // throttled this to one call in 64 and broke tests 51 and 56; adding `__threadfence_system()` to
@@ -697,6 +701,11 @@ bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, Session
                 return false;
             }
             if (rang) break;                             // rung, and the graph is still running: the overlap
+            if (ring_limit.count() > 0 && (++ring_spins & 1023u) == 0 &&
+                std::chrono::steady_clock::now() - ring_t0 > ring_limit) {
+                err = "session_loop: layer " + std::to_string(l) + " did not ring within the GPU wait limit";
+                return false;
+            }
             STRATA_SPIN_PAUSE();
         }
         if (mid_graph) ++gr.rings_mid_graph;

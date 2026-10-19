@@ -348,6 +348,9 @@ bool ExpertCache::open_segmented(uint64_t want, std::string& err) {
 void ExpertCache::release_segmented() {
 #if !defined(STRATA_EC_NO_VMM)
     const Vmm& v = vmm();
+    // Unmapping a segment under work still reading it faults, so the whole device must drain first.  This wait is
+    // unbounded (audit finding 6b): bounding it needs a stream registry and a GPU run to validate, so it is not
+    // changed here.  A lost device makes the call return an error; it does not spin.
     if (base_ != nullptr) cudaDeviceSynchronize();
     const CUdeviceptr va = reinterpret_cast<CUdeviceptr>(base_);
     for (size_t i = 0; i < segs_.size(); ++i)
@@ -392,6 +395,7 @@ bool ExpertCache::shrink(int64_t keep_bytes, std::string& err) {
     int64_t keep = 0, at = 0;   // the segments [0, keep) hold the first keep_bytes
     while (keep < (int64_t) segs_.size() && at < keep_bytes) at += seg_size_[(size_t) keep++];
     if (keep >= mapped_segs_) return true;
+    // The same unbounded drain as release_segmented(): no unmap happens when it fails.
     if (cudaDeviceSynchronize() != cudaSuccess) {
         err = std::string("the device failed before the cache shrank: ") + cudaGetErrorString(cudaGetLastError());
         return false;

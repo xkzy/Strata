@@ -1,5 +1,6 @@
 // src/core/verify.cpp - see include/strata/core/verify.hpp.
 #include "strata/core/verify.hpp"
+#include "strata/core/gpu_wait.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/dma_batch.hpp"
 #if defined(_WIN32)
@@ -332,8 +333,23 @@ Verifier::~Verifier() {
         Verifier* me = this;
         slot.compare_exchange_strong(me, nullptr);
     }
-    if (cs_) cudaStreamSynchronize(cs_);
-    if (sh_cs_) cudaStreamSynchronize(sh_cs_);
+    // A stream that does not drain within the wait limit is stuck: freeing what its work may still read or write
+    // could make a hang worse, so the destructor leaves everything of this verifier as it is (the process frees it).
+    auto drains = [](cudaStream_t st) {
+        if (!st) return true;
+        return strata::core::wait_bounded(
+                   [st] {
+                       const cudaError_t q = cudaStreamQuery(st);
+                       return q == cudaSuccess ? strata::core::PollState::Ready
+                              : q == cudaErrorNotReady ? strata::core::PollState::Pending
+                                                       : strata::core::PollState::Failed;
+                   },
+                   strata::core::gpu_wait_limit()) != strata::core::WaitResult::TimedOut;
+    };
+    if (!drains(cs_) || !drains(sh_cs_) || !drains(copy_)) {
+        std::fprintf(stderr, "strata: verifier: a GPU stream did not finish within the wait limit; its memory is left as it is\n");
+        return;
+    }
     for (auto& e : exec_)
         if (e) cudaGraphExecDestroy(e);
     for (auto& e : exec_nr_)
@@ -348,7 +364,7 @@ Verifier::~Verifier() {
     if (qcnt_) cudaFree(qcnt_);
     if (cs_ && cs_ != ext_stream_) cudaStreamDestroy(cs_);   // set_stream: the stage's stream, shared, not ours
     if (sh_cs_) cudaStreamDestroy(sh_cs_);
-    if (copy_) { cudaStreamSynchronize(copy_); cudaStreamDestroy(copy_); }
+    if (copy_) cudaStreamDestroy(copy_);
     if (commit_done_) cudaEventDestroy(commit_done_);
     if (ev_done_) cudaEventDestroy(ev_done_);
     if (ev_commit_) cudaEventDestroy(ev_commit_);
@@ -1541,10 +1557,17 @@ bool Verifier::capture(int T, std::string& err) {
         err = std::string("verify: instantiate: ") + cudaGetErrorString(ie);
         return false;
     }
-    const cudaError_t ue = cudaGraphUpload(exec_t, cs_);
-    const cudaError_t us = cudaStreamSynchronize(cs_);
-    std::fprintf(stderr, "strata verify: captured the %d-token window (upload %s, sync %s)\n", T,
-                 cudaGetErrorString(ue), cudaGetErrorString(us));
+    // A failed upload or drain leaves an exec that may not run as captured: print it and fail the capture, the
+    // same way finish_capture (mtp.cpp) and capture_batch (below) do.
+    cudaError_t ue = cudaGraphUpload(exec_t, cs_);
+    if (ue == cudaSuccess) ue = cudaStreamSynchronize(cs_);
+    if (ue != cudaSuccess) {
+        cudaGraphExecDestroy(exec_t);
+        exec_t = nullptr;
+        err = std::string("verify: capture upload: ") + cudaGetErrorString(ue);
+        return false;
+    }
+    std::fprintf(stderr, "strata verify: captured the %d-token window\n", T);
     return true;
 }
 
@@ -1839,8 +1862,9 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     commit_pending_ = false;
     progress_at("verify window: waiting for the expert copies", (int64_t) T);
     if (copy_used_) {
-        cudaStreamSynchronize(copy_);   // no host function of this window may raise flag B in the next one
+        const cudaError_t ce = cudaStreamSynchronize(copy_);   // no host function of this window may raise flag B in the next one
         copy_used_ = false;
+        if (ce != cudaSuccess) { err = std::string("verify: expert copies: ") + cudaGetErrorString(ce); return false; }
     }
     if (prof_on_ && G == 1) collect_profile();   // the window's GPU stage stamps
     // ---- a sampled or penalized request: the head's sampling again, host-side so its parameters are this call's
@@ -2124,8 +2148,15 @@ bool Verifier::capture_batch(const int* rows, int S, int hbase, std::string& err
     const cudaError_t ie = cudaGraphInstantiate(&ex, graph, 0);
     cudaGraphDestroy(graph);
     if (ie != cudaSuccess) { err = std::string("verify: batch instantiate: ") + cudaGetErrorString(ie); return false; }
-    cudaGraphUpload(ex, cs_);
-    cudaStreamSynchronize(cs_);
+    // a failed upload or drain leaves an exec that may not run as captured: fail the capture instead of keeping it
+    cudaError_t ue = cudaGraphUpload(ex, cs_);
+    if (ue == cudaSuccess) ue = cudaStreamSynchronize(cs_);
+    if (ue != cudaSuccess) {
+        cudaGraphExecDestroy(ex);
+        ex = nullptr;
+        err = std::string("verify: batch capture upload: ") + cudaGetErrorString(ue);
+        return false;
+    }
     std::string list;
     for (int t = 0; t < S; ++t) list += (t ? "," : "") + std::to_string(rows[t]);
     std::fprintf(stderr, "strata verify: captured the batch window over slots %s\n", list.c_str());
@@ -2372,7 +2403,10 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
         }
         const cudaError_t se = cudaStreamSynchronize(cs_);
         if (se != cudaSuccess) { err = std::string("verify batch: ") + cudaGetErrorString(se); return false; }
-        cudaStreamSynchronize(copy_);
+        {
+            const cudaError_t ce = cudaStreamSynchronize(copy_);
+            if (ce != cudaSuccess) { err = std::string("verify batch: expert copies: ") + cudaGetErrorString(ce); return false; }
+        }
         if (prof_on_) collect_profile();
         ++windows;
         if (le_ < g.n_layers) return next_ == nullptr || next_->run_slot_rows(rows, S, tokens, pos, pool, next_user_, out, err);
@@ -2435,7 +2469,10 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     }
     const cudaError_t se = cudaStreamSynchronize(cs_);
     if (se != cudaSuccess) { err = std::string("verify batch: ") + cudaGetErrorString(se); return false; }
-    cudaStreamSynchronize(copy_);
+    {
+        const cudaError_t ce = cudaStreamSynchronize(copy_);
+        if (ce != cudaSuccess) { err = std::string("verify batch: expert copies: ") + cudaGetErrorString(ce); return false; }
+    }
     if (prof_on_) collect_profile();
     ++windows;
     if (le_ < g.n_layers) return next_ == nullptr || next_->run_slot_rows(rows, S, tokens, pos, pool, next_user_, out, err);
@@ -2873,8 +2910,13 @@ bool Verifier::pl_commit_async(int n_keep, std::string& err) {
     if (commit_exec_ == nullptr || ev_commit_ == nullptr) { err = "verify: pipelined commit not prepared"; return false; }
     const Clock::time_point t0 = Clock::now();
     if (commit_live_) {   // its graph reads the words below when it starts: the previous one has (a window ago)
-        cudaError_t q;
-        while ((q = cudaEventQuery(ev_commit_)) == cudaErrorNotReady) _mm_pause();
+        cudaError_t q = cudaSuccess;
+        const WaitResult w = wait_bounded([&] {
+            q = cudaEventQuery(ev_commit_);
+            if (q == cudaErrorNotReady) _mm_pause();
+            return q == cudaSuccess ? PollState::Ready : q == cudaErrorNotReady ? PollState::Pending : PollState::Failed;
+        }, gpu_wait_limit());
+        if (w == WaitResult::TimedOut) { err = "verify: commit: the GPU did not finish the previous commit within the wait limit"; return false; }
         if (q != cudaSuccess) { err = std::string("verify: commit: ") + cudaGetErrorString(q); return false; }
     }
     h_commit_[0] = n_keep;
