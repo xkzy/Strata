@@ -3157,9 +3157,21 @@ int main(int argc, char** argv) {
         // STRATA_PEER_HOT_AT (default 8700, ~ the primary's slots) ranks, every pair with floor((r+1)f) > floor(rf)
         // moves to just after that point: the primary fills past them, the peer (which takes what the primary does
         // not hold, in order) gets them first.
-        if (o.peer_device >= 1) {   // default 0.45 (measured: 0.3-0.6 all better than 0; 0 = off, e.g. for the gate)
+        if (o.peer_device >= 1) {
+            // Default: a share of the hot experts goes to the peer only when the two cards have a direct link.  A hot
+            // expert on a peer behind the host bridge is copied across it every layer, and the primary then keeps
+            // colder experts instead.  Measured on this PC (RTX 5060 Ti + RTX 4060, no peer access), Coder IQ1_M, a
+            // 415-token code prompt: 64.8 tok/s with the hot experts on the primary against 44.2 with the 0.45 share
+            // (cache hits 0.892 against 0.685, CPU expert pool 11.5 against 31.1 ms/round).
             const char* ph = std::getenv("STRATA_PEER_HOT");
-            const double f = ph ? std::atof(ph) : 0.45;
+            int can = 0;
+            const bool direct = cudaDeviceCanAccessPeer(&can, 0, (int) o.peer_device) == cudaSuccess && can != 0;
+            (void) cudaGetLastError();   // the probe is advisory: a driver that cannot answer means no direct link
+            const double f = ph ? std::atof(ph) : (direct ? 0.45 : 0.0);
+            if (ph == nullptr && !direct)
+                std::fprintf(stderr, "strata generate: peer GPU %d: no direct peer access, so the hot experts stay on "
+                                     "the primary (STRATA_PEER_HOT=0.45 puts a share on the peer)\n",
+                             (int) o.peer_device);
             const char* pa = std::getenv("STRATA_PEER_HOT_AT");
             const size_t at = std::min(profile.size(), (size_t) (pa ? std::atoll(pa) : 8700));
             if (f > 0.0 && f < 1.0 && at > 0) {
