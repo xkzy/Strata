@@ -43,9 +43,32 @@ End to end through the server, the same model and config, a 300-token reply to a
 on the second request (46.9 on the first, which also reads the prompt and the first window). Before the change the
 same workload ran at ~43-44 tok/s.
 
-## Where the remaining time goes
+## The window in the engine's own profiler (serve path)
 
-One verify window now accepts 2.63 tokens in ~42 ms:
+`STRATA_DECODE_TIMING=1 STRATA_VERIFY_PROFILE=1` with `--serve`, a short code request answered with 200 tokens
+(second request, warm prompt cache, 74-token prompt, engine log `strata serve: ... 200 generated in 2531 ms
+(79.0 tok/s)`):
+
+```
+83 windows, avg T 2.76, 2.41 tokens/window, 30.50 ms/window =
+  verify 27.05 (GPU-reach wait 16.90 + per-layer host 8.35 [plan 0.60 actq 0.18 CPU 7.55])
+  + commit/emit 0.01 + draft 2.83
+per layer-window: CPU experts 0.74, VRAM hits 18.45, PCIe 0.00
+```
+
+The GPU's own stages per window (`strata decode GPU stages`, GDN + QSA layers summed; 26.94 ms of GPU work per
+window over 84 windows): **hc-read1 + router 4.99** (3.74 GDN + 1.25 QSA), **VRAM expert hits 3.81** (2.85 + 0.96),
+**waitCPU 3.58** (2.81 + 0.77), q8/qkv/q-idx gemv 2.40, hc0 norm/down/up 2.34, out-proj 1.73, head 1.58, GDN z
+1.28, shared+quant 1.17, QSA q 0.99, attention 0.50, copy+combine 0.62, `waitA`/`waitB` 0.45, the rest under 0.5.
+
+The first request on the same server (cold cache) is 45.48 ms/window with `waitCPU` 7.52 and CPU experts 1.85/layer,
+which is the same effect the 415-token benchmark shows: 30.5 ms and 79 tok/s once the cache matches the traffic,
+42 ms and 64.5 tok/s while it does not. The profiler times every stage with events and slows the decode a little,
+so these are for comparison, not speed.
+
+## The same window from the outside (`--stats`, 415-token prompt)
+
+The benchmark above, one window = 2.63 accepted tokens in ~42 ms:
 
 | Part | ms/round | What it is |
 | --- | ---: | --- |
@@ -78,12 +101,13 @@ Other knobs, measured on this PC (a fixed 128-token continuation so every arm ha
 | `--lookup-chain 2` / `4` | 50.6 / 50.4 | same acceptance on this continuation |
 | `--pool-workers 31` (SMT) | 39.9 | 31 threads read at 14.9 GB/s, 15 cores at 23-24 |
 | `--resident-experts` (PCIe share on) | 46.3 | the GPU's 39% share (`pcie experts` 1.51/layer) cut the pool 23.3 → 20.8 but raised the ring wait 16.7 → 21.0 |
+| `--mtp-q4 all` | 60.5 | the draft layer's saving is 22 slots here (4447 → 4425) and the 4-bit draft rows cost more than that buys |
 
 ## About a ring buffer for the copies
 
 The swap copies are already asynchronous: they run on their own stream (`adapt_stream`) while the MTP drafts, and
 `--adapt-async 1` lets them advance between windows. What a ring buffer would hide is *latency*, and the measured
 hot path is *bandwidth*: the CPU pool reads at 24 GB/s against a 26 GB/s ceiling, so hiding the copy behind the
-compute cannot add bandwidth. The one place the host does serialize is the swap's own bookkeeping (choose, pin,
-prefetch: 5.25 ms/round at the old hit rate) — that is where a background thread or a two-deep slot set would pay,
-and it is why `--adapt-every 2` (hits 0.75 → 0.89 potential) could not be taken earlier.
+compute cannot add bandwidth. Before the peer fix the host's own swap bookkeeping (choose, pin, prefetch) was
+5.25 ms/round, which is where a background thread or a two-deep slot set would pay; at the 0.89 hit rate it is off
+the critical path, and `--adapt-every 2` is worth +1 tok/s (65.7).
