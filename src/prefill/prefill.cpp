@@ -2009,7 +2009,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     } else {
                         b = m.src->blob(l, e);
                         if (!b) { err = "prefill: expert source has no blob"; return false; }
-                        if (ps_on && m.src->pinned(l, e)) {   // multi-GPU: every ps_frac-th one goes to the peer's ring
+                        // multi-GPU: every ps_frac-th one goes to the peer's ring - on an MMQ layer only, the only
+                        // kind the peer computes; elsewhere nobody would compute an expert taken out of this stream
+                        if (ps_on && m.src->pinned(l, e) && mmq_plan().any && mmq_plan().layer[(size_t) l]) {
                             ps_acc += m.pp->ps_frac;
                             if (ps_acc >= 1.0) {
                                 ps_acc -= 1.0;
