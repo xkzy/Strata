@@ -6779,10 +6779,17 @@ int main(int argc, char** argv) {
         std::string ckpt_why;
         auto gpu_sync_ok = [&]() -> bool {
             const cudaError_t e = cudaDeviceSynchronize();
-            if (e == cudaSuccess) return true;
-            ckpt_why = std::string(": the GPU stopped responding before it (") + cudaGetErrorString(e) +
-                       ") - a GPU hang; on Windows the driver is then reset";
-            return false;
+            if (e != cudaSuccess) {
+                ckpt_why = std::string(": the GPU stopped responding before it (") + cudaGetErrorString(e) +
+                           ") - a GPU hang; on Windows the driver is then reset";
+                return false;
+            }
+            // multi-GPU: cudaDeviceSynchronize covers device 0 only; the peer's queued work is settled too
+            if (std::string perr; peer.valid() && !peer.drain(perr)) {
+                ckpt_why = ": " + perr;
+                return false;
+            }
+            return true;
         };
         auto checkpoint_at = [&](int64_t L, std::vector<ConvCheckpoint>* parts = nullptr, bool as_tail = false) -> bool {
             ckpt_why.clear();

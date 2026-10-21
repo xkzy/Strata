@@ -519,4 +519,27 @@ void PeerExperts::apply_pending(bool wait) {
     pending_.clear();
 }
 
+bool PeerExperts::drain(std::string& err) {
+    if (device_ < 0) return true;
+    if (failed_) { err = "peer experts: the peer GPU was stopped after an earlier failure"; return false; }
+    On on(device_);
+    for (cudaStream_t s : {stream_, refill_}) {
+        if (s == nullptr) continue;
+        cudaError_t e = cudaSuccess;
+        const WaitResult w = wait_bounded([&] {
+            e = cudaStreamQuery(s);
+            return e == cudaSuccess ? PollState::Ready : e == cudaErrorNotReady ? PollState::Pending : PollState::Failed;
+        }, gpu_wait_limit());
+        if (w == WaitResult::TimedOut) {
+            failed_ = true;
+            err = "peer experts: GPU " + std::to_string(device_) + " did not finish its work within " +
+                  std::to_string(gpu_wait_limit().count() / 1000) + " s; the peer is stopped and nothing more is sent to it";
+            return false;
+        }
+        if (w == WaitResult::Failed) failed_ = true;
+        if (!ck(e, "drain", err)) return false;
+    }
+    return true;
+}
+
 }  // namespace strata::core

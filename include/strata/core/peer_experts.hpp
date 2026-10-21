@@ -72,6 +72,9 @@ public:
     /// swapped-in expert becomes resident at `apply_pending`.  Call only between verify windows.
     bool adapt(const float* usage, const int32_t* res0, int max_swaps, std::string& err);
     void apply_pending(bool wait);
+    /// Waits, bounded, for all of the peer's queued work (its compute and refill streams).  A card that does not
+    /// finish in time is quarantined like in finish(); false with `err` then.
+    bool drain(std::string& err);
 
     int64_t resident() const { return resident_; }
     /// the last launch writes its rows into the host rows itself (the caller must not touch them)

@@ -431,7 +431,8 @@ struct Doorbell {
     uint32_t* h_seq = nullptr;     ///< 1
     /// Plan v0.3 P3 token graph: the HOST's answer.  The host writes the ring value it has served (after the
     /// pool's output is in place); the device's `doorbell_wait` spins until the flag equals the ring.
-    uint32_t* h_flag = nullptr;    ///< 1
+    uint32_t* h_flag = nullptr;    ///< 16 words: [0] the answer, [8] waits that gave up (kSpinGaveUpWord)
+    mutable uint32_t gave_up_seen = 0;   ///< h_flag[8] when the host last checked it
     // the DEVICE's view of the same bytes
     float* d_x_f = nullptr;
     int32_t* d_ids = nullptr;

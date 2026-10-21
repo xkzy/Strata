@@ -1760,18 +1760,21 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     const bool single_chunk = hand_in_ == nullptr ? n <= m.T : single_chunk_;
     const bool helped = single_chunk && bind_stage_helper(n);
     if (helped) std::swap(m.pp, m.help_pp);
-    struct HelpScope {
+    // The second GPU's streams (a --peer-device peer or the layer-split helper) are settled before the run returns:
+    // the device-0 syncs after a prompt (checkpoints, the slot refill) do not wait for another device, and ring copies
+    // of experts the routing did not pick are never waited for inside the run.
+    struct PeerScope {
         Impl& m;
-        bool on;
-        ~HelpScope() {
-            if (!on) return;
-            const core::OnDevice d(m.pp->dev);   // its work is done before the stage hands over; settle its streams
-            cudaStreamSynchronize(m.pp->s_cp);
-            cudaStreamSynchronize(m.pp->s_out);
-            cudaStreamSynchronize(m.pp->s);
-            std::swap(m.pp, m.help_pp);
+        bool helped;
+        ~PeerScope() {
+            if (m.pp) {
+                const core::OnDevice d(m.pp->dev);
+                if (!stream_drains(m.pp->s_cp) || !stream_drains(m.pp->s_out) || !stream_drains(m.pp->s))
+                    std::fprintf(stderr, "strata: prefill: peer GPU %d's streams did not finish within the wait limit\n", m.pp->dev);
+            }
+            if (helped) std::swap(m.pp, m.help_pp);
         }
-    } help_scope{m, helped};
+    } peer_scope{m, helped};
     PfTimer pt;
     PeTimer pe;
     if (m.pp) pe.dev = m.pp->dev; else pe.on = false;

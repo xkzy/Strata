@@ -230,6 +230,17 @@ const int64_t g_test_stall = [] {
 }();
 }  // namespace
 
+bool Verifier::waits_ok(std::string& err) {
+    uint32_t n = 0;
+    for (uint32_t* p : {h_flag_, h_flagA_, h_flagB_})
+        if (p != nullptr) n += ((volatile uint32_t*) p)[8];   // kSpinGaveUpWord
+    if (n == gave_up_seen_) return true;
+    gave_up_seen_ = n;
+    err = "verify: the GPU's wait for the host's expert rows gave up (STRATA_SPIN_TIMEOUT_S): the host did not answer "
+          "in time, so this window is not used";
+    return false;
+}
+
 bool Verifier::release_gpu_waits(int timeout_ms) {
     released_.store(true);
     trace_ev("RELEASE", -1, -1, timeout_ms);
@@ -1854,6 +1865,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const cudaError_t se = cudaStreamSynchronize(cs_);
     trace_ev("SYNCED", -1, -1, (int64_t) se);
     if (se != cudaSuccess) { err = std::string("verify: ") + cudaGetErrorString(se); return false; }
+    if (!waits_ok(err)) return false;
     if (ar_on() && h_plan_err_ != nullptr && *(volatile uint32_t*) h_plan_err_ != 0) {   // #871: refresh_ar saw the table whole
         *(volatile uint32_t*) h_plan_err_ = 0;
         err = "verify: the all-resident plan met an expert that is not in VRAM (the residency table changed during the window)";
@@ -2403,6 +2415,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
         }
         const cudaError_t se = cudaStreamSynchronize(cs_);
         if (se != cudaSuccess) { err = std::string("verify batch: ") + cudaGetErrorString(se); return false; }
+        if (!waits_ok(err)) return false;
         {
             const cudaError_t ce = cudaStreamSynchronize(copy_);
             if (ce != cudaSuccess) { err = std::string("verify batch: expert copies: ") + cudaGetErrorString(ce); return false; }
@@ -2469,6 +2482,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     }
     const cudaError_t se = cudaStreamSynchronize(cs_);
     if (se != cudaSuccess) { err = std::string("verify batch: ") + cudaGetErrorString(se); return false; }
+    if (!waits_ok(err)) return false;
     {
         const cudaError_t ce = cudaStreamSynchronize(copy_);
         if (ce != cudaSuccess) { err = std::string("verify batch: expert copies: ") + cudaGetErrorString(ce); return false; }

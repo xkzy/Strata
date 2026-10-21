@@ -973,6 +973,12 @@ bool session_run_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, Se
     progress_at("token: waiting for the GPU to finish the token");
     const cudaError_t se = cudaStreamSynchronize(cs);
     if (se != cudaSuccess) { err = std::string("session_run_token: ") + cudaGetErrorString(se); return false; }
+    if (const uint32_t gu = ((volatile uint32_t*) s.db->h_flag)[8]; gu != s.db->gave_up_seen) {   // kSpinGaveUpWord
+        s.db->gave_up_seen = gu;
+        err = "session_run_token: the GPU's wait for the host's expert rows gave up (STRATA_SPIN_TIMEOUT_S): the host "
+              "did not answer in time, so this token is not used";
+        return false;
+    }
     progress_at("decode");
     progress_beat();
     return true;

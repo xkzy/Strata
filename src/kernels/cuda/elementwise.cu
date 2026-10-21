@@ -214,15 +214,17 @@ __global__ void doorbell_ring_kernel(uint32_t* seq) {
 #endif
 }
 
-__global__ void doorbell_wait_kernel(const volatile uint32_t* flag, const volatile uint32_t* seq) {
+__global__ void doorbell_wait_kernel(const volatile uint32_t* flag, const volatile uint32_t* seq, unsigned max_ns,
+                                     unsigned long long timeout_ns) {
     const uint32_t want = *seq;
-    while (*flag != want) strata_spin_pause();
+    strata_spin_wait(flag, [&] { return *flag == want; }, max_ns, timeout_ns);
     __threadfence_system();
 }
 
 void doorbell_wait(const uint32_t* d_flag, const uint32_t* d_seq, void* stream) {
     if (d_flag == nullptr || d_seq == nullptr) return;
-    doorbell_wait_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(d_flag, d_seq);
+    const SpinParams sp = strata_spin_params();
+    doorbell_wait_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(d_flag, d_seq, sp.max_ns, sp.timeout_ns);
     check_launch("doorbell_wait");
 }
 

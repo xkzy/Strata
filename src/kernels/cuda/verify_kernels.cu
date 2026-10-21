@@ -948,8 +948,9 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
 }
 
 namespace {
-__global__ void wait_flag_ge_kernel(const volatile uint32_t* flag, uint32_t value) {
-    while (*flag < value) strata_spin_pause();
+__global__ void wait_flag_ge_kernel(const volatile uint32_t* flag, uint32_t value, unsigned max_ns,
+                                    unsigned long long timeout_ns) {
+    strata_spin_wait(flag, [&] { return *flag >= value; }, max_ns, timeout_ns);
     __threadfence_system();
 }
 }  // namespace
@@ -1129,9 +1130,10 @@ __global__ void resident_plan_par_kernel(const int32_t* __restrict__ ids, int n,
     __syncthreads();
     if (i == 0) *skip = ring;
 }
-__global__ void wait_flag_ge_or_kernel(const volatile uint32_t* flag, uint32_t value, const volatile uint32_t* skip) {
+__global__ void wait_flag_ge_or_kernel(const volatile uint32_t* flag, uint32_t value, const volatile uint32_t* skip,
+                                       unsigned max_ns, unsigned long long timeout_ns) {
     if (*skip == value) return;
-    while (*flag < value) strata_spin_pause();
+    strata_spin_wait(flag, [&] { return *flag >= value; }, max_ns, timeout_ns);
     __threadfence_system();
 }
 __global__ void copy_i32_unless_kernel(int32_t* __restrict__ dst, const volatile int32_t* src, int n,
@@ -1155,7 +1157,8 @@ void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_
     check("resident_plan");
 }
 void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip, void* stream) {
-    wait_flag_ge_or_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value, skip);
+    const SpinParams sp = strata_spin_params();
+    wait_flag_ge_or_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value, skip, sp.max_ns, sp.timeout_ns);
     check("wait_flag_ge_or");
 }
 void copy_i32_from_mapped_unless(int32_t* dst, const int32_t* src, long long n, const uint32_t* skip, uint32_t value,
@@ -1175,7 +1178,8 @@ void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const u
 }
 
 void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream) {
-    wait_flag_ge_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value);
+    const SpinParams sp = strata_spin_params();
+    wait_flag_ge_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value, sp.max_ns, sp.timeout_ns);
     check("wait_flag_ge");
 }
 
