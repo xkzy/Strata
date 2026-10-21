@@ -1745,10 +1745,18 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             return false;
         }
     }
-    // An early return must drain DMA before the caller refills the borrowed expert slots.
+    // An early return must drain DMA before the caller refills the borrowed expert slots. A bare
+    // cudaStreamSynchronize can hang forever if the GPU has fallen off the bus; stream_drains() (used by
+    // Prefill::release() for the same reason) polls cudaStreamQuery with a bounded timeout instead, so the normal
+    // case still actually waits for the copy and a lost card does not wedge the caller.
     struct KvDrain {
         cudaStream_t stream;
-        ~KvDrain() { if (stream) cudaStreamSynchronize(stream); }
+        ~KvDrain() {
+            if (!stream) return;
+            if (!stream_drains(stream))
+                std::fprintf(stderr, "strata: prefill: the KV prefetch stream did not finish within the wait limit; "
+                                      "its memory is left as it is\n");
+        }
     } kv_drain{kv_prefetch ? m.kv_copy : nullptr};
     int64_t kv_prefetches = 0;
     const uint64_t gdn_floats = (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
@@ -3000,7 +3008,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // STRATA_PREFILL_GROUP_GATHER=0: one gather, one wait and one record per expert.
                         static const bool group_env = [] {
                             const char* v = std::getenv("STRATA_PREFILL_GROUP_GATHER");
-                            return v == nullptr || std::atoi(v) != 0;
+                            // The grouped 2-D gather is faster, but a long prefill has repeatedly lost the
+                            // 5060 Ti at this launch.  Keep the known-good one-expert launch as the safe default;
+                            // the grouped kernel remains available for an explicit A/B run after the GPU is healthy.
+                            return v != nullptr && std::atoi(v) != 0;
                         }();
                         const bool group_gather = group_env && stream_all && use_mmq && lay.native &&
                                                   MMQ_GROUP <= mmq::kGatherGroupMax;
