@@ -396,6 +396,8 @@ private:
     uint32_t* h_flagB_ = nullptr; uint32_t* m_flagB_ = nullptr;  // the PCIe share's DMA copies have landed
     uint32_t gave_up_seen_ = 0;   // the flags' word 8 (kSpinGaveUpWord) summed, when the host last checked
     bool waits_ok(std::string& err);   // false: a GPU doorbell wait gave up since the last check
+    int64_t windows_checked_ = 0;      // windows whose end gpu_ok() has passed, for the failure message
+    bool gpu_ok(const char* stage, std::string& err);   // false: the GPU reported an error since the last check
     cudaEvent_t commit_done_ = nullptr;   // recorded after an async commit (set_commit_async); see wait_commit
     bool commit_pending_ = false;
     cudaStream_t copy_ = nullptr;                                 // the copy engine's stream (DMA of missed experts)

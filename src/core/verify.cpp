@@ -241,6 +241,17 @@ bool Verifier::waits_ok(std::string& err) {
     return false;
 }
 
+// An error from any earlier launch or copy on this device (an async fault the stream syncs above did not see, or one
+// raised on a stream they do not wait for) shows up here, named by the stage and the window count, so the failure
+// log says where the GPU stopped answering instead of the next unrelated call taking the blame.
+bool Verifier::gpu_ok(const char* stage, std::string& err) {
+    const cudaError_t e = cudaGetLastError();
+    if (e == cudaSuccess) { ++windows_checked_; return true; }
+    err = std::string("verify: GPU ") + std::to_string(device_) + " reported '" + cudaGetErrorString(e) + "' after " + stage +
+          " (" + std::to_string(windows_checked_) + " windows before it were clean)";
+    return false;
+}
+
 bool Verifier::release_gpu_waits(int timeout_ms) {
     released_.store(true);
     trace_ev("RELEASE", -1, -1, timeout_ms);
@@ -1865,7 +1876,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const cudaError_t se = cudaStreamSynchronize(cs_);
     trace_ev("SYNCED", -1, -1, (int64_t) se);
     if (se != cudaSuccess) { err = std::string("verify: ") + cudaGetErrorString(se); return false; }
-    if (!waits_ok(err)) return false;
+    if (!waits_ok(err) || !gpu_ok("a decode window's GPU work", err)) return false;
     if (ar_on() && h_plan_err_ != nullptr && *(volatile uint32_t*) h_plan_err_ != 0) {   // #871: refresh_ar saw the table whole
         *(volatile uint32_t*) h_plan_err_ = 0;
         err = "verify: the all-resident plan met an expert that is not in VRAM (the residency table changed during the window)";
@@ -2415,7 +2426,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
         }
         const cudaError_t se = cudaStreamSynchronize(cs_);
         if (se != cudaSuccess) { err = std::string("verify batch: ") + cudaGetErrorString(se); return false; }
-        if (!waits_ok(err)) return false;
+        if (!waits_ok(err) || !gpu_ok("a batch window's GPU work", err)) return false;
         {
             const cudaError_t ce = cudaStreamSynchronize(copy_);
             if (ce != cudaSuccess) { err = std::string("verify batch: expert copies: ") + cudaGetErrorString(ce); return false; }
@@ -2482,10 +2493,11 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     }
     const cudaError_t se = cudaStreamSynchronize(cs_);
     if (se != cudaSuccess) { err = std::string("verify batch: ") + cudaGetErrorString(se); return false; }
-    if (!waits_ok(err)) return false;
+    if (!waits_ok(err) || !gpu_ok("a batch window's GPU work", err)) return false;
     {
         const cudaError_t ce = cudaStreamSynchronize(copy_);
         if (ce != cudaSuccess) { err = std::string("verify batch: expert copies: ") + cudaGetErrorString(ce); return false; }
+        if (!gpu_ok("a batch window's expert copies", err)) return false;
     }
     if (prof_on_) collect_profile();
     ++windows;

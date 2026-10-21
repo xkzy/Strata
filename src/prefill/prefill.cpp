@@ -3460,6 +3460,29 @@ bool Prefill::drain_pipeline(std::string& err) {
 }
 
 bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
+    // Before the first prompt kernel: an error the GPU raised earlier (the last decode window, a checkpoint copy, the
+    // peer's streams) is named here as such, not blamed on whichever prompt kernel happens to be launched first.
+    {
+        Impl& m = *impl_;
+        auto stream_bad = [](cudaStream_t s) { return s != nullptr && cudaStreamQuery(s) != cudaSuccess && cudaStreamQuery(s) != cudaErrorNotReady; };
+        const cudaError_t e = cudaGetLastError();
+        const char* which = e != cudaSuccess ? "the device" : stream_bad((cudaStream_t) m.cs) ? "the prompt stream"
+                          : stream_bad((cudaStream_t) m.copy) ? "the expert-copy stream" : stream_bad((cudaStream_t) m.kv_copy) ? "the KV stream" : nullptr;
+        if (which != nullptr) {
+            err = std::string("prefill: ") + which + " already had a GPU error before this prompt started (" +
+                  cudaGetErrorString(e != cudaSuccess ? e : cudaPeekAtLastError()) + "): it came from the work before this prompt";
+            return false;
+        }
+        if (m.pp) {
+            const core::OnDevice d(m.pp->dev);
+            const cudaError_t pe = cudaGetLastError();
+            if (pe != cudaSuccess || stream_bad(m.pp->s) || stream_bad(m.pp->s_cp) || stream_bad(m.pp->s_out)) {
+                err = std::string("prefill: peer GPU ") + std::to_string(m.pp->dev) + " already had a GPU error before this prompt started (" +
+                      cudaGetErrorString(pe) + "): it came from the work before this prompt";
+                return false;
+            }
+        }
+    }
     const bool body_ok = run_impl(tokens, n, pos0, err);
 
     std::string drain_err;
