@@ -6,6 +6,7 @@ package engineipc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -26,24 +27,51 @@ var gpuSnapshot = collectGPUSnapshot
 func runWithTimeout(name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), snapshotTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, name, args...)
+	// nvidia-smi on a card that fell off the bus can sit in an uninterruptible wait: the kill at the deadline then
+	// does not close its pipes, and CombinedOutput would wait for them. WaitDelay gives up on the pipes instead.
+	cmd.WaitDelay = time.Second
+	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
 
 // xidLines keeps the last maxXidLines kernel lines that name a GPU fault (the driver's per-call "rpcSendMessage
 // failed" lines repeat twice a second after a fault and would bury the one that matters).
 func xidLines(kernelLog string) []string {
-	var keep []string
+	// The first line of each distinct message is the one that names the cause (Xid 79 comes before everything it
+	// triggers); a message that repeats (UVM's "global fatal error" was logged 3161 times in one fall-off) is shown
+	// once with its count, in order of first appearance.
+	var order []string
+	count := map[string]int{}
+	first := map[string]string{}
 	for _, l := range strings.Split(kernelLog, "\n") {
 		for _, m := range xidMarkers {
-			if strings.Contains(l, m) {
-				keep = append(keep, strings.TrimSpace(l))
-				break
+			if !strings.Contains(l, m) {
+				continue
 			}
+			l = strings.TrimSpace(l)
+			key := l
+			if i := strings.Index(l, "kernel: "); i >= 0 {
+				key = l[i+len("kernel: "):] // same message at another second is the same message
+			}
+			if count[key] == 0 {
+				order = append(order, key)
+				first[key] = l
+			}
+			count[key]++
+			break
 		}
 	}
-	if len(keep) > maxXidLines {
-		keep = keep[len(keep)-maxXidLines:]
+	var keep []string
+	for _, key := range order {
+		if len(keep) == maxXidLines {
+			break
+		}
+		l := first[key]
+		if count[key] > 1 {
+			l += fmt.Sprintf("  (x%d)", count[key])
+		}
+		keep = append(keep, l)
 	}
 	return keep
 }
@@ -64,12 +92,18 @@ func collectGPUSnapshot() []string {
 		}
 	}
 	out, err := runWithTimeout("nvidia-smi", "--query-gpu=index,name,pci.bus_id,temperature.gpu,power.draw,memory.used,memory.total,pcie.link.gen.current,pcie.link.width.current", "--format=csv,noheader")
-	if strings.Contains(out, "Unable to determine the device handle") || strings.Contains(out, "Unknown Error") {
-		lines = append(lines, "gpu: driver lost device handle — try: sudo rmmod nvidia_uvm && sudo modprobe nvidia_uvm")
+	lostHandle := strings.Contains(out, "Unable to determine the device handle") || strings.Contains(out, "Unknown Error")
+	if lostHandle {
+		lines = append(lines, "gpu: driver lost device handle")
 	}
 	add("gpu: ", out, err)
-	klog, kerr := runWithTimeout("journalctl", "-k", "-b", "--no-pager", "-n", "3000")
-	if kerr != nil || klog == "" {
+	// Filtered by journalctl itself: after a fall-off the driver logs "GPU lost from the bus" thousands of times, and
+	// a plain "last N lines" window then holds none of the Xid lines that name the cause (seen: Xid 79 missed).
+	klog, kerr := runWithTimeout("journalctl", "-k", "-b", "--no-pager", "-g", "Xid|fallen off the bus|Node Reboot Required|uvm encountered global fatal")
+	var ee *exec.ExitError
+	if errors.As(kerr, &ee) && ee.ExitCode() == 1 { // prints "-- No entries --"
+		kerr = nil // exit 1 = journalctl -g matched no line: a clean boot, not an unreadable log
+	} else if kerr != nil || klog == "" {
 		klog, kerr = runWithTimeout("dmesg")
 	}
 	if x := xidLines(klog); len(x) > 0 {
@@ -81,7 +115,48 @@ func collectGPUSnapshot() []string {
 	} else {
 		lines = append(lines, "kernel: no Xid / fallen-off-the-bus lines this boot")
 	}
+	// The remedy is chosen after the kernel log is read: nvidia-smi's "Unknown Error" looks the same for a card
+	// that fell off the bus (needs a power-off) and for a UVM fault (a module reload can help).
+	if r := gpuRemedy(lines); r != "" {
+		lines = append(lines, "gpu: "+r)
+	}
 	return lines
+}
+
+// gpuRemedy says what can bring a lost card back, from what the snapshot shows. A card that fell off the bus (Xid
+// 79, or the driver's "Node Reboot Required") cannot be revived by reloading a module; on 2026-10-20 the old hint
+// still told the user to rmmod nvidia_uvm while the kernel said a reboot was required. Only a UVM-only fault gets
+// the module-reload hint. It returns "" when nothing in the snapshot shows a lost device.
+func gpuRemedy(lines []string) string {
+	var lost, hardware, uvm bool
+	for _, l := range lines {
+		if !strings.HasPrefix(l, "kernel: ") && !strings.HasPrefix(l, "gpu: ") {
+			continue
+		}
+		for _, m := range deviceLossMarkers {
+			if strings.Contains(l, m) {
+				lost = true
+			}
+		}
+		if strings.Contains(l, "fallen off the bus") || strings.Contains(l, "Node Reboot Required") {
+			hardware = true
+		}
+		if m := xidRE.FindStringSubmatch(l); m != nil && m[2] != "154" {
+			hardware = true
+		}
+		if strings.Contains(l, "uvm encountered global fatal") {
+			uvm = true
+		}
+	}
+	switch {
+	case !lost:
+		return ""
+	case uvm && !hardware:
+		return "try: sudo rmmod nvidia_uvm && sudo modprobe nvidia_uvm, or reboot"
+	default:
+		return "the card no longer answers and a driver reload cannot bring it back: power the PC fully off for 30 s and start it again; " +
+			"the engine's last output in the failure log shows what it was doing when the card stopped"
+	}
 }
 
 // deviceLossMarkers in a snapshot line mean the driver itself lost a card (not a bug in the engine's request).
@@ -97,19 +172,17 @@ var (
 // sameBus compares two PCI bus ids where one may lack the domain or the function part (0000:01:00 vs
 // 0000:01:00.0): the kernel writes both forms in the same boot.
 func sameBus(a, b string) bool {
-	if a == b {
-		return true
+	return a == b || normBus(a) == normBus(b)
+}
+
+func normBus(s string) string {
+	if strings.Count(s, ":") == 1 {
+		s = "0000:" + s
 	}
-	norm := func(s string) string {
-		if !strings.HasPrefix(s, "0000:") {
-			s = "0000:" + s
-		}
-		if !strings.Contains(s, ".") {
-			s += ".0"
-		}
-		return s
+	if !strings.Contains(s, ".") {
+		s += ".0"
 	}
-	return norm(a) == norm(b)
+	return strings.ToLower(s)
 }
 
 // gpuFaultSummary names the card the driver lost and the first Xid it reported for that card, so the reason a
@@ -134,6 +207,7 @@ func gpuFaultSummary(lines []string) string {
 		if bus == "" {
 			return
 		}
+		bus = normBus(bus) // 0000:01:00 and 0000:01:00.0 are one card
 		if prev, seen := byBus[bus]; seen {
 			// The first Xid for this card is the cause and outranks a later one; a marker with no Xid (a lost
 			// device handle) is upgraded by the Xid that explains it, which may be logged later in the snapshot.
@@ -150,6 +224,9 @@ func gpuFaultSummary(lines []string) string {
 			continue
 		}
 		if m := xidRE.FindStringSubmatch(l); m != nil {
+			if m[2] == "154" { // "recovery action changed": the driver's notice after a fault, on any card; it does not say that card is lost
+				continue
+			}
 			detail := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(m[3]), "."))
 			add(m[1], fault{xid: "Xid " + m[2], detail: detail})
 			continue

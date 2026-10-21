@@ -122,8 +122,9 @@ type rtBackend struct {
 	mu      sync.Mutex
 	err     error
 	stops   []string
-	ticket  uint64            // the runtime controller's admission ticket for the whole request
-	lastReq *monitoredRequest // the newest generation's monitor record (a retry inside the runtime makes another)
+	ticket  uint64              // the runtime controller's admission ticket for the whole request
+	lastReq *monitoredRequest   // the newest generation's monitor record (a retry inside the runtime makes another)
+	gens    []*monitoredRequest // every generation's monitor record, in the order they ran
 }
 
 // settle gives the newest generation the request's final finish reason, the one the API returns.
@@ -227,8 +228,10 @@ func (b *rtBackend) Generate(ctx context.Context, ids []int, sp rtclient.Samplin
 		FrequencyPenalty: sp.FrequencyPenalty, PresencePenalty: sp.PresencePenalty, Seed: sp.Seed,
 	}, maxTokens, stopIDs, sp.Stop, eng)
 	rq := b.s.mon.begin(len(ids), maxTokens) // the Monitor's live state, Recent requests and Context read this
+	rq.link(recordIDOf(ctx))
 	b.mu.Lock()
 	b.lastReq = rq
+	b.gens = append(b.gens, rq)
 	b.mu.Unlock()
 	go func() {
 		defer close(out)
@@ -321,6 +324,7 @@ func (s *StrataServer) startRuntimeGeneration(ctx context.Context, spec genSpec)
 			for _, t := range done.Trace {
 				reqtrace.Add(ctx, "runtime", "+%.0f ms  %s: %s", t.Ms, t.Kind, t.Detail)
 			}
+			be.noteAttempts(done.Trace)
 		}
 		if err != nil {
 			reqtrace.Add(ctx, "runtime", "ended with an error: %v", err)

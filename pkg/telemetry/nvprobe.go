@@ -11,12 +11,16 @@ package telemetry
 
 import (
 	"context"
+	"errors"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
+
+var errNvidiaSmiOff = errors.New("nvidia-smi probes are off (STRATA_NO_NVIDIA_SMI=1)")
 
 var (
 	nvidiaMu sync.Mutex
@@ -34,7 +38,9 @@ var (
 	// time; without a deadline the sampler goroutine would stop producing samples entirely, and the controller
 	// would keep deciding on a frozen last reading. The seam takes the context so a test can prove the deadline.
 	nvidiaExec = func(ctx context.Context, args ...string) ([]byte, error) {
-		return exec.CommandContext(ctx, "nvidia-smi", args...).Output()
+		cmd := exec.CommandContext(ctx, "nvidia-smi", args...)
+		cmd.WaitDelay = time.Second // a call stuck in the driver can ignore the kill and keep its pipes open
+		return cmd.Output()
 	}
 
 	// Deadlines, not constants, so a test can shorten them instead of waiting out a real hang.
@@ -59,6 +65,11 @@ const (
 
 // runNvidia executes one nvidia-smi probe under its deadline.
 func runNvidia(timeout time.Duration, args ...string) ([]byte, error) {
+	if os.Getenv("STRATA_NO_NVIDIA_SMI") == "1" {
+		// Diagnostic switch: no nvidia-smi child while the engine runs (the driver answers each probe through the
+		// same GSP firmware the compute work uses). The GPU charts stay empty.
+		return nil, errNvidiaSmiOff
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return nvidiaExec(ctx, args...)

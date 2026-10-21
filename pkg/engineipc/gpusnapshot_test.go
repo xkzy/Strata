@@ -203,3 +203,59 @@ func TestNoRestartIntoLostGPU(t *testing.T) {
 		t.Errorf("failure log lacks the reason:\n%s", b)
 	}
 }
+
+func TestXidLinesKeepsTheFirstXidUnderRepeatedUVMSpam(t *testing.T) {
+	in := "Oct 19 22:54:26 h kernel: NVRM: Xid (PCI:0000:01:00): 79, GPU has fallen off the bus.\n"
+	for i := 0; i < 500; i++ {
+		in += "Oct 19 22:54:27 h kernel: NVRM: nvGpuOpsReportFatalError: uvm encountered global fatal error 0x60\n"
+	}
+	got := xidLines(in)
+	if len(got) != 2 || !strings.Contains(got[0], "Xid (PCI:0000:01:00): 79") || !strings.Contains(got[1], "(x500)") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestFaultSummaryCountsOneCardOnce(t *testing.T) {
+	got := gpuFaultSummary([]string{
+		"gpu: Unable to determine the device handle for GPU0: 0000:01:00.0: Unknown Error",
+		"kernel: NVRM: Xid (PCI:0000:01:00): 79, pid=1, name=nvidia-smi, GPU has fallen off the bus.",
+	})
+	if strings.Contains(got, "more cards") || strings.Count(got, "GPU 0000") != 1 || !strings.Contains(got, "Xid 79") {
+		t.Fatalf("one card must be named once with its Xid: %q", got)
+	}
+}
+
+func TestFaultSummaryDoesNotNameACardForXid154(t *testing.T) {
+	got := gpuFaultSummary([]string{
+		"kernel: NVRM: Xid (PCI:0000:01:00): 79, pid=1, name=nvidia-smi, GPU has fallen off the bus.",
+		"kernel: NVRM: Xid (PCI:0000:05:00): 154, GPU recovery action changed from 0x0 (None) to 0x2 (Node Reboot Required)",
+	})
+	if strings.Contains(got, "0000:05:00") || !strings.Contains(got, "Xid 79") {
+		t.Fatalf("only the card with Xid 79 is gone: %q", got)
+	}
+}
+
+// Reloading nvidia_uvm cannot bring back a card that fell off the bus (the kernel said "Node Reboot Required" on
+// 2026-10-20 and the old hint still told the user to rmmod): the remedy follows the fault.
+func TestGPURemedyFollowsTheFault(t *testing.T) {
+	fell := []string{
+		"gpu: NVIDIA-SMI has failed: Unable to determine the device handle for GPU0: 0000:01:00.0: Unknown Error",
+		"kernel: NVRM: Xid (PCI:0000:01:00): 79, GPU has fallen off the bus.",
+		"kernel: NVRM: Xid (PCI:0000:01:00): 154, GPU recovery action changed to 0x2 (Node Reboot Required)",
+	}
+	got := gpuRemedy(fell)
+	if strings.Contains(got, "rmmod") || !strings.Contains(got, "power") || strings.Contains(got, "cable") || strings.Contains(got, "seat") {
+		t.Errorf("a card off the bus needs a full power-off, not a module reload, and no hardware blame: %q", got)
+	}
+	// A bare lost handle looks the same as a fall-off from nvidia-smi: do not promise a module reload fixes it.
+	if got := gpuRemedy([]string{"gpu: NVIDIA-SMI has failed: Unable to determine the device handle for GPU0: 0000:01:00.0: Unknown Error"}); strings.Contains(got, "rmmod") {
+		t.Errorf("a bare lost handle must not suggest rmmod: %q", got)
+	}
+	// Only a UVM-only fault is the case the module reload can help.
+	if got := gpuRemedy([]string{"kernel: NVRM: uvm encountered global fatal error 0x60, requiring os reboot to recover."}); !strings.Contains(got, "rmmod nvidia_uvm") {
+		t.Errorf("a UVM-only fault should keep the module-reload hint: %q", got)
+	}
+	if got := gpuRemedy([]string{"gpu: 0, RTX 4060", "kernel: no Xid / fallen-off-the-bus lines this boot"}); got != "" {
+		t.Errorf("a clean snapshot needs no remedy: %q", got)
+	}
+}

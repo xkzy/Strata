@@ -34,6 +34,8 @@ type monitoredRequest struct {
 	stamps       []time.Time // the last few seconds' tokens, for the current rate
 	done         bool
 	rec          map[string]interface{} // the history record finish wrote
+	reqID        string                 // the API monitor record of the HTTP request this generation belongs to (its debug trace)
+	note         string                 // why the generation ended the way it did, when the runtime says (a loop retry, ...)
 }
 
 func (m *requestMonitor) init() {
@@ -122,6 +124,12 @@ func (r *monitoredRequest) finish(finish string, tokens int, engineTokS float64)
 			rec["decode_tok_s"] = round1(float64(n-1) / (decodeMS / 1000)) // the first token starts the clock
 		}
 	}
+	if r.reqID != "" {
+		rec["id"] = r.reqID
+	}
+	if r.note != "" {
+		rec["note"] = r.note
+	}
 	r.rec = rec
 	m.history = append(m.history, rec)
 	if len(m.history) > monitorKeep {
@@ -133,6 +141,30 @@ func (r *monitoredRequest) finish(finish string, tokens int, engineTokS float64)
 	t["output_tokens"] = t["output_tokens"].(int) + n
 	t["prompt_ms"] = t["prompt_ms"].(float64) + promptMS
 	t["decode_ms"] = t["decode_ms"].(float64) + decodeMS
+}
+
+// link ties this generation to its HTTP request's debug record (GET /api/requests?id=), so a row of Recent requests
+// opens the trace. A request the runtime retries makes several generations that share one record.
+func (r *monitoredRequest) link(id string) {
+	r.m.mu.Lock()
+	defer r.m.mu.Unlock()
+	r.reqID = id
+	if r.rec != nil && id != "" {
+		r.rec["id"] = id
+	}
+}
+
+// setNote records why the generation ended (it may be called before or after finish).
+func (r *monitoredRequest) setNote(note string) {
+	if note == "" {
+		return
+	}
+	r.m.mu.Lock()
+	defer r.m.mu.Unlock()
+	r.note = note
+	if r.rec != nil {
+		r.rec["note"] = note
+	}
 }
 
 // relabel replaces the finish reason of a request that has ended: the runtime stops reading a reply that hit

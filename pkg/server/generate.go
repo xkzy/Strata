@@ -181,6 +181,7 @@ func (s *StrataServer) startGeneration(ctx context.Context, spec genSpec) (<-cha
 	go s.EngineIPC.GenerateIDs(ctx, ids, spec.Sampling, maxNew, stopIDs, spec.Stops, engOut)
 
 	rq := s.mon.begin(len(ids), maxNew)
+	rq.link(recordIDOf(ctx))
 	out := make(chan genEvent, 64)
 	go func() {
 		defer s.releaseRequest(ticket)

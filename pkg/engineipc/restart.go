@@ -53,7 +53,7 @@ func restartDelay(base time.Duration, attempt int) time.Duration {
 var gpuFaultMarkers = []string{
 	"unspecified launch failure",
 	"illegal memory access",          // UVM fatal error 0x60 surfaces as CUDA error 700 in the engine's stderr
-	"Unable to determine the device", // nvidia-smi / driver lost the device handle; module reload required
+	"Unable to determine the device", // nvidia-smi / driver lost the device handle (a fall-off needs a power-off, see gpuRemedy)
 	"nor place it in VRAM",
 	"no CUDA-capable device",
 	"fallen off the bus",
@@ -127,7 +127,7 @@ func (eo *EngineOrchestrator) afterFailure(cmd *exec.Cmd, why string) {
 		// One restart is worth trying (a single launch failure can leave only that process's context dead); the same
 		// fault again in a fresh process means the GPU is gone, and reloading a 25 GB model into it just repeats it.
 		restart = false
-		note = fmt.Sprintf("the GPU is unusable (%q twice in a row): not restarting; try: sudo rmmod nvidia_uvm && sudo modprobe nvidia_uvm — or reboot — then the next request starts it automatically", marker)
+		note = fmt.Sprintf("the GPU is unusable (%q twice in a row): not restarting; the failure log names the cause (a card that stopped answering needs the PC powered fully off, not a driver reload); then the next request starts it automatically", marker)
 		eo.reason = "the GPU is unusable (" + marker + "): " + why
 	} else if restart && eo.planFailsInRow >= 2 {
 		// One restart is worth trying (a process can die before it prints the fuller picture).  The same plan failure in
@@ -164,6 +164,9 @@ func (eo *EngineOrchestrator) afterFailure(cmd *exec.Cmd, why string) {
 		// state repeats the fault, so the restart waits for a request (which starts the engine, as before).
 		if line, lost := deviceLost(snap); faulted && lost {
 			msg := "not restarting: the driver reports a lost or faulted GPU (" + line + "); the next request starts the engine"
+			if r := gpuRemedy(snap); r != "" {
+				msg = "not restarting: the driver reports a lost or faulted GPU (" + line + "); " + r + "; then the next request starts the engine"
+			}
 			reason := "the GPU is unusable: " + why
 			if s := gpuFaultSummary(snap); s != "" { // name the card and the Xid, not only the engine's own text
 				reason += "; " + s
