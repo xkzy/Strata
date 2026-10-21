@@ -1995,7 +1995,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 if (ps_on) m.pp->pseq_start[(size_t) l] = m.pp->pseq.size();
                 for (int32_t e = 0; e < m.g->n_expert; ++e) {
                     if (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0) continue;
-                    if (m.pp && m.pp->peer && m.pp->peer->has(l, e)) continue;   // multi-GPU: computed on (or read from) the peer
+                    // multi-GPU: computed on (or, with P2P, read from) the peer.  The peer computes MMQ layers only, so on
+                    // any other layer its experts stay in the stream: the primary must not read the peer's VRAM without P2P.
+                    if (m.pp && m.pp->peer && m.pp->peer->has(l, e) && mmq_plan().any && mmq_plan().layer[(size_t) l]) continue;
                     int job = -1;
                     const uint8_t* b = nullptr;
                     if (m.src->transient(l, e)) {   // CS-T: copied by the source into the stager's buffer
@@ -3141,9 +3143,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     if (!group_gather || gg_nslots == 0) give_back(consumed);   // its group was gathered
                                 } else {
                                     const bool r0 = m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0;
+                                    // over the cap: read from the peer's VRAM, which is only addressable with P2P enabled
                                     const uint8_t* bp = r0 ? m.cache->device_slot(m.host_res[(size_t) l * m.g->n_expert + e])
-                                                           : (m.pp && m.pp->peer ? m.pp->peer->slot_ptr(l, e) : nullptr);   // over the cap: P2P
-                                    if (bp == nullptr) { err = "prefill: an expert is neither resident, streamed nor on the peer"; return false; }
+                                                           : (m.pp && m.pp->peer && m.pp->p2p ? m.pp->peer->slot_ptr(l, e) : nullptr);
+                                    if (bp == nullptr) { err = "prefill: an expert is neither resident, streamed nor reachable on the peer"; return false; }
                                     ++stats_.experts_resident;
                                     if (!compute(j, bp, -1)) return false;
                                     if (group_gather && gg_nslots == 0) give_back(consumed);
