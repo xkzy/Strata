@@ -56,6 +56,7 @@ a{color:var(--st-accent-text);text-decoration:none} a:hover{text-decoration:unde
 .st-badge::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
 .st-badge--reading{background:var(--st-info-tint);color:var(--st-info-text);border-color:transparent}
 .st-badge--generating{background:var(--st-accent-tint);color:var(--st-accent-text);border-color:transparent}
+.req-note{max-width:26ch;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--st-ink-muted)}
 .st-badge--queued{background:var(--st-warn-tint);color:var(--st-warn-text);border-color:transparent}
 .st-badge--error{background:var(--st-danger-tint);color:var(--st-danger-text);border-color:transparent}
 

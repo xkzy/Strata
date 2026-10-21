@@ -576,7 +576,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
       const hit = r.hit_rate == null ? "–" : `${(r.hit_rate * 100).toFixed(1)}%` +
         (r.pcie_share ? ` <span class="muted" title="routed experts the GPU read over PCIe (--pcie-frac) or another GPU computed">+${(r.pcie_share * 100).toFixed(1)}% PCIe</span>` : "");
       const isSelected = selectedMonReq && (selectedMonReq === r.id || selectedMonReq === String(r.time));
-      return `<tr class="clickable${isSelected ? " selected" : ""}" data-req-idx="${idx}"><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
+      return `<tr class="clickable${isSelected ? " selected" : ""}" data-req-idx="${idx}"><td>${esc(t)}</td><td><span class="st-badge ${cls}"${r.note ? ` title="${esc(r.note)}"` : ""}>${esc(text)}</span>${proj}${r.note ? `<div class="req-note" title="${esc(r.note)}">${esc(r.note)}</div>` : ""}</td><td class="num">${fmt(r.prompt_tokens)}</td>
         <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
         <td class="num">${hit}</td><td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
     }).join("");
@@ -612,6 +612,7 @@ async function selectMonitorRequest(reqObj) {
       const res = await fetch(`api/requests?id=${encodeURIComponent(reqObj.id)}`, {headers: headers(false)});
       if (res.ok) {
         monDetail = await res.json();
+        if (reqObj.note) monDetail.note = reqObj.note; // why this generation ended (the debug record covers the whole request)
       } else {
         monDetail = reqObj;
       }
@@ -631,7 +632,8 @@ function renderMonDetail() {
     $("mon-detail-title").textContent = d.id ? `Request ${d.id} · ${d.path || "POST /v1/chat/completions"}` : `Request at ${new Date((d.time || Date.now()/1000)*1000).toLocaleTimeString()}`;
   }
   if ($("mon-detail-time")) {
-    $("mon-detail-time").textContent = d.started_at ? new Date(d.started_at * 1000).toLocaleString() : (d.time ? new Date(d.time * 1000).toLocaleString() : "");
+    const when = d.started_at ? new Date(d.started_at * 1000).toLocaleString() : (d.time ? new Date(d.time * 1000).toLocaleString() : "");
+    $("mon-detail-time").textContent = d.note ? `${when} · ${d.note}` : when;
   }
 
   const st = $("mon-detail-status");
@@ -669,7 +671,9 @@ function renderMonPaneContent() {
     note = "Reasoning trajectory (<think>)";
   } else if (monPane === "debug") {
     const lines = debugLines(d);
-    text = lines.length ? lines.join("\n") : "No debug events were recorded for this request.";
+    text = lines.length ? lines.join("\n") : (d.id ? "No debug events were recorded for this request." :
+      "This row is not linked to a debug record (it ran before the server linked them, or no request log is kept).");
+    if (d.note && lines.length) text = `Why this generation ended: ${d.note}\n\n${text}`;
     note = `Debug trace: ${lines.length} events (server, rtclient, engine, runtime), time since the request arrived`;
   } else if (monPane === "vctx") {
     const lines = debugLines(d, (e) => e.source === "runtime" && /\b(context|kv|retrieval|memory)\b/.test(e.msg))
