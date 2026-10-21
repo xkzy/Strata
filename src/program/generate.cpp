@@ -2149,9 +2149,14 @@ int main(int argc, char** argv) {
         if (o.peer_device >= 1) used.push_back(o.peer_device);
         std::sort(used.begin(), used.end());
         used.erase(std::unique(used.begin(), used.end()), used.end());
-        for (const int d : used)
-            if (const std::string note = strata::core::device_code_arch_note(d); !note.empty())
-                std::fprintf(stderr, "strata generate: WARNING %s\n", note.c_str());
+        for (const int d : used) {
+            if (const std::string note = strata::core::device_code_arch_note(d); !note.empty()) {
+                std::fprintf(stderr, "strata generate: ERROR %s\n", note.c_str());
+                std::fprintf(stderr, "strata generate: refusing to run device code compiled for another GPU architecture; "
+                                     "rebuild the engine with the native CUDA architecture before serving\n");
+                return 1;
+            }
+        }
     }
     if (o.prefill_auto && (o.no_prefill_borrow || o.expert_profile.empty())) {
         o.prefill_auto = false;       // nothing to lend from: the buffers are reserved for the session, so keep them small
