@@ -14,6 +14,17 @@ namespace {
 using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
 
+// The words that go to the model after a confirmed loop. Each recovery asks for more than the one before; the last one
+// (n > max) asks for a short final answer so the reply ends on a conclusion and not on a cut-off.
+std::string loop_steer(int n, int max, const std::string& span) {
+    std::string rep = span.empty() ? "" : " The repeated text was: \"" + span + "\".";
+    if (n > max)
+        return "You are stuck repeating yourself." + rep + " Stop exploring. Write your best final answer now in a few sentences, using what you already know, and say plainly what you could not settle.";
+    if (n >= 2)
+        return "You are repeating yourself again." + rep + " Do not continue that line. Say in one sentence what is blocking you, then take a different approach (another tool, another source, or a smaller step).";
+    return "Your last output started to repeat." + rep + " Do not write it again. Continue from the text before it with a different approach or a new next step.";
+}
+
 LoopState to_loop_state(generation::LoopConfidence c) {
     switch (c) {
         case generation::LoopConfidence::kSuspicious: return LoopState::kSuspicious;
@@ -210,6 +221,9 @@ InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, co
     };
 
     std::vector<std::string> notes;       // internal corrections for the next attempt (never shown to the caller)
+    std::string steer;                    // loop steering for the next attempt: what repeated, and what to do instead (never shown)
+    bool forced_final = false;            // the last-resort attempt that asks for a short final answer
+    int produced_limit = request.sampling.max_tokens;   // tightened for the forced attempt
     std::vector<Claim> all_claims;
     int regenerations = 0, loop_recoveries = 0, attempts = 0, produced = 0;
     bool retrieval_tried = false;
@@ -327,6 +341,7 @@ InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, co
                 for (const auto& x : notes) n += "\n- " + x;
                 msgs.push_back({"system", n, ""});
             }
+            if (!steer.empty()) msgs.push_back({"system", steer, ""});
             return deps_.prompt_builder ? deps_.prompt_builder->build(msgs, buffer.text())
                                         : deps_.tokenizer->encode(deps_.prompt_template->render(msgs, buffer.text()));
         };
@@ -364,7 +379,7 @@ InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, co
         bool restart = false, ended = false;
         std::vector<size_t> tok_lens;    // text length per token of this attempt, for loop trimming
         GenToken tok;
-        while (produced < request.sampling.max_tokens) {
+        while (produced < produced_limit) {
             if (!session->next(tok)) { ended = true; break; }
             ++produced;
             if (cfg_.loop_protection) {
@@ -381,6 +396,8 @@ InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, co
                     const size_t n = std::min(lv.trim_token_count, tok_lens.size());
                     for (size_t i = 0; i < n; ++i) trim += tok_lens[tok_lens.size() - 1 - i];
                     const size_t keep = buffer.text().size() > trim ? buffer.text().size() - trim : 0;
+                    std::string span = buffer.text().substr(std::max(keep, buffer.released()));   // what repeated, for the steer below
+                    if (span.size() > 160) span.resize(160);
                     buffer.truncate_to(std::max(buffer.released(), keep));
                     if (d.action == RecoveryAction::kRegenerate) {
                         ++loop_recoveries;
@@ -388,16 +405,20 @@ InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, co
                         trace("recovery", "loop: " + lv.reason);
                         if (vc) {   // a loop may mean the model lost the thread: look for earlier context it should have had
                             const std::string& bt = buffer.text();
-                            if (reselect(bt.size() > 240 ? bt.substr(bt.size() - 240) : bt)) {   // same query, same pages, no progress: stop retrieving
-                                bump(&RuntimeMetrics::safe_stops);
-                                trace("recovery", "retrieval loop: the same context was retrieved again without new evidence");
-                                resp.finish = FinishReason::kStop;
-                                ended = true;
-                                session->cancel();
-                                break;
-                            }
-                            ctx = context_->prepare(request.scope, convo);
+                            if (reselect(bt.size() > 240 ? bt.substr(bt.size() - 240) : bt))   // same query, same pages, no progress: retrieving more cannot help
+                                trace("recovery", "retrieval loop: the same context was retrieved again without new evidence; the retry changes the instruction instead");
+                            else
+                                ctx = context_->prepare(request.scope, convo);
                         }
+                        restart = true;
+                        steer = loop_steer(loop_recoveries, cfg_.recovery.max_loop_recoveries, span);
+                    } else if (!forced_final) {
+                        // every ordinary recovery is spent: do not end the answer on a cut-off; ask once for a short, final one
+                        forced_final = true;
+                        steer = loop_steer(cfg_.recovery.max_loop_recoveries + 1, cfg_.recovery.max_loop_recoveries, span);
+                        produced_limit = std::min(request.sampling.max_tokens, produced + 256);
+                        bump(&RuntimeMetrics::loop_recoveries);
+                        trace("recovery", "loop persisted: asking for a short final answer instead of stopping");
                         restart = true;
                     } else {
                         bump(&RuntimeMetrics::safe_stops);
@@ -435,7 +456,7 @@ InferenceResponse InferenceRuntime::generate(const InferenceRequest& request, co
         session->cancel();   // idempotent: a session that has not ended (max_tokens reached) must not keep the engine busy
         session.reset();
         if (restart) continue;
-        if (!ended && produced >= request.sampling.max_tokens) resp.finish = FinishReason::kLength;
+        if (!ended && produced >= produced_limit) resp.finish = FinishReason::kLength;
         // end of the answer: the unfinished tail is a sentence too
         if (buffer.checked() < buffer.text().size()) {
             if (check_text(buffer.text().size())) continue;

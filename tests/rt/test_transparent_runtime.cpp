@@ -99,6 +99,21 @@ int main() {
         CHECK(rt.metrics().loop_recoveries >= 1, "loop recovered");
         CHECK(out.text.find("Done.") != std::string::npos, "final text complete");
     }
+    {   std::printf("[4b] a loop that survives every recovery ends on a short final answer, not a cut-off\n");
+        bool saw_steer = false, saw_final_ask = false;
+        auto rt = make([&](const std::string& prompt, int a) {
+            if (prompt.find("different approach") != std::string::npos) saw_steer = true;
+            if (prompt.find("best final answer") != std::string::npos) { saw_final_ask = true; return std::string("Final: I could not settle it."); }
+            if (a >= 0) { std::string s = "Here is the plan. "; for (int i = 0; i < 80; ++i) s += "and then we repeat the step. "; return s; }
+            return std::string();
+        });
+        auto q4b = ask("plan?"); q4b.debug = true;
+        auto out = rt.generate(q4b);
+        if (getenv("RT_TRACE")) for (auto& t : out.trace) std::printf("  %s %s\n", t.kind.c_str(), t.detail.c_str());
+        CHECK(saw_steer, "the retry prompt says what to do differently");
+        CHECK(saw_final_ask, "the last resort asks for a short final answer");
+        CHECK(out.text.find("Final: I could not settle it.") != std::string::npos, "the answer ends on the forced conclusion");
+    }
     {   std::printf("[5] debug trace only on request\n");
         auto rt = make([](const std::string&, int) { return std::string("ok 3 + 4 = 7."); });
         auto q = ask("x"); auto plain = rt.generate(q); q.debug = true; auto dbg = rt.generate(q);
