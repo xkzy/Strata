@@ -6,7 +6,7 @@ O=/home/khing/.claude/jobs/a719c9cc/tmp
 M=$D/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M
 exec timeout 1500 "$R/build-fat/strata" \
   --pack $D/packs/coder-iq1_m --native $M-00001-of-00002.gguf --ple-gguf $M-00002-of-00002.gguf \
-  --expert-profile "$R/data/expert-profile-coder.bin" --expert-cache auto --mmap-experts --gpu 0 --spec 2 --prefill auto \
+  --expert-profile "$R/data/expert-profile-coder.bin" --expert-cache auto --mmap-experts --gpu ${GPU:-1} --spec 2 --prefill auto \
   --tokens 9707,11,1879,0 --max-new 2 --max-context 4096 \
   --dump-layers $O/layers.bin --dump-logits $O/logits.bin --dump-routing $O/routing.bin \
   > $O/cap.out 2> $O/cap.err
