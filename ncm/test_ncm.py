@@ -37,6 +37,19 @@ def test_moe_capacity_weights_and_determinism():
     assert torch.isfinite(y1).all() and m.aux_loss.item() >= 1.0 - 1e-4  # >=1, =1 iff perfectly balanced
 
 
+def test_capture_reader_layout_and_truncation(tmp_path):
+    import numpy as np
+    from capture import load_layers
+    a = np.arange(3 * 3 * 2 * 4, dtype="<f4")  # 3 positions, 2 layers+input, hc 2, embd 4 (synthetic layout check only)
+    p = tmp_path / "l.bin"; a.tofile(p)
+    x = load_layers(p, n_layers=2, hc=2, n_embd=4)
+    assert x.shape == (3, 3, 2, 4) and x[1, 0, 0, 0] == 24
+    assert load_layers(p, 2, 2, 4, layers=[2]).shape == (3, 1, 2, 4)
+    a[:-1].tofile(p)
+    with pytest.raises(ValueError):
+        load_layers(p, 2, 2, 4)
+
+
 def test_memory_provenance_isolation_and_spill(tmp_path):
     torch.manual_seed(0)
     mem = ContextMemory(str(tmp_path), ram_budget_segments=2)
