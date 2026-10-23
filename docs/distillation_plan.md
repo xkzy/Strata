@@ -13,7 +13,12 @@ scope** on this hardware; the ±2% criterion does not apply to these modules and
 - Constraint from source: `--dump-layers` is written by `session_loop`, so `--no-capture` cannot be used (`:4719`); `--dump-routing` needs the expert pool (`:4650`); `--logits-stride >1` needs `--max-new 1`.
 - Cost: ~2 MB/position, so 1 M positions of layer dumps is ~2 TB. Capture a chosen subset of layers (e.g. 12, 24, 36, 48) by post-filtering, and use sequences of a few thousand tokens.
 
-**Not yet run.** Loading the 58 GB teacher needs the engine's expert tiering. This machine's GPU reported
+**Attempted 2026-10-23, blocked by a GPU/driver fault.** `ncm/capture_short.sh` (unmodified teacher, 4-token prompt, `--spec 2 --prefill auto`
+because the native pack requires both) got past argument checks and failed at start-up with
+`native embedding: cannot pin 322 MiB: unknown error, nor place it in VRAM`. The same machine state fails outside Strata:
+`torch.cuda` init raises `CUDA unknown error`, and `nvidia-smi` prints `Unable to determine the device handle for GPU0`. So no
+activations exist yet. Not retried, and the repo's GPU reset scripts were not run; the fault needs the owner (driver reload, reboot or
+reset) before any capture. Original text follows. Loading the 58 GB teacher needs the engine's expert tiering. This machine's GPU reported
 `Unable to determine the device handle for GPU0` and the engine config in the repo was tuned for a 5060 Ti + 4060 pair. A first capture
 should be a short prompt (tens of tokens) to validate formats before any dataset run, and should be started by the owner, watching for GPU errors.
 
