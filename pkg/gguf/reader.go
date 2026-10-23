@@ -1,6 +1,7 @@
 package gguf
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -130,6 +131,9 @@ func (g *GGUFFile) parse(r io.ReadSeeker) error {
 		if err := binary.Read(r, binary.LittleEndian, &nDims); err != nil {
 			return fmt.Errorf("read tensor %s nDims: %w", name, err)
 		}
+		if nDims > maxDims {
+			return fmt.Errorf("read tensor %s: %d dimensions is not plausible", name, nDims)
+		}
 		dims := make([]uint64, nDims)
 		for d := uint32(0); d < nDims; d++ {
 			if err := binary.Read(r, binary.LittleEndian, &dims[d]); err != nil {
@@ -168,16 +172,26 @@ func (g *GGUFFile) parse(r io.ReadSeeker) error {
 	return nil
 }
 
+// Sizes come from the file; these caps turn a corrupt or hostile header into an error instead of a huge allocation.
+const (
+	maxString = 1 << 30
+	maxDims   = 8
+	maxArray  = 1 << 32
+)
+
 func readString(r io.Reader) (string, error) {
 	var length uint64
 	if err := binary.Read(r, binary.LittleEndian, &length); err != nil {
 		return "", err
 	}
-	buf := make([]byte, length)
-	if _, err := io.ReadFull(r, buf); err != nil {
-		return "", err
+	if length > maxString {
+		return "", fmt.Errorf("gguf: string of %d bytes is not plausible", length)
 	}
-	return string(buf), nil
+	var buf bytes.Buffer // grows with the bytes actually present, so a lying length costs nothing
+	if n, err := io.CopyN(&buf, r, int64(length)); err != nil {
+		return "", fmt.Errorf("gguf: string cut short (%d of %d bytes): %w", n, length, err)
+	}
+	return buf.String(), nil
 }
 
 func readValue(r io.Reader, valType uint32) (any, error) {
@@ -238,13 +252,16 @@ func readValue(r io.Reader, valType uint32) (any, error) {
 		if err := binary.Read(r, le, &count); err != nil {
 			return nil, err
 		}
-		arr := make([]any, count)
+		if count > maxArray {
+			return nil, fmt.Errorf("gguf: array of %d elements is not plausible", count)
+		}
+		arr := make([]any, 0, min(count, 1<<16)) // grown as elements are read, so a lying count costs nothing
 		for i := uint64(0); i < count; i++ {
 			elem, err := readValue(r, elemType)
 			if err != nil {
 				return nil, err
 			}
-			arr[i] = elem
+			arr = append(arr, elem)
 		}
 		return arr, nil
 	default:

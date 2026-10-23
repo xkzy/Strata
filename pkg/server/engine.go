@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strata/pkg/gguf"
 	"strconv"
 	"strings"
 	"sync"
@@ -302,6 +303,12 @@ func (s *StrataServer) StartEngine(ctx context.Context) error {
 		if n, err := strconv.Atoi(argValue(spec.Args, "--max-context")); err == nil && n > 0 {
 			cfg.ContextSize = n
 		}
+		if argValue(spec.Args, "--max-context") == "" { // none configured: the model file says how much it supports
+			if n := ggufContext(argValue(spec.Args, "--native")); n > 0 {
+				cfg.ContextSize = n
+				cfg.Args = append(cfg.Args, "--max-context", strconv.Itoa(n))
+			}
+		}
 		if spec.Tokenizer != "" {
 			tokDir = spec.Tokenizer
 		}
@@ -476,4 +483,19 @@ func (s *StrataServer) engineStatus() map[string]interface{} {
 		}
 	}
 	return out
+}
+
+// ggufContext is the context length the model file declares (0 when it cannot be read).
+func ggufContext(path string) int {
+	if path == "" {
+		return 0
+	}
+	g, err := gguf.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer g.Close()
+	arch, _ := g.Metadata["general.architecture"].(string)
+	n, _ := strconv.Atoi(fmt.Sprint(g.Metadata[arch+".context_length"]))
+	return n
 }

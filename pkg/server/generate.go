@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"strata/pkg/chattemplate"
 	"strata/pkg/engineipc"
@@ -122,6 +123,13 @@ func (s *StrataServer) startGeneration(ctx context.Context, spec genSpec) (<-cha
 	if len(ids) > maxPromptTokens && !spec.Raw && len(spec.Messages) > 1 {
 		// Virtual context sliding window compaction for multi-turn chats
 		msgs := append([]chattemplate.Message(nil), spec.Messages...)
+		// Compress first (old reasoning, long old bodies), so whole turns are dropped only if that is not enough.
+		if compressOld(msgs) {
+			if text, plain, err := chattemplate.RenderSpans(msgs, spec.Opt); err == nil {
+				ids = tok.EncodeWithPlain(text, true, plain)
+				startInReasoning = spec.Opt.AddGenerationPrompt && strings.HasSuffix(text, "<think>\n")
+			}
+		}
 		for len(msgs) > 1 && len(ids) > maxPromptTokens {
 			if msgs[0].Role == "system" || msgs[0].Role == "developer" {
 				if len(msgs) > 2 {
@@ -368,4 +376,30 @@ func (spec *genSpec) setAbliterate(r *http.Request) {
 			spec.Sampling.AbliterationStrength = v
 		}
 	}
+}
+
+const compressKeep = 600 // chars kept at each end of a long old message
+
+// compressOld shrinks everything but the last two messages in place: it drops old reasoning and cuts long bodies
+// to head+tail. shortcut: char-based cut, not a model summary; upgrade if quality of long chats suffers.
+func compressOld(msgs []chattemplate.Message) bool {
+	changed := false
+	for i := 0; i < len(msgs)-2; i++ {
+		if msgs[i].ReasoningContent != "" {
+			msgs[i].ReasoningContent = ""
+			changed = true
+		}
+		if c := msgs[i].Content; len(c) > 4*compressKeep && msgs[i].Role != "system" && msgs[i].Role != "developer" {
+			h, t := compressKeep, len(c)-compressKeep
+			for h > 0 && !utf8.RuneStart(c[h]) {
+				h--
+			}
+			for t < len(c) && !utf8.RuneStart(c[t]) {
+				t++
+			}
+			msgs[i].Content = c[:h] + "\n[... " + strconv.Itoa(t-h) + " chars compressed ...]\n" + c[t:]
+			changed = true
+		}
+	}
+	return changed
 }
