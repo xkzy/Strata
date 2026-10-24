@@ -54,6 +54,13 @@ reset) before any capture. Original text follows. Loading the 58 GB teacher need
 `Unable to determine the device handle for GPU0` and the engine config in the repo was tuned for a 5060 Ti + 4060 pair. A first capture
 should be a short prompt (tens of tokens) to validate formats before any dataset run, and should be started by the owner, watching for GPU errors.
 
+**Recurrence 2026-10-24 19:26 (+07), after hours of working GPU use.** While `ncm/train_head.py` was running on the 5060 Ti (PyTorch, a 248,320-wide
+matmul per step), the kernel logged `NVRM: Xid (PCI:0000:01:00): 79, GPU has fallen off the bus`, then a stream of `rpcSendMessage failed`.
+`nvidia-smi` again cannot get a handle for `0000:01:00.0`; `torch.cuda` init now fails with `CUDA unknown error` even with only the 4060's UUID in
+`CUDA_VISIBLE_DEVICES`, as on 2026-10-23. The 4060 itself still answers `nvidia-smi`. Earlier the same day the card ran the engine and two multi-minute
+PyTorch jobs without trouble, so it faults intermittently, not on every use. Not retried, no reset or reboot attempted; anything after this point that needs CUDA waits
+for the owner (driver reload or reboot; PCIe slot, riser and power are the usual suspects for Xid 79). Work that needs no GPU continues on the CPU.
+
 ## Stages for the modules
 
 1. **Format check.** One short capture; parse logits/routing headers; assert layer-dump size = positions x 1,998,848 B.

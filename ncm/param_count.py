@@ -19,7 +19,8 @@ def _val(f, t):
     raise ValueError(f"bad kv type {t}")
 
 
-def read_header(path):
+def read_header(path, offsets=None):
+    """-> (kv, tensors). If `offsets` is a dict it is filled with name -> byte offset in the file (data start already added)."""
     with open(path, "rb") as f:
         if f.read(4) != b"GGUF":
             raise ValueError(f"{path}: not GGUF")
@@ -41,6 +42,13 @@ def read_header(path):
             for d in dims:
                 n *= d
             tensors.append((name, dims, ty, n))
+            if offsets is not None:
+                offsets[name] = off
+        if offsets is not None:
+            align = kv.get("general.alignment", 32)
+            start = (f.tell() + align - 1) // align * align
+            for k in offsets:
+                offsets[k] += start
     return kv, tensors
 
 
