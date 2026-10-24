@@ -118,3 +118,23 @@ Binomial s.e. at p≈0.12, n=8192 is ≈ 0.0036. So **B is not better than A on 
 | Checkpoint hashes | recorded by earlier session, **not re-verified** |
 | 44.8 / 335 tok/s | single tuner run (n=1, 256 tokens); variance unknown; **E0 must repeat ≥ 5×** |
 | Compression experiments | raw JSON present; producing scripts in `worktree-strata-ncm/ncm/`; not re-run |
+
+
+## 9. E0 clean live baseline (measured 2026-10-25, this PC)
+
+Source: server log of a live run, parsed by `scripts/e0_parse.py` into `data/e0_results.json`; client script `scripts/e0_bench.py`. Owner approved GPU use for this run.
+
+**Setup [M].** AMD Ryzen 9 9950X3D (16 cores / 32 threads), 60 GB RAM (RAM speed not collected: needs root), RTX 5060 Ti 16 GB (CUDA device 0 only), RTX 4060 not used. Engine `engine/strata` 0.1.40 (sm_89 + sm_120, CUDA 13.2), driver 595.112.07. Config = the tuned "search-9" config of 2026-10-18 **minus** the control-vector, abliteration and `STRATA_CVEC_FUSE` settings (`--spec 4 --spec-min-p 0.5 --mtp --expert-cache auto --expert-profile --kv-resident 20480 --mmap-experts --pcie-frac 0.25 --pool-workers 4`). Temperature 0, 256 generated tokens, unique prefix per request to defeat the prompt cache, one warm-up request per size (excluded), 5 measured repeats per size, one request at a time. Prompt text is repetitive filler plus a code request; it may flatter draft acceptance.
+
+| Prompt | n | Prefill tok/s | Decode tok/s (sd; min–max; CV) | Draft acceptance | Expert-cache hit rate |
+|---|---|---|---|---|---|
+| ~1.0K tokens | 5 | 476 | **31.7** (2.5; 28.6–35.6; 8 %) | 0.76 | 56 % |
+| ~3.8K tokens | 5 | 1,196 | **32.0** (1.5; 30.6–34.5; 5 %) | 0.75 | 57 % |
+| ~16.2K tokens | 5 | 1,482 | **31.1** (0.8; 30.4–32.0; 3 %) | 0.73 | 57 % |
+
+**Engine facts from the log [M].** 4,424 expert slots resident in 8.42 GiB of VRAM (about 92 per layer if spread evenly), filled from the profile in 2.8 s; 335 MiB VRAM free after load; 15.6 GB of the 16 GB card in use with the model loaded (steady state, not a peak reading); the prompt path borrows 2,066 cache slots (3.90 GiB); first request after start took 4.3 s for 84 tokens (graph capture and warm-up).
+
+**Against the recorded baseline [D].** Decode 31–32 tok/s vs recorded 44.8 tok/s: **about 29 % lower** on this clean config. Cause not established. Candidates: the removed speed-projection control vector (changes the output distribution and may change acceptance), the prompt text, a different thermal or power state, and the recorded run being a different engine build; none has been isolated. Prefill is not comparable (recorded 335 tok/s on a 3,001-token prompt; here 1,196 tok/s at 3.8K on repetitive text).
+**Consistency with the analysis [D].** The measured decode hit rate (56–57 %) matches the 57.5 % that the static top-64 profile coverage predicted (`performance_bottleneck_analysis.md` §3 item 5), now with about 92 resident per layer, so the profile coverage curve is a reasonable predictor of the hit rate.
+
+**Not collected.** Context sizes of 32K, 128K and 262K; batch/concurrency; peak VRAM during a request; load time; power; RAM speed; logit dump and quality; a clean-config run with the control vector restored to isolate the 29 % gap. Xid: a kernel-journal watcher ran during the benchmark and raised no event; I could not re-query the journal after the run because the shell wrapper refused `journalctl`, so the end-of-run check is by that watcher only. Server stopped after the run.
