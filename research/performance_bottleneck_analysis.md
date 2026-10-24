@@ -57,7 +57,7 @@ Consistency check [D]: 13.99 distinct experts × 48 layers × 2.046 MB per exper
 | Autotune KV estimate counts 48 layers; only 12 hold per-token K/V | **Implementation defect (planner), fixable** | `pkg/autotune/workload.go:214-266` sets `Layers = block_count = 48` and never reads `qwen4exp.full_attention_interval`; `KVBytesPerToken` = Layers × KVHeads × HeadDim × 2 × bytes → 98,304 B/token fp16 vs true 24,576 B (12 layers). 262 K context: planner 24.0 GiB vs true 6.0 GiB (fp16), 3.4 GiB at the engine's 8-bit default. Cross-check: `docs/DETAILS.md:72` quotes "~13.7 KB of RAM per context token" for 8-bit KV, matching 12 layers × 2 × 256 × 2 = 12,288 elements + scales. | Planner may withhold VRAM for KV that is not needed, leaving fewer expert-cache slots. **Whether the engine uses this estimate for its VRAM split is [U]**; the shipped config sets `--kv-resident` by hand. Test in E1. |
 | `ActiveParams()` / `TotalParams()` use a generic transformer formula | Implementation defect (planner), minor | They assume dense FFN (4×hidden default) and attention 4·h² every layer, no DeltaNet, hyper-connections, PLE or shared experts. For this geometry ActiveParams ≈ 8.7 B vs true 6.64 B [D]. | Roofline predictions ~30 % pessimistic; low severity. |
 | Cold-expert reads from RAM/PCIe | **Algorithmic/placement limit** | §2 | Dominant. Not a bug. |
-| Kernel efficiency, occupancy, launch latency, CPU↔GPU sync | **[U] never profiled in this session** | No `nsys`/`ncu` traces exist in the repo or job directories | Cannot be ranked until profiled (E1) |
+| Kernel efficiency, occupancy, launch latency, CPU↔GPU sync | **Measured in E1 (§7)**: GPU spends ≈ 65 % of kernel time in `wait_flag_ge` spin kernels waiting for the CPU expert pool / PCIe | `nsys` 2025.6.3 capture, 256-token request; `verify.cpp:1300–1327` | Confirms §2: the GPU is idle-waiting on cold-expert work, not slow at compute |
 | Allocation churn, fragmentation, graph compilation | [U] | none recorded | E1 |
 | Run-to-run variance | Measured, small | "several percent" (`DETAILS.md:57-59`) | Needs ≥ 5 repeats for any A/B (E0) |
 
@@ -79,7 +79,7 @@ Consistency check [D]: 13.99 distinct experts × 48 layers × 2.046 MB per exper
 | Repeated full-sequence processing | NCM re-processes ℓ_k positions per level: Σℓ_k = L(K+1)/2 positions for a linear schedule (e.g. 16.5·L for K = 32) vs L with a KV cache [D] | [D] |
 | Context compression/retrieval overhead | Not in the path today | — |
 | KV access, attention kernel | Attention reads ≤ 2048 selected tokens/step ≈ 50 MB per step regardless of context (top-2048 indexer, 12 layers) [D]; ≈ 0.7 ms at 70 GB/s-class paths, negligible vs 54–71 ms | [D] |
-| Quant/dequant overhead, launch, occupancy, sync | [U] | profile |
+| Quant/dequant overhead, launch, occupancy, sync | Compute kernels (all non-wait kernels) are ≈ 35 % of the capture span; the largest single compute kernel family is the Q6_K mmvq at 3.6 % of kernel time. No kernel stands out as a defect | [M] §7 |
 | Host↔device transfer | Present: ring-wait 21 % of a round | [M] |
 
 ## 6. What this means for candidate selection
@@ -87,3 +87,26 @@ Consistency check [D]: 13.99 distinct experts × 48 layers × 2.046 MB per exper
 1. Levers ranked by what the evidence says they move: **(a) accepted tokens per pass** (multiplies every byte read), **(b) VRAM hit rate of experts / cold-set size** (divides the dominant cost), **(c) bits per expert weight** (divides bytes), (d) everything else — only after profiling.
 2. NCM-style wide blocks push the wrong way on (b): n positions per pass ≈ n× cold experts when reuse is low.
 3. Filter-bank vs RVQ cannot be a deciding factor: it changes the representation, not the bytes read per pass (and showed no token-agreement benefit, `baseline_report.md` §5).
+
+## 7. E1 profile: where the GPU time goes (measured 2026-10-25)
+
+**Method [M].** `nsys` 2025.6.3 (already installed with CUDA 13.2; an earlier note here saying it was absent was wrong), CUDA trace with graph nodes expanded, clean config of E0 on the 5060 Ti, one warm-up request outside the capture, then one request of 1,019 prompt tokens and 256 generated tokens inside it (8.4 s, 30.6 tok/s under profiling, within the E0 range). Files: `data/e1_cuda_gpu_kern_sum.csv`, `e1_cuda_api_sum.csv`, `e1_cuda_gpu_mem_*.csv`. One request only; no repeats.
+
+| Quantity | Value |
+|---|---|
+| Capture span / kernels launched | 8.34 s / 293,416 kernels, all on device 0 |
+| Total kernel time (summed) | 8.35 s |
+| of which `wait_flag_ge_kernel` (GPU spin-wait on a host-mapped flag) | **5.40 s = 64.6 %** (17,136 launches, median 1.7 µs, max 8.0 ms, mean 315 µs) |
+| Everything else (real compute) | 2.96 s ≈ 35 % of the span |
+| Decode part only (after the first 2.3 s) | 6.04 s kernel time, of which 4.02 s = **66.6 %** waiting |
+| Prefill part (first 2.3 s) | 2.31 s, of which 1.37 s = 59.4 % waiting |
+| Wait time per second of the capture | 0.55–0.79 s of every second |
+| Largest compute kernels | Q6_K mmvq 3.6 %, `router_top10` 2.8 % (14,400 × 16 µs), multi-expert mmvq 2.4 / 1.8 / 1.7 %, expert down 1.5 %, attention chunk 1.2 % |
+| Host→device copies | 120 MB total in 53 copies (one 118 MB, the KV checkpoint); expert traffic goes through mapped memory and the pool, not `cudaMemcpy` |
+| CUDA API time | `cudaStreamSynchronize` 67 % (240 calls, mean 0.78 ms), `cudaGraphLaunch` 20 % (462 calls) |
+
+**What the code says the flag is [V].** `src/core/verify.cpp:1300–1327`: before each layer's MoE the GPU waits on flag A ("the pool published this group's GPU plan"), flag B ("the PCIe share is in staging (DMA) or mapped") and `m_flag_` ("the CPU's share is in the mapped rows"). So the GPU is waiting for the CPU expert pool and the PCIe path to deliver their share of each layer's experts.
+
+**Reading [D].** This is the same bottleneck §2 derived from the one instrumented round, now seen from the GPU side with the production build: about two thirds of GPU time during decode is waiting on cold-expert work done by the CPU and PCIe. Faster GPU kernels cannot help; only reducing or overlapping the cold-expert work can (higher hit rate, fewer distinct experts per pass, more overlap between GPU compute and the CPU pool). The wait kernel has a timeout (`max_ns`); timeout events were not examined **[U]**.
+
+**Limits [U].** One request, 1 K prompt, 256 tokens; spin time may include launch gaps; I did not separate CPU-pool wait from PCIe wait (flags A/B vs `m_flag_`); no CPU-side profile of the pool threads; `ncu` not used because no compute kernel is large enough to matter; the planner-KV half of E1 is not done.

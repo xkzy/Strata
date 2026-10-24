@@ -107,7 +107,7 @@ Applicable terms only (no student exists; costs are derived):
 |---|---|---|
 | Bandwidth floor, all 5.096 GB/token resident, 5060 Ti at 448 GB/s (spec) | 11.4 ms/pass → ≤ 88 passes/s | bound given the assumed spec; not measured |
 | Compute floor (13.3 GFLOP at an assumed 40 TFLOP/s) | 0.33 ms | assumption |
-| Kernel-launch / sync floor | **[U]** (never profiled) | – |
+| Kernel-launch / sync floor | GPU waits ≈ 65 % of kernel time on CPU/PCIe flags; compute kernels ≈ 35 % of the span [M, E1, one request] | measured |
 | Sequential floor | one verify pass per round; E[tok] ≤ γ + 1 | proven |
 | Cold-expert time | Σ_layers D(n) · 2.046 MB · (1 − h) / BW_ram, BW_ram = 19.3 GB/s [M] | within 0.4 % on one captured round |
 | KV | 6 GiB at 262 K fp16; attention reads ≤ 2,048 tokens/step ≈ 50 MB | derived |

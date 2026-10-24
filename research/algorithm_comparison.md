@@ -34,7 +34,7 @@ The dominant cost of a decode pass is cold-expert bytes read from RAM (`performa
 ### 3.1 A. Improved autoregressive student
 - Recorded baseline: 44.8 tok/s decode, 335 tok/s prefill on this PC (tuner "search-9", 256 decode tokens, 3,001-token prompt, 2026-10-18) [M, recorded, **not re-run**]. Pass time 54–71 ms vs an 11.4 ms all-resident floor on the 5060 Ti at the vendor-spec 448 GB/s [D, spec assumed].
 - Fixable defect: `pkg/autotune/workload.go` counts 48 KV layers instead of 12 → 4× too high KV estimate (24 GiB vs 6 GiB at 262 K, fp16) [V]. Effect on the engine's VRAM split **[U]**.
-- Never profiled (`nsys`/`ncu` absent) **[U]**.
+- Profiled in E1 (`performance_bottleneck_analysis.md` §7): ≈ 65 % of GPU kernel time is spin-waiting on the CPU expert pool / PCIe; no single compute kernel exceeds 4 % [M].
 - Quantisation-aware options: hyper-connection tensors are BF16 at source, 0.641 B params and **1.283 GB = 25.2 % of bytes read per token** [V/D]. Weight-space error of re-quantising them (12 of 48 layers, symmetric absmax per 32 values with fp16 scale; an approximation of Q8_0/Q4_0, not the engine's code) [M, `hc_requant_probe.py`]: 8-bit 0.61–0.76 %, 6-bit-like 2.5–2.9 %, 4-bit 11.1–12.3 % relative Frobenius error. Function-space error **[U]**.
 - Rank truncation of the hc bottleneck: 90 % of Σs_j² needs ≈ 234 of 320 units, 99 % needs ≈ 307 [M, weight-only proxy] — ≈ 25 % reduction at best; the SiLU between down and up blocks any exact merge [V].
 
