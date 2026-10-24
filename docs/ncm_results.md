@@ -1,5 +1,35 @@
 # Stage 2 results: filter bank + residual VQ vs residual VQ alone, on real teacher residuals
 
+## v2 parameter-matched control: the filter bank's edge is capacity, not multiscale structure
+
+**Outcome: at equal code bits and equal codebook parameters the filter bank is no better than plain RVQ** (differences of +0.010, +0.006, −0.003 NMSE,
+i.e. within or near seed spread, and the sign is not consistent). The v2 edge of 0.015–0.024 appears only when the filter bank gets two codebook sets
+(twice the parameters). `ncm/train_matched.py`, same split / PCA-128 / 256 codes / 600 steps / seeds 0–2; results `bench/ncm/matched_cap2.json`.
+
+| K | Variant | Bits/pos | Codebook params | Held-out NMSE |
+|---|---|---|---|---|
+| 1 | A plain RVQ | 8 | 32,768 | 0.853 ± 0.016 |
+| 1 | filter bank, **shared** codebook | 8 | 33,536 | 0.863 ± 0.009 |
+| 1 | filter bank, two sets (v2) | 8 | 66,304 | 0.838 ± 0.003 |
+| 1 | A plain RVQ, 2 books | 16 | 65,536 | 0.808 ± 0.002 |
+| 2 | A plain RVQ | 16 | 65,536 | 0.808 ± 0.002 |
+| 2 | filter bank, shared codebook | 16 | 66,304 | 0.814 ± 0.001 |
+| 2 | filter bank, two sets (v2) | 16 | 131,840 | 0.790 ± 0.002 |
+| 2 | A plain RVQ, 4 books | 32 | 131,072 | 0.774 ± 0.003 |
+| 4 | A plain RVQ | 32 | 131,072 | 0.774 ± 0.003 |
+| 4 | filter bank, shared codebook | 32 | 131,840 | 0.771 ± 0.003 |
+| 4 | filter bank, two sets (v2) | 32 | 262,912 | 0.753 ± 0.000 |
+| 4 | A plain RVQ, 8 books | 64 | 262,144 | 0.733 ± 0.000 |
+
+(K is the number of levels per stream; the "shared" rows use the same K books for the coarse and detail coefficients, so bits and codebook parameters
+match plain RVQ with K levels. The A rows reproduce v2 exactly, which checks the harness.)
+
+- Against the two-set filter bank at equal codebook parameters, plain RVQ with twice the levels is better (0.808 vs 0.838, 0.774 vs 0.790, 0.733 vs 0.753),
+  but it spends twice the code bits, so that is a different trade-off, not a win at equal rate.
+- Not tested: whether the filter bank helps at a different split of capacity (e.g. separate but smaller codebooks), a second random split, and
+  anything beyond NMSE. The agreement result ([above](#v2-downstream-check-next-token-agreement-of-reconstructed-residuals-through-the-real-lm-head))
+  showed no downstream difference either. The hypothesis that temporal lifting helps this target is **not supported** by these data.
+
 ## v2 downstream check: next-token agreement through the teacher's real LM head
 
 **Outcome (negative for the quantizers): the best reconstruction keeps the teacher's next token at 12% of held-out positions.** Neither
