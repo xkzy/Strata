@@ -1,30 +1,23 @@
 # Strata-NCM status
 
-Run the tests: `cd ncm && python -m pytest -q test_ncm.py` (needs torch + pytest; 5 pass at the time of writing, CPU).
+Tests: `cd ncm && python -m pytest -q test_ncm.py` (torch + pytest; 8 pass on CPU at the time of writing). Strata's own Go/C++ suites were **not** run.
 
-## Implemented and tested (`ncm/`)
+## Done and measured
 
-- `param_count.py`: exact unique parameter count from GGUF headers. Run against the real teacher (numbers in `parameter_budget.md`). No unit test yet.
-- `multiscale.LiftingFilterBank`: learned analysis/synthesis (lifting), even/odd boundary by edge replication. Tested: reconstruction error
-  < 1e-10 in float64 with **random** weights, for even and odd lengths. Stability under training and on real hidden states: not tested.
-- `multiscale.ResidualVQ`: K-level residual VQ with commitment loss and straight-through gradient. Tested: error is non-increasing with levels; `decode(codes)` equals the quantized output.
-- `moe.SparseMoE`: top-k, normalized weights, hard capacity with counted drops, Switch-style balance loss, entropy/utilization stats. Tested: capacity never exceeded, deterministic, balance loss >= 1.
-- `memory.ContextMemory`: per-conversation segments with source spans, compressed embeddings, exact text spilled to disk under a RAM budget, invalidation, isolation. Tested on synthetic embeddings only.
-
-These are components. They have **not** been trained, wired together, or run on teacher activations.
+- **Audit:** [architecture_audit.md](architecture_audit.md). The brief's "8B teacher" premise is false for this checkpoint (116.5 B unique parameters, [parameter_budget.md](parameter_budget.md)).
+- **Teacher capture works** on an RTX 4060 8 GB: engine patched so `--dump-final-r` writes the verify window's final residual rows on the `--spec` path
+  (`src/program/generate.cpp`); [distillation_plan.md](distillation_plan.md). 160 prompts x 256 tokens = ~41k decode positions captured (Strata-data/ncm/cap2, not in git).
+  Prompt positions, logits and per-layer states are **not** captured.
+- **Stage 2 ablation (final-layer residual, PCA-128):** [ncm_results.md](ncm_results.md). Held-out NMSE 0.75–0.85 vs 1.0 for the train mean; filter bank + RVQ is
+  0.015–0.024 better than RVQ alone at equal code bits, but both are far from the unquantized PCA floor (0.557), and the comparison is confounded by capacity.
+- Components with unit tests: lifting filter bank (exact reconstruction with random weights), residual VQ, sparse MoE with capacity and balance loss, provenance-keeping context memory, capture readers.
 
 ## Not done
 
-- Teacher baseline benchmark, dataset pipeline, teacher logit/hidden-state extraction (needs the Strata engine to export them; no such export path exists).
-- Any distillation, any trained checkpoint, any student export, any benchmark, any speed or quality claim. **No evidence on whether the multiscale design helps.**
-- Filter bank vs RVQ ablation on real data; coarse-to-fine generator; speculative verification; MoE-vs-dense comparison; P_active.
-- Strata runtime integration (the engine accepts only `qwen4exp`; see audit), startup hardware probing for the student, GPU/CPU fallback.
-- The remaining docs from the mission (`model_architecture`, `distillation_plan`, `context_memory`, `runtime_integration`, `benchmark_protocol`).
-- Strata's existing test suite was not run.
-
-## Decision needed from the owner
-
-The brief assumes an 8B teacher and a same-size student. The real teacher is 116.5 B (65.3 B excluding the PLE table), quantized, and
-cannot be a PyTorch teacher on this machine. Options: (a) pick a smaller bf16 Qwen3 checkpoint (e.g. 8B) as the research teacher so the
-proof of concept is real, keeping the Strata coder as a serving target only; (b) keep the coder as teacher and distill only small replacement
-modules against activations captured through the Strata engine (needs a new capture path). Recommendation: (a) for the PoC.
+- No coarse-to-fine generator, no MoE-vs-dense comparison on real data, no student, no export, no distillation to teacher logits (logits not available on this path).
+- No downstream metric: reconstructions were never passed through the LM head to check next-token agreement. NMSE alone says nothing about language quality.
+- No speculative-verification study, no long-context memory evaluation on real data, no runtime integration, no throughput/VRAM/latency benchmarks of any student.
+- Docs from the brief still missing: `model_architecture`, `context_memory`, `runtime_integration`, `benchmark_protocol`.
+- The ±2% same-budget student is out of scope on this hardware (65.3 B weights without the PLE table).
+- Engine build `build-ncm` is sm_89 only (the 4060); it will not run on the 5060 Ti.
+- Branch is committed locally and **not pushed**.

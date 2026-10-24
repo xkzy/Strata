@@ -1,0 +1,802 @@
+[
+{
+"text": "Tell me the mascots for the Generation 2 Pokemon games",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Classify each of the following cloud-based service as either AWS, Azure, or GCP: Redshift, Big Query, Lambda, Purview, Looker.",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "What kind of publisher is the American Fantasy Press\nAmerican Fantasy Press is a science fiction/fantasy/horror specialty press owned and operated by Robert T. Garcia and Nancy Garcia. Located in Woodstock, Illinois, the press has",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "What is more important in society, freedom or safety?",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Why is the Chrysler Hemi V8 so legendary?",
+"source": "dolly",
+"split": "test"
+},
+{
+"text": "Who are the parents of Vivek Oberoi?\nVivek Oberoi was born in Hyderabad, Telangana, to a Punjabi father, Suresh Oberoi, an actor. In 1974, Suresh married Yashodhara, from a Punjabi business family settled in the south, in Chennai. Because",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "How is data engineering different from data science?",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "What are the two major bacterial pathogens of Anaplasma bacteria?\nAnaplasmosis is a tick-borne disease affecting ruminants, dogs, and horses, and is caused by Anaplasma bacteria. Anaplasmosis is an infectious but not contagious disease.",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Think up a creative and weird alternative way for me to protect my phone if I don't want to purchase a phone case.",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Which is a species of fish? Silver hake or Silverback",
+"source": "dolly",
+"split": "test"
+},
+{
+"text": "Given a reference text about George Koukou, tell me when he was arrested and why.\nGeorge Koukou (born 25 May 1945) was acting Speaker of the National Transitional Legislative Assembly of Liberia from 17 March 2005 to January 2006.",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Write a guide for how to catch a smallmouth bass.",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "What is a bubble vest?",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Since when did the SR22 include a glass cockpit\nSR22s and SR20s built before 2003 were equipped with traditional analog instruments and a 10\" (later 12\") Multi-function display (MFD). In February 2003, Cirrus began offering SR22s with the",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "What type of natural disaster is known for occurring in San Francisco, California?",
+"source": "dolly",
+"split": "test"
+},
+{
+"text": "Who is Vincent Paterson?\nVincent Paterson (born May 4, 1950) is an American director and choreographer who has had an expansive career in many parts of the entertainment industry including film, Broadway, concert tours, opera, music",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Think up a couple of ways to use old shirts",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Tell me where you would find each of these in a bathroom or bedroom: sheets, pillows, toilet, shower, sink, bed, bidet",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Can you name a few of Leonardo's famous works\nLeonardo is identified as one of the greatest painters in the history of art and is often credited as the founder of the High Renaissance. Despite having many lost works and fewer than 25",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Write a story about a man who finds a magic lamp that has a genie inside. The genie should grant him wishes and the story should conclude with a tragic ending.",
+"source": "dolly",
+"split": "test"
+},
+{
+"text": "Why do people like to workout?",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "What tools Aloy can exploit to survive in the world? give me the category and examples in the format {category} - {examples}\nHorizon Zero Dawn is an action role-playing game played from a third-person view. Players take control of Aloy, a",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Why did people stop using Perl?",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "According to the paragraph below, what is Generative AI?\nA generative artificial intelligence or generative AI is a type of AI system capable of generating text, images, or other media in response to prompts. Generative AI systems use",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "What famous surfers have died while surfing?",
+"source": "dolly",
+"split": "test"
+},
+{
+"text": "Categorize the below types of animals based on whether they are domestic or non-domestic\ndog, cat, badgers, cougars",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Given the reference text below, what is Isthmohyla debilis?\nIsthmohyla debilis is a rare species of frog in the family Hylidae. It occurs in the Atlantic slopes of the Cordillera Central and Cordillera Talamanca in Costa Rica and western",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "As a first time visitor to India, where should I visit?",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "What are the most popular sports in the United States of America?",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Who is Hugo Chavez?\nHugo Rafael Ch\u00e1vez Fr\u00edas (Spanish pronunciation: [\u02c8u\u0263o rafa\u02c8el \u02c8t\u0283a\u03b2es \u02c8f\u027ei.as] (listen); 28 July 1954 \u2013 5 March 2013) was a Venezuelan politician who was president of Venezuela from 1999 until his death in 2013, except",
+"source": "dolly",
+"split": "test"
+},
+{
+"text": "What are the most common meals?",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "what are the rules of cricket ?\nCricket is a bat-and-ball game played between two teams of eleven players on a field at the centre of which is a 22-yard (20-metre) pitch with a wicket at each end, each comprising two bails balanced on",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Make a list of several games I could play with two friends",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Classify each of the following dishes as either 'Indian', 'Italian', 'Latin American', 'African' or 'Neither' based on their cuisine. Biriyani, Pasta, Dosa, Risotto, Burger, Lasagne, Tajine, Empanadas, Tacos",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "How is Tesla's approach to full autonomy is different from the other companies?\nTesla's approach to achieve full autonomy is different from that of other companies. Whereas Waymo, Cruise, and other companies are relying on highly detailed",
+"source": "dolly",
+"split": "test"
+},
+{
+"text": "How do you cook the perfect pizza?",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "What is dialtune drums?",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "If the year is 2020, is the Samsung E1200 still in production?\nThe Samsung E1200 (also known as Samsung Pusha and Samsung Keystone 2) is a mobile phone made by Samsung. This phone was released in 2012 through Tesco in the UK. It was",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "What flower does the Netherlands produce most?",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Which trophy was Frost able to keep and why?\nFrost became interested in sport at a young age and was an all-round athlete. He won medals for running and swimming and was a prominent member of the Winchester Harriers sports club. He",
+"source": "dolly",
+"split": "test"
+},
+{
+"text": "What is the best way to wake up fresh in the morning?",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Classify these items in my grocery bag as 'vegan' or 'not vegan'. Ground beef, almond butter, eggs, spinach, fava beans, barley, dates, milk, wild rice, cashew milk yoghurt, beef tongue, ghee, jalapenos",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Who is the Chinese Li Xueju\nLi Xueju (simplified Chinese: \u674e\u5b66\u4e3e; traditional Chinese: \u674e\u5b78\u8209; pinyin: L\u01d0 Xu\u00e9j\u01d4; born April 1945) is a politician of the People's Republic of China, and the former Minister of Civil Affairs of PRC.\n\nBorn in",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Given this series of navigation instructions, determine whether one would end up back at the starting point: Take 1 step. Take 2 steps. Take 3 steps. Turn around. Take 6 steps. Turn right.",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Which drum kit should I buy?",
+"source": "dolly",
+"split": "test"
+},
+{
+"text": "What is power resource theory?\nPower resource theory is a political theory proposing that variations among welfare states is largely attributable to differing distributions of power between economic classes. It argues that \"working class",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "What does it mean if something \"slaps\"?",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "What is Attack on Titan?\nAttack on Titan (Japanese: \u9032\u6483\u306e\u5de8\u4eba, Hepburn: Shingeki no Kyojin, lit.\u2009'The Advancing Giant') is a Japanese manga series written and illustrated by Hajime Isayama. It is set in a world where humanity is forced to live",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Right data distribution strategy for Azure Synapse",
+"source": "dolly",
+"split": "train"
+},
+{
+"text": "Who is Rajinikanth?",
+"source": "dolly",
+"split": "test"
+},
+{
+"text": "How to make a element wait a few seconds before showing, using javascript?",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "How do I know if I need glasses?",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "Act as a psychologist and define the terms mindfulness, positive psychology and emotional intelligence in simple language. Additionally, explain how these terms are connected and what interactions exist.",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "What happened on October 1, 2017 in Catalonia?",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "Which language model will Open-Assistant be based on and will there be different sizes available?",
+"source": "oasst",
+"split": "test"
+},
+{
+"text": "What Rust crate should I use to make a performant and easy to use web app?",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "How many languages do you support?",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "Hello there, in your opinion what would the future of humans and generative large language models look like? Will they compete, will they collaborate, will they just exist in different worlds?",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "Describe for me an alternative economic system to capitalism or socialism.",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "Make a list of linux distros to try in old intel atom netbooks having only 1GB of ram.",
+"source": "oasst",
+"split": "test"
+},
+{
+"text": "Write me a pseudocode for a maze solving algorithm. Assume the agent navigating the maze can only tell what's directly in front of them (a wall, an exit, or nothing). You can freely assume there are no loops in the maze.",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "I'd like for you to make me a lesson plan for learning guitar chords. The lesson plan shall have the following structure.\n\nEach lesson will be a chord progression that can be used in a song. The lesson shall include the name of the chord",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "Can you create a simple \"Hello World\" program i the programming language C with instructions on how to compile and run the program?",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "How much wood would a woodchuck chuck if a woodchuck could chuck wood?",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "Create an original idea that involves sustainable futuristic farming and automation.",
+"source": "oasst",
+"split": "test"
+},
+{
+"text": "Is Organized Stalking and Electronic Harassment\na real crime?",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "What colors are most common in modern paintings?",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "Explain the leading causes of North Korea's poor economic situation.",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "Give me great tips to organize every part of my life.",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "What do I pack for a three days trip by airplain to New York? My airline only allow a hand baggage.",
+"source": "oasst",
+"split": "test"
+},
+{
+"text": "Why does water taste weird when it sits in the bottle for a long time? I don't understand how it's fine while sealed but then \"goes bad\" a few days after opening.",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "What is the difference between a plant and a weed?",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "When is the present in relation to the future and the past?",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "Can you please provide me a `Formal Science Overview.md` file?\nIt should contain a  \n|Topic|Description| \n|---|---|\n|[topic1](relative-link-to-topic-overview.md)|Description of topic1|\n\ntable at the start and then after the Table it should",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "I'm hoping to get some job interview practice and I'd like you to act as a panel member in my interview. The interview will be on web development and will mainly focus on knowledge of Javascript, but will also touch on CSS and HTML. Please",
+"source": "oasst",
+"split": "test"
+},
+{
+"text": "Write a sadistic poem in the style of marquis de sade.",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "What is Zipf's law? Where does it show up?",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "pick me a random number for me to buy lottery ticket",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "List all the countries in Europe in alphabetical order",
+"source": "oasst",
+"split": "train"
+},
+{
+"text": "Hello good sir! \n\nWhat is your opinion on Bing Chat, Chat GPT, and other AI software? How far along the technology curve so you believe we are? What changes can we expect to see in the coming months?",
+"source": "oasst",
+"split": "test"
+},
+{
+"text": "The Church of Scientology released a statement regarding the February 10 , 2008 worldwide protests , which was published February 7 , 2008 in the St. Petersburg Times . In the statement , the Church of Scientology called the organizers of",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "Because this species resembles the earthstar fungi of Geastrum , it was placed in that genus by early authors , starting with Christian Hendrik Persoon in 1801 ( as Geaster , an alternate spelling of Geastrum ) . According to the American",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "Following the break , the Blue Jackets were on the road playing the Los Angeles Kings , and with the score tied late in the game , Kings ' defenseman Drew Doughty scored with just 0 @.@ 4 seconds remaining to win the game . Upon review of",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "Due to the damage wrought by Dot on Kauai , the island was declared a major disaster area . Stepping in for governor William F. Quinn , Hawaiian secretary Edward E. Johnston declared a state of emergency for Hawaii and allocated funds",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "Lost Horizons opens with \" Elements \" , which \" blends acoustic guitars , flugelhorns , synths , skittering breakbeat rhythms , a folksy harmonica , and ... a falsetto ' doo @-@ doo ' chorus \" . Overlaying the music is a voiceover ,",
+"source": "wiki",
+"split": "test"
+},
+{
+"text": "It is recommended for condoms manufacturers to avoid very thick or very thin condoms , because they are both considered less effective . Some authors encourage users to choose thinner condoms \" for greater durability , sensation , and",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "The characteristics of a burn depend upon its depth . Superficial burns cause pain lasting two or three days , followed by peeling of the skin over the next few days . Individuals suffering from more severe burns may indicate discomfort or",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "Lennon composed \" Imagine \" one morning in early 1971 , on a Steinway piano , in a bedroom at his Tittenhurst Park estate in Ascot , Berkshire , England . Ono watched as he composed the melody , chord structure and almost all the lyrics ,",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "Black @-@ tailed jackrabbits require shrubs or small conifers for hiding , nesting , and thermal cover , and grassy areas for night feeding . A shrub @-@ grassland mosaic or widely spaced shrubs interspersed with herbs provides hiding",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "In the January 2006 transfer window , he joined Grimsby Town on a two @-@ year deal , three years after they first expressed an interest in signing him . He made his debut against former club Peterborough United in League Two , on 28",
+"source": "wiki",
+"split": "test"
+},
+{
+"text": "R. D. Burman composed the film 's music , and the lyrics were written by Anand Bakshi . The songs used in the film , and released on the original soundtrack are listed below . Following that is a list of unused tracks and dialogues which",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "The first white settlers to occupy the site of Madison were a party led by Henry Mitchell Barnes , who settled near the junction of Union and Taylor Creeks in 1867 . Growth of the new settlement was rapid ; in particular , there was an",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "Barrow was considered a potential successor to AL president Ban Johnson in 1927 , but Barrow declared that he was not interested in the job . When Huggins died in 1929 , Barrow chose Bob Shawkey to replace him as manager , passing over",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "Torres started his career with Atl\u00e9tico Madrid , progressing through their youth system to the first team squad . He made his first team debut in 2001 and finished his time at the club having scored 75 goals in 174 La Liga appearances .",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "There were five main storylines in the run . The first , collected as \" Original Sins \" , deals with John travelling to America to exorcise a demon , Mnemoth , and investigate a strange cult known as Damnation 's Army , crossing paths with",
+"source": "wiki",
+"split": "test"
+},
+{
+"text": "A new league , the Canadian Hockey Association ( CHA ) , was formed in late November 1909 . One of the teams , the All @-@ Montreal Hockey Club , hired Ross as a playing @-@ manager , but the league only lasted to mid @-@ January 1910",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "Medical attention should be sought in cases of suspected poisoning . If the delay between ingestion and treatment is less than four hours , activated charcoal is given . Gastric lavage can be considered if the patient presents within one",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "Harold Innis 's study of the effects of interconnected lakes and rivers on Canadian development and European empire sparked his interest in the complex economic and cultural relationships between transportation systems and communications .",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "The computer was built as a researching and demonstration project by the ASTRA group of researchers at the Vision Lab in the University of Antwerp in Belgium , one of the researchers being Joost Batenburg . Unlike other modern",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "While performing shows with The Second City in 1997 , Fey submitted several scripts to NBC 's variety show Saturday Night Live ( SNL ) , at the request of its head writer Adam McKay , a former performer at Second City . She was hired as a",
+"source": "wiki",
+"split": "test"
+},
+{
+"text": "The Never Ending Tour commenced on June 7 , 1988 , and Dylan has played roughly 100 dates a year for the entirety of the 1990s and 2000s \u2014 a heavier schedule than most performers who started out in the 1960s . By May 2013 , Dylan and his",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "The effects for all the APF series from Supercar to UFO were directed by Derek Meddings , who later worked on the James Bond and Superman films . Knowing that Thunderbirds would be the \" biggest project [ APF ] had worked on \" , Meddings",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "Following a change in management , Coleman signed with Island Records , and Of Human Feelings was released in 1982 by its subsidiary label Antilles Records . Critics generally praised Coleman 's expressive music and harmolodic approach ,",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "However , Nigel Andrews of the Financial Times found it \" like a pastoral parable that has been left outside in the damp too long , causing its batteries to go flat \" and following a 2008 screening , Sam Jordison of The Guardian suggested",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "Due to the increase in population after protective legislation was put into place , the Department of Conservation developed a management plan for the Kaimanawa herd in 1989 and 1990 . A draft plan was made available to the public for",
+"source": "wiki",
+"split": "test"
+},
+{
+"text": "During the journey to Australia , some players reported that Jardine told them to hate the Australians in order to defeat them , while instructing them to refer to Bradman as \" the little bastard . \" At this stage , he seemed to have",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "\" My Boo \" is a duet between American R & B singers Usher and Alicia Keys , written by Usher , Keys , Jermaine Dupri , Adonis Shropshire , and Manuel Seal , Jr .. The song was released as the album 's fourth single in 2004 . Set over a hip",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "The game received mixed reviews upon release . A reviewer of CVG thought the graphics were identical to its predecessor , Entombed , and criticised the low detail of the player @-@ character , Sir Arthur Pendragon . Eugene Lacey of",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "Jordan had a versatile offensive game . He was capable of aggressively driving to the basket , as well as drawing fouls from his opponents at a high rate ; his 8 @,@ 772 free throw attempts are the ninth @-@ highest total of all time . As",
+"source": "wiki",
+"split": "train"
+},
+{
+"text": "Within the Solar System , the nucleon fraction of xenon is 1 @.@ 56 \u00d7 10 \u2212 8 , for an abundance of approximately one part in 630 thousand of the total mass . Xenon is relatively rare in the Sun 's atmosphere , on Earth , and in asteroids",
+"source": "wiki",
+"split": "test"
+},
+{
+"text": "\"sort\"\n\t\"strings\"\n)\n\n// Limits on the work one request can ask for. The runtime is reachable over HTTP (/v1/strata/cas/solve, /math/evaluate,",
+"source": "code",
+"split": "train"
+},
+{
+"text": "uint64_t blob_sz = ref ? ref->bytes : 1382400;\n                expert_mgr_->register_expert(l, e, blob_ptr, blob_sz, \"IQ3_XXS\");\n            }\n        }",
+"source": "code",
+"split": "train"
+},
+{
+"text": "{\n        // chat B mounts through the root long after it was created; its stamp stays ancient\n        const std::vector<uint64_t> stamps = {1, 100, 101, 102, 103, 104, 105};\n        const size_t v = eviction_victim(stamps.data(),",
+"source": "code",
+"split": "train"
+},
+{
+"text": "const std::vector<uint64_t> stamps = {7, 3, 3, 5};\n        const size_t a = eviction_victim(stamps.data(), stamps.size(), 4);\n        const size_t b = eviction_victim(stamps.data(), stamps.size(), 4);\n        check(a == 1 && b == 1, \"ties",
+"source": "code",
+"split": "train"
+},
+{
+"text": "PoolFn pool, HitFn hits, void* user, bool overlap, void* stream, std::string& err,\n                  float* dump_layers, SessionLoopScratch* scratch) {\n    if (!gr.captured || gr.n != g.n_layers) { err = \"session_loop: not captured\";",
+"source": "code",
+"split": "test"
+},
+{
+"text": "tc.publishGPU(gpuReading{}) // what readGPU returns when no driver answers\n\t_, used := tc.now[\"gpu_mem_used\"]\n\t_, util := tc.now[\"gpu_util\"]\n\t_, temp := tc.now[\"gpu_temp\"]\n\t_, power := tc.now[\"gpu_power\"]",
+"source": "code",
+"split": "train"
+},
+{
+"text": "reqs := []map[string]interface{}{\n\t\t{\"prompt_tokens\": 100, \"reused\": 60}, // newest first\n\t\t{\"prompt_tokens\": 50, \"reused\": nil},\n\t\t{\"prompt_tokens\": 40, \"reused\": 0},\n\t}",
+"source": "code",
+"split": "train"
+},
+{
+"text": "}\n\nfunc (s *StrataServer) handleCASConstants(w http.ResponseWriter, r *http.Request) {\n\tconsts := mathruntime.GetConstantRegistry().ListAll()\n\twriteJSON(w, http.StatusOK, map[string]interface{}{",
+"source": "code",
+"split": "train"
+},
+{
+"text": "const uint8_t* q = block + 32; // 64\n    const float d_all = fp16_to_fp32(read_u16(block + 108));\n\n    const uint32_t kmask1 = 0x03030303u, kmask2 = 0x0f0f0f0fu;\n    uint32_t aux[4] = {0, 0, 0, 0};",
+"source": "code",
+"split": "train"
+},
+{
+"text": "config_.base_temperature,\n                    state_.current_temperature - config_.decrease_rate\n                );\n            }\n            if (std::abs(state_.current_temperature - config_.base_temperature) < 1e-4) {",
+"source": "code",
+"split": "test"
+},
+{
+"text": "// THIS TOKEN'S counts as the CAPACITIES: correct for a direct launch, WRONG in a graph.  The layer passes a\n    // constant `max_blocks` from its state instead - see the note in `qsa.hpp`.\n    qsa_index_step(pooled, q_idx, bias, s,",
+"source": "code",
+"split": "train"
+},
+{
+"text": "#endif\n\ntemplate <typename T>\n__device__ __forceinline__ T shfl_xor_sync(uint32_t mask, T value, int lane_mask, int width = 32) {\n    require_full_wave_mask(mask);",
+"source": "code",
+"split": "train"
+},
+{
+"text": "},\n\t\t\"strata_status\": {\n\t\t\tName:        \"strata_status\",\n\t\t\tDescription: \"Check health, current telemetry, and active models of the local Strata inference engine\",\n\t\t\tInputSchema: map[string]any{",
+"source": "code",
+"split": "train"
+},
+{
+"text": "} else if (c == ')' || c == ']' || c == '}') {\n            if (nesting > 0) nesting--;\n        } else if (c == '+' || c == '-') {\n            score += 1;\n        } else if (c == '*' || c == '/') {",
+"source": "code",
+"split": "train"
+},
+{
+"text": "void doorbell_wait(const uint32_t* d_flag, const uint32_t* d_seq, void* stream) {\n    if (d_flag == nullptr || d_seq == nullptr) return;\n    const SpinParams sp = strata_spin_params();\n    doorbell_wait_kernel<<<1, 1, 0, (cudaStream_t)",
+"source": "code",
+"split": "test"
+},
+{
+"text": "return false;\n        }\n        while (pos < s.size() && std::isdigit(static_cast<unsigned char>(s[pos]))) pos++;\n        if (pos < s.size() && s[pos] == '.') {\n            pos++;",
+"source": "code",
+"split": "train"
+},
+{
+"text": "namespace strata::core {\n\n// Host physical memory, not swap/commit or a container/job memory reservation.\n// Unknown telemetry is deliberately distinct from a measured zero.\nstd::optional<uint64_t> conversation_available_memory();",
+"source": "code",
+"split": "train"
+},
+{
+"text": "namespace strata::spec {\n\nclass SuffixDrafter {\npublic:\n    static constexpr int WAYS = 4;",
+"source": "code",
+"split": "train"
+},
+{
+"text": "size_t inline_limit_chars = 1500;     // results up to this size pass through unchanged\n    size_t evidence_max_chars = 262144;   // how much of a raw result is kept as evidence text\n};\n\n// The agent still runs its own tools. If it sends a",
+"source": "code",
+"split": "train"
+},
+{
+"text": "req.Header.Set(\"Content-Type\", \"application/json\")\n\tfor k, v := range headers {\n\t\treq.Header.Set(k, v)\n\t}\n\tresp, err := http.DefaultClient.Do(req)",
+"source": "code",
+"split": "test"
+},
+{
+"text": "const strata::core::OnDevice on(stages[0]->dev);\n                    cudaEventRecord(ev[1], PV[1][0]->stream());\n                    (void) cudaStreamQuery(PV[1][0]->stream());\n                };\n                auto stage_passed =",
+"source": "code",
+"split": "train"
+},
+{
+"text": "if len(value) > maxSessionValueLen || len(name) > 128 || len(sessionID) > 256 {\n\t\treturn\n\t}\n\tc.mu.Lock()\n\tdefer c.mu.Unlock()",
+"source": "code",
+"split": "train"
+},
+{
+"text": "inTokens := 20\n\toutTokens := len(replyText)/4 + len(reasoningText)/4\n\tif outTokens <= 0 {\n\t\toutTokens = 1\n\t}",
+"source": "code",
+"split": "train"
+},
+{
+"text": "const float s = warp_sum(acc);\n    if (lane != 0) return;\n    // ---- THE OUTPUT LAYOUT IS GATE-MAJOR, AND THAT IS NOT COSMETIC.\n    //\n    // The first version wrote `gate_up[h*2FF + {0..FF-1}] = gate` and `[h*2FF + FF..] = up`, i.e. a",
+"source": "code",
+"split": "train"
+},
+{
+"text": "quant(f.gu_type, FF, H, blob.data() + f.up_off);\n    quant(f.d_type, H, FF, blob.data() + f.down_off);\n    return blob;\n}",
+"source": "code",
+"split": "test"
+},
+{
+"text": "\"encoding/hex\"\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"net/http\"\n\t\"strings\"",
+"source": "code",
+"split": "train"
+},
+{
+"text": ")\n\n// DescriptiveStats holds summary statistics of a dataset.\ntype DescriptiveStats struct {\n\tCount    int     `json:\"count\"`",
+"source": "code",
+"split": "train"
+},
+{
+"text": "return nil, nil, errors.New(\"arguments passed as a string\")\n\t}\n\tdec := json.NewDecoder(bytes.NewReader(raw))\n\ttok, err := dec.Token()\n\tif err != nil {",
+"source": "code",
+"split": "train"
+},
+{
+"text": "}\n        if (at < 0) { std::fprintf(stderr, \"QA_DUMP: no record for layer %d, T %lld, ctx %lld\\n\", want, (long long) nq, (long long) ctx); std::exit(2); }\n        std::fseek(f, at, SEEK_SET);\n        if (std::fread(ids.data(), 4,",
+"source": "code",
+"split": "train"
+},
+{
+"text": "h := sha256.Sum256(data)\n\t\tactualHash := hex.EncodeToString(h[:])\n\t\tresults[tensorName] = (actualHash == expectedHash)\n\t}",
+"source": "code",
+"split": "test"
+},
+{
+"text": "What is 483 * 79? Answer with the number only.",
+"source": "numeric",
+"split": "train"
+},
+{
+"text": "Compute 984 + 218 - 109.",
+"source": "numeric",
+"split": "train"
+},
+{
+"text": "Order number 958292 was shipped on 2025-06-28. Repeat the order number:",
+"source": "numeric",
+"split": "train"
+},
+{
+"text": "Write the first 7 square numbers starting from 11^2.",
+"source": "numeric",
+"split": "train"
+},
+{
+"text": "What is 73 * 844? Answer with the number only.",
+"source": "numeric",
+"split": "test"
+},
+{
+"text": "Compute 495 + 353 - 176.",
+"source": "numeric",
+"split": "train"
+},
+{
+"text": "Order number 983256 was shipped on 2025-09-03. Repeat the order number:",
+"source": "numeric",
+"split": "train"
+},
+{
+"text": "Write the first 11 square numbers starting from 4^2.",
+"source": "numeric",
+"split": "train"
+},
+{
+"text": "What is 788 * 823? Answer with the number only.",
+"source": "numeric",
+"split": "train"
+},
+{
+"text": "Compute 766 + 344 - 172.",
+"source": "numeric",
+"split": "test"
+},
+{
+"text": "Order number 419327 was shipped on 2025-07-11. Repeat the order number:",
+"source": "numeric",
+"split": "train"
+},
+{
+"text": "Write the first 12 square numbers starting from 10^2.",
+"source": "numeric",
+"split": "train"
+},
+{
+"text": "What is 296 * 432? Answer with the number only.",
+"source": "numeric",
+"split": "train"
+},
+{
+"text": "Compute 730 + 396 - 198.",
+"source": "numeric",
+"split": "train"
+},
+{
+"text": "Order number 466504 was shipped on 2025-08-08. Repeat the order number:",
+"source": "numeric",
+"split": "test"
+},
+{
+"text": "Write the first 9 square numbers starting from 14^2.",
+"source": "numeric",
+"split": "train"
+},
+{
+"text": "What is 317 * 451? Answer with the number only.",
+"source": "numeric",
+"split": "train"
+},
+{
+"text": "Compute 422 + 655 - 327.",
+"source": "numeric",
+"split": "train"
+},
+{
+"text": "Order number 463312 was shipped on 2025-04-06. Repeat the order number:",
+"source": "numeric",
+"split": "train"
+},
+{
+"text": "Write the first 6 square numbers starting from 16^2.",
+"source": "numeric",
+"split": "test"
+}
+]
