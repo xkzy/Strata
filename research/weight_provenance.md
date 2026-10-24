@@ -40,15 +40,32 @@ Quantisation per tensor [V]: trunk tensors are mixed Q4_K / Q5_K / Q6_K / IQ4_XS
 
 ## 3. Provenance of candidate students [D, design claims]
 
-From `scripts/provenance.py`:
+Categories: C copied unchanged · D derived deterministically · M mapped into a changed layout (values kept, shape or index changed) · L learned · X removed. Totals from `scripts/provenance.py`; **per-layer rows (48 layers + globals, every candidate) are in `data/provenance_by_layer.csv`.**
 
-| Candidate | C | D | L | Removed | Notes |
-|---|---|---|---|---|---|
-| **S0** teacher + placement / kernel / planner work | 116.514 B (100 %) | – | – | – | Family A. Distribution identical. |
-| **S1** S0 + hc re-quantised | 115.874 B (99.45 %) | 0.641 B (0.55 %) | – | – | Derived from BF16 by a fixed rule. Function error unmeasured. |
-| **S2** S1 + router fine-tune | 115.842 B (99.42 %) | 0.641 B | 0.031 B (0.03 %) | – | Family D. Needs a KL budget. |
-| **S3** S2 + experts 256 → 192 per layer | 100.743 B (86.46 %) | 0.641 B | 0.031 B | 15.099 B (12.96 %) | Total 101.4 B = 87 % of P_T → **outside the ±2 % tier**; separate Pareto point. Router rows for dropped experts removed (mapped), surviving experts copied. |
-| MTP head retrain (any S) | – | – | 0.82 GB on disk (116 MB dense + 708 MB experts); param count **[U]** | – | Separate artifact; learned from teacher outputs. |
+### 3.1 Per layer kind (teacher parameters, B) [V]
+
+| Part | DeltaNet layer (36: idx 0–2, 4–6, …) | Attention layer (12: idx 3, 7, …, 47) | Global (once) |
+|---|---|---|---|
+| Mixer | 0.0580 | 0.0514 | – |
+| Routed experts (256) | 1.2583 | 1.2583 | – |
+| Shared expert | 0.0049 | 0.0049 | – |
+| Router | 0.0007 | 0.0007 | – |
+| Hyper-connection | 0.0132 | 0.0132 | 0.007 |
+| **Layer total** | **1.335** | **1.329** | embeddings/head 1.271 · PLE proj 0.033 · **PLE table 51.200** · hc 0.007 |
+
+Every layer of a given kind has identical parameter counts, so a candidate's provenance is the same for all layers of that kind; the CSV lists all 48 explicitly. Per layer, 94 % of the parameters are routed experts.
+
+### 3.2 Candidates
+
+| Candidate | C | D | M | L | X (removed) | Notes |
+|---|---|---|---|---|---|---|
+| **S0** teacher + placement / kernel / planner work | 116.514 B (100 %) | – | – | – | – | Family A. Distribution identical. |
+| **S1** S0 + hc re-quantised | 115.874 B (99.45 %) | 0.641 B (0.55 %) | – | – | – | Derived from BF16 by a fixed rule, in all 48 layers + output hc. Function error unmeasured. |
+| **S2** S1 + router fine-tune | 115.842 B (99.42 %) | 0.641 B (0.55 %) | – | 0.031 B (0.03 %) | – | Router (all 48 layers) learned from its teacher values. Needs a KL budget. |
+| **S3** S2 + experts 256 → 192 per layer | 55.444 B (47.59 %) | 0.641 B (0.55 %) | 45.298 B (38.88 %) | 0.031 B (0.03 %) | 15.099 B (12.96 %) | Surviving experts are restacked into a 192-expert layout (**M**: values identical, index/shape changed); PLE table, trunk, shared expert stay **C**. Total 101.4 B = 87.0 % of P_T → **outside the ±2 % tier**; separate Pareto point. By value, 86.46 % reused (C+M). |
+| MTP head retrain (any S) | – | – | – | 0.82 GB on disk (116 MB dense + 708 MB experts); param count **[U]** | – | Separate artifact; learned from teacher outputs. |
+
+**Reading these numbers.** The share of copied parameters is dominated by the two tensors the decode path barely touches per token (experts: 0.98 of 5.10 GB read, PLE: a gather). The tensors that account for per-token bytes (trunk 4.11 GB) are 4.2 % of the parameters, so "99 % reused" and "nothing about the per-token cost changed" are both true of S1–S2. Reuse by parameters or layer is not evidence that the knowledge is preserved; only the KL and task measurements in `experiment_plan.md` can show that.
 
 The earlier ISTA-DASLab pruning (512 → 256 experts, RCO minimising KL on calibration data) is already baked into the teacher [L, HF card via a summarising fetcher; secondary source]: the teacher is itself a derived model, so "teacher logits" are p_T′, not the upstream model's.
 
@@ -62,7 +79,7 @@ For each: params, ops, memory traffic, error, equivalence conditions, decode/KV 
 - Condition: wins only if profile-guided; measure with ≥ 5 repeats (run-to-run variance "several percent").
 
 ### 4.2 Re-quantising hc tensors (0.641 B params, 1.283 GB/token)
-- Bytes: 1,283 → 682 MB (Q8-like, 53 %), 526 MB (6-bit-like, 41 %), 361 MB (4-bit, 28 %) of BF16 [D]. Saves 0.60 / 0.76 / 0.92 GB of 5.10 GB per token = 11.8 / 14.9 / 18.1 % of bytes [D]. At the dense-resident 448 GB/s roofline that is 1.3 / 1.7 / 2.1 ms per pass of 54–71 ms measured [D] — **a real byte reduction, but only worth it if the bytes are on the critical path** (they are VRAM-resident or cold? **[U]**).
+- Bytes: 1,283 → 682 MB (Q8-like, 53 %), 526 MB (6-bit-like, 41 %), 361 MB (4-bit, 28 %) of BF16 [D]. Saves 0.60 / 0.76 / 0.92 GB of 5.10 GB per token = 11.8 / 14.9 / 18.1 % of bytes [D]. At the dense-resident 448 GB/s roofline that is 1.3 / 1.7 / 2.1 ms per pass of 54–71 ms measured [D] — **the direct saving is small and within run-to-run variance.** The channel that can matter is VRAM freed for experts: 0.60–0.92 GB ÷ 2.046 MB ≈ 290–450 experts (6–9 per layer); on the measured top-N coverage curve that is about +2 points of hit rate, a ~5 % smaller cold set and ≈ 3–4 % shorter pass at the 69 % CPU-pool share, if about 64 experts per layer are resident today (unknown **[U]**) — see `algorithm_comparison.md` §3.2. Below the proposed 1.25× gate; unproven until E3 measures end-to-end tok/s.
 - Error, weight space only [M, `hc_requant_probe.py`, 12 of 48 layers, symmetric absmax per 32 values with fp16 scale; not the engine's own Q8_0/Q6_K code]: relative Frobenius error 0.61–0.76 % (8-bit), 2.5–2.9 % (6-bit-like), 11.1–12.3 % (4-bit); router `ffn_gate_inp` 0.76 / 2.9 / 11.4 %. The BF16 rounding already in the weights is ≈ 0.11 % rms [D].
 - Equivalence: none; it is an approximation. 8-bit is within ~6× the existing BF16 rounding in weight space; function-space effect needs activation data **[U]**. The router must not be coarsely quantised without a routing-agreement test (a flipped top-10 changes the executed experts).
 - Hardware: needs dequant kernels for hc paths in the engine (the engine already has Q8_0 / Q4 / Q6_K dequant for the trunk).

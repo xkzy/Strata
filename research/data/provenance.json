@@ -1,32 +1,22 @@
 {
- "groups": {
-  "embedding / LM head": 1271398400,
-  "hyper-connection (BF16)": 640624640,
-  "DeltaNet mixer": 2086510464,
-  "routed experts (256/layer)": 60397977600,
-  "shared expert (+gate)": 236052480,
-  "MoE router": 31457280,
-  "PLE query/key/value projections": 32839680,
-  "sparse attention + indexer": 617358336,
-  "PLE n-gram table": 51200245760
+ "S0": {
+  "C": 116514464640.0
  },
- "total": 116514464640,
- "S0 optimised teacher (placement/kernels only)": {
-  "C": 116514464640
+ "S1": {
+  "C": 115873840000.0,
+  "D": 640624640.0
  },
- "S1 = S0 + hc re-quantised (Q8/Q6)": {
-  "C": 115873840000,
-  "D": 640624640
+ "S2": {
+  "C": 115842382720.0,
+  "L": 31457280.0,
+  "D": 640624640.0
  },
- "S2 = S1 + router & MTP-head fine-tune": {
-  "C": 115842382720,
-  "D": 640624640,
-  "L": 31457280
+ "S3": {
+  "C": 55444405120.0,
+  "M": 45298483200.0,
+  "X": 15099494400.0,
+  "L": 31457280.0,
+  "D": 640624640.0
  },
- "S3 = S2 + experts pruned 256->192 (structural)": {
-  "C": 100742888320.0,
-  "D": 640624640,
-  "pruned (removed)": 15099494400.0,
-  "L": 31457280
- }
+ "total": 116514464640
 }

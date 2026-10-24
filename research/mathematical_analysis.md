@@ -48,7 +48,7 @@ Assumption: codebook entries are cluster centres (EMA k-means in NCM's `quant.py
 **Within-level independence (NCM Eq 5)**: the generator predicts q(c_k | c_{<k}) = Π_i q_i(c_{k,i} | c_{<k}). **Proposition 3 [P].** For true block distribution p, KL(p ‖ Πq_i) = Σ_i KL(p_i ‖ q_i) + TC(p) where TC(p) ≥ 0 is the total correlation of the block; so a factorised proposal cannot be exact unless the positions are conditionally independent given the conditioning. Parallel decoding therefore approximates p; **exactness needs a verifier.**
 
 **Speculative decoding [S, Leviathan et al. 2211.17192; Chen et al. 2302.01318].** With draft distribution q and target p, accept token x with probability min(1, p(x)/q(x)); on rejection sample from the residual max(0, p − q)/Z. The resulting marginal is exactly p. With a deterministic greedy draft (q = δ_y) the acceptance probability is p(y).
-Expected tokens per verify pass with γ drafted tokens and i.i.d. acceptance α: **E[tok] = (1 − α^{γ+1}) / (1 − α)** [S, Leviathan Thm 3.8 form]. Check: α = 0.77, γ = 3 → 2.82 [D], inside the measured 2.4–3.2 [M].
+Expected tokens per verify pass with γ drafted tokens and i.i.d. acceptance α: **E[tok] = (1 − α^{γ+1}) / (1 − α)** [S, Leviathan §3 expected-tokens form]. Check: α = 0.77, γ = 3 → 2.82 [D], inside the measured 2.4–3.2 [M].
 
 **Break-even [P].** Let ρ(n) = T_pass(n) / T_pass(1). Speculation with γ drafts (n = γ + 1) beats plain decoding iff E[tok] > ρ(n). **Implication [D]:** with measured ρ(4) = 2.64 for a fully expert-bound pass, the ceiling at α = 0.77 is 2.82 / 2.64 = 1.07×; the observed gains imply the pass is only partly expert-bound.
 
@@ -74,7 +74,48 @@ Bytes per pass = Σ_layers D(n) × 2.046 MB (+ dense 4.114 GB). MoE is computati
 
 6·N_act·D FLOP with N_act = 6.64 B: 10^9 tokens = 3.98 × 10^19 FLOP (11.5 GPU-days at an assumed 40 TFLOP/s sustained), 10^10 = 115 d, 10^11 = 1,153 d. NCM's own budgets are 13.4 B (LM1B) – 127 B (OWT) positions for ~100 M-param models, i.e. 134–1,272 positions per parameter [M, paper]; applying those ratios to 116.5 B parameters would be ≈ 1.6 × 10^13 – 1.5 × 10^14 positions (naive scaling, not a claim about what the tier needs). The 40 TFLOP/s figure is an assumption, not a measurement of this PC.
 
-## 8. What is proven, conditionally proven, empirical, unresolved
+## 8. Expected-latency model with a varying accepted prefix (brief §5.1)
+
+Per verify pass: T_pass(n) = T_dense + T_experts(n) + T_head(γ), n = γ + 1 positions verified; T_total = T_prefill + (N / E[tok]) · T_pass. Rejected drafts are already inside T_pass (they were verified), so a separate "correction cost" term would double-count; the only extra cost after a rejection is the resampled token, which is the +1 in E[tok]. Reconstruction cost is 0 for MTP drafts and Σ_k cost(R_k) for an NCM-style decoder.
+
+**Accepted prefix [P].** Let a_i be the probability that draft position i is accepted given all earlier ones were. P(prefix ≥ j) = Π_{i≤j} a_i and E[tok] = 1 + Σ_{j=1..γ} Π_{i≤j} a_i; iid a_i = α recovers (1 − α^{γ+1})/(1 − α). **Mean acceptance is not enough:** Σ α^j is convex in α, so when α varies across prompts (measured: 0.077 on a raw-token-id capture, ≈ 0.77 on code, 0.5–0.63 on prose [M]) the average tokens per pass over prompts is at least E[tok] evaluated at the mean α (Jensen). Throughput is a ratio (tokens / time) and must be averaged per prompt, not from pooled means. Position decay (a_1 > a_2 > …) is expected for heads trained on one-step targets and has not been measured on this checkpoint **[U]**.
+
+**When block generation wins [P].** Speedup = E[tok] / ρ(n) with ρ(n) = T_pass(n)/T_pass(1). With measured ρ (n = 2, 3, 4, 6, 8 → 1.77, 2.22, 2.64, 3.33, 3.92 for a fully expert-bound pass [M]) and iid α = 0.77 the ratio is 1.00 (γ = 1), 1.06 (γ = 2), 1.07 (γ = 3), and falls beyond γ = 3 (1.03 at γ = 5) [D, `latency_model.py`]. This is why "more levels" or "wider blocks" is not a speed argument here.
+
+## 9. Distillation objective (brief §5.3)
+
+Applicable terms only (no student exists; costs are derived):
+
+| Term | Target | Reduction / normalisation | Gradient path | Cost |
+|---|---|---|---|---|
+| Token CE | data tokens | mean over non-pad positions | student logits | student forward only |
+| Temperature KL, τ² · KL(p_T^τ ‖ p_S^τ) | teacher logits (top-k stored) | mean over positions; τ² keeps gradient scale (Hinton 1503.02531 [L]) | student only (teacher frozen) | teacher scoring: 10^7 tokens 0.3 d, 10^9 tokens 34.5 d at 335 tok/s [D] |
+| MTP loss Σ_j λ_j CE(head_j, x_{t+j+1}) | data or teacher tokens | per-head mean | head and shared trunk (Gloeckle 2404.19737 [L]) | one extra block per head |
+| Hidden-state matching | teacher layer output | MSE or cosine per layer, normalised by teacher variance | student trunk | storing hidden states: 2,560 × 2 B = 5 KB/token → 10^8 tokens = 512 GB [D] |
+| Router load balance (Switch 2101.03961 [L]) | uniform usage | α_lb · E · Σ_i f_i P_i | router | negligible |
+| Locality term (proposed, family E) | fewer distinct experts across adjacent positions | mean over layers | router | negligible; quality cost **[U]** |
+| Reconstruction / quantisation (NCM only) | input latent | MSE per level, weights w_k (Eq 10 [L]) | tokenizer | – |
+| Student-generated prefixes (on-policy GKD 2306.13649 [L]) | teacher distribution on student samples | token mean | student | student generation + teacher scoring each step |
+
+**Can the student infer without the teacher?** Yes for any term set that trains a full next-token (or block) distribution; logit KL carries more information than hard labels. Hidden-state terms are optional.
+
+**Exposure bias and conditioning mismatch [P/D].** Teacher-forced training conditions on data prefixes, free-running inference on the student's own. (i) For an exact-verification drafter this changes only acceptance, never correctness. (ii) For a standalone student errors compound over the sequence; for NCM the generator at level k trains on *corrupted ground-truth* codes (conditioning corruption, Alg. 2 [L]) but conditions on its own predictions at inference; whether the corruption closes the gap at LLM scale is unmeasured **[U]**. (iii) The labels come from the pruned, ~1.9-bit-effective p_T′, and student-generated prefixes would be scored by p_T′ too.
+
+## 10. Speed limits for this model and hardware (brief §5.4)
+
+| Limit | Value | Status |
+|---|---|---|
+| Bandwidth floor, all 5.096 GB/token resident, 5060 Ti at 448 GB/s (spec) | 11.4 ms/pass → ≤ 88 passes/s | bound given the assumed spec; not measured |
+| Compute floor (13.3 GFLOP at an assumed 40 TFLOP/s) | 0.33 ms | assumption |
+| Kernel-launch / sync floor | **[U]** (never profiled) | – |
+| Sequential floor | one verify pass per round; E[tok] ≤ γ + 1 | proven |
+| Cold-expert time | Σ_layers D(n) · 2.046 MB · (1 − h) / BW_ram, BW_ram = 19.3 GB/s [M] | within 0.4 % on one captured round |
+| KV | 6 GiB at 262 K fp16; attention reads ≤ 2,048 tokens/step ≈ 50 MB | derived |
+| **Maximum plausible improvement** | ≤ 4.7–6.2× over today's 54–71 ms pass, **only if every byte were VRAM-resident** (58 GB model, 24 GB VRAM: impossible) | upper bound, not attainable |
+
+Illustration, not a fit: for n = 4 the measured 26.4 distinct experts per layer cost 26.4 × 48 × 2.046 MB = 2.59 GB per pass. With a hit rate equal to the static-profile top-64 coverage (57.5 %, which presumes 64 resident per layer — unknown) the cold part is 1.10 GB → 57 ms at 19.3 GB/s, inside the recorded 54–71 ms; at 75 % it would be 33.6 ms. This shows sensitivity to hit rate, not that hit rate is the cause.
+
+## 11. What is proven, conditionally proven, empirical, unresolved
 
 | Claim | Status |
 |---|---|

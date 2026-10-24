@@ -10,7 +10,7 @@ print(f'active bytes/token = {ACTIVE_BYTES/1e9:.3f} GB (exact); non-expert activ
 
 def e_tokens(alpha, g):
     """Expected tokens committed per verify pass with g drafted tokens, i.i.d. per-position acceptance alpha
-    (Leviathan et al. 2211.17192, Thm 3.8 form). The +1 is the bonus/correction token."""
+    (Leviathan et al. 2211.17192, §3 expected-tokens form). The +1 is the bonus/correction token."""
     return (1 - alpha ** (g + 1)) / (1 - alpha) if alpha < 1 else g + 1
 
 def coverage(n, k=K, e=E):
