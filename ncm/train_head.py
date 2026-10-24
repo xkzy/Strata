@@ -38,10 +38,17 @@ def build(method, K, ztr, P):
         with torch.no_grad():
             dec.weight.copy_(P)
         return (lambda z: (dec(z), 0.0)), list(dec.parameters())
+    def quantize(rvq, z):
+        """Value = the quantised z. ResidualVQ.forward alone is straight-through, so no loss except its own quantisation loss would ever reach the
+        codebooks (and train_ms2's 'nmse' training was exactly that). Adding decode() - decode().detach() sends the task gradient to the codebooks too."""
+        zq, codes, ql = rvq(z)
+        dec = rvq.decode(codes)
+        return zq + dec - dec.detach(), ql
+
     if method == "A":
         rvq = ResidualVQ(D, K, t.CODES).to(DEV)
         t.init_books(rvq, ztr)
-        return (lambda z: ((lambda o: (o[0] @ P.T, o[2]))(rvq(z)))), list(rvq.parameters())
+        return (lambda z: ((lambda o: (o[0] @ P.T, o[1]))(quantize(rvq, z)))), list(rvq.parameters())
     fb, rs, rd = LiftingFilterBank(D).to(DEV), ResidualVQ(D, K, t.CODES).to(DEV), ResidualVQ(D, K, t.CODES).to(DEV)
     with torch.no_grad():
         s, d = fb.analyze(ztr)
@@ -49,8 +56,8 @@ def build(method, K, ztr, P):
 
     def recon(z):
         s, d = fb.analyze(z)
-        sh, _, qs = rs(s)
-        dh, _, qd = rd(d)
+        sh, qs = quantize(rs, s)
+        dh, qd = quantize(rd, d)
         return fb.synthesize(sh, dh, z.shape[1]) @ P.T, qs + qd
     return recon, list(fb.parameters()) + list(rs.parameters()) + list(rd.parameters())
 

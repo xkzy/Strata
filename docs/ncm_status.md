@@ -10,6 +10,8 @@ Tests: `cd ncm && python -m pytest -q test_ncm.py` (torch + pytest; 8 pass on CP
   Prompt positions, logits and per-layer states are **not** captured.
 - **Stage 2 ablation (final-layer residual, PCA-128):** [ncm_results.md](ncm_results.md). Held-out NMSE 0.75–0.85 vs 1.0 for the train mean; filter bank + RVQ with two codebook sets is
   0.011–0.024 better than RVQ alone at equal code bits on three splits, but with a parameter-matched (shared) codebook the advantage disappears (−0.007 to +0.016, worse at the lowest rate). Both are far from the unquantized PCA floor (0.557).
+- **Head-aware training** ([ncm_results.md](ncm_results.md)): KL through the frozen teacher head lifts an unquantized linear decoder from 30% to 55% next-token
+  agreement; quantized codecs stay at 13–14% (3 seeds, 4060). Earlier RVQ runs trained their codebooks by the quantization loss only (fixed in `ncm/train_head.py`).
 - Components with unit tests: lifting filter bank (exact reconstruction with random weights), residual VQ, sparse MoE with capacity and balance loss, provenance-keeping context memory, capture readers.
 
 ## Not done
@@ -19,5 +21,5 @@ Tests: `cd ncm && python -m pytest -q test_ncm.py` (torch + pytest; 8 pass on CP
 - No speculative-verification study, no long-context memory evaluation on real data, no runtime integration, no throughput/VRAM/latency benchmarks of any student.
 - Docs from the brief still missing: `model_architecture`, `context_memory`, `runtime_integration`, `benchmark_protocol`.
 - The ±2% same-budget student is out of scope on this hardware (65.3 B weights without the PLE table).
-- Engine build `build-ncm` is sm_89 only (the 4060); it will not run on the 5060 Ti.
-- Branch is committed locally and **not pushed**.
+- Engine build `build-ncm` is being rebuilt for sm_89 + sm_120 (the engine refuses PTX JIT on the 5060 Ti).
+- Branch `worktree-strata-ncm` is pushed to `origin` (`xkzy/Strata`); `main` is untouched.

@@ -52,6 +52,39 @@ Filter bank minus plain RVQ, held-out NMSE (negative = filter bank better; each 
 - Plain RVQ with 2K books (same parameters as the two-set bank, twice the bits) is better again on every split (e.g. K=4: 0.733 / 0.738 / 0.735).
 - Still one dataset, one projection (PCA-128), NMSE only for these splits. Prompts are the same five sources, so this is data variance within them, not domain shift.
 
+## v2 head-aware training: training through the frozen head helps an unquantized decoder, barely the quantizers
+
+**Outcome (still negative for the quantizers): training the codec by KL through the teacher's frozen LM head lifts an unquantized
+128 → 2560 linear decoder from 30% to 55% next-token agreement, but the quantized codecs stay at 13–14%.**
+
+Method: `ncm/train_head.py`, RTX 4060, 800 steps, 2 windows per step, 3 seeds, the manifest split of cap2. The head is a frozen PyTorch copy of the
+teacher's head (`ncm/head.py`; 99.85% agreement with the recorded next token on 4,096 positions, so not bit-identical to the engine's `--head-eval`).
+Objectives: `nmse` (reconstruction only), `head` (KL to the teacher head's distribution on the true residual), `mix` (KL + NMSE). Agreement =
+argmax through the frozen head equals the teacher's. A = RVQ, B = filter bank + RVQ, lin = unquantized linear decoder from PCA-128. Raw numbers:
+`bench/ncm/head_aware_cap2.json`.
+
+| Codec | nmse | head | mix |
+|---|---|---|---|
+| A rvq K=1 | 0.0844 ± 0.0031 | 0.0812 ± 0.0027 | 0.0812 ± 0.0026 |
+| A rvq K=4 | 0.1167 ± 0.0028 | 0.1344 ± 0.0031 | 0.1337 ± 0.0035 |
+| B fb+rvq K=1 | 0.0604 ± 0.0044 | 0.0673 ± 0.0034 | 0.0675 ± 0.0038 |
+| B fb+rvq K=4 | 0.1063 ± 0.0042 | 0.1371 ± 0.0032 | 0.1378 ± 0.0038 |
+| lin (no quantizer) | 0.2997 ± 0.0023 | **0.5514 ± 0.0077** | 0.5168 ± 0.0148 |
+
+Test NMSE moves the other way: lin 0.574 (nmse) vs 1.416 (head) vs 1.036 (mix); A K=4 0.801 / 0.834 / 0.833.
+
+Reading it:
+- Agreement and NMSE disagree: the head objective nearly doubles agreement for lin while its NMSE gets much worse. NMSE is the wrong target for
+  this codec.
+- The quantizers gain +1.7 (A K=4) and +3.1 (B K=4) points with the head loss and nothing at K=1. B passes A at K=4 under the head loss
+  (0.137 vs 0.134, within about one std).
+- Even the best quantized codec (≈ 0.14) is far below the true stream mean (0.80, previous section). At 8–32 bits per position this codec
+  cannot carry what the head needs.
+- **Correction to the earlier ablations:** in `train_ms2.py` / `train_matched.py` the RVQ codebooks got only the quantization (codebook)
+  loss; the straight-through estimator sends no reconstruction gradient to them. `train_head.py` fixes this (`quantize()` helper). A first
+  run of this sweep before the fix gave identical RVQ rows for all three objectives and was discarded. The v2 NMSE numbers below were trained that way.
+- Caveats: one dataset, one split, PCA-128 input, 800 steps; the PyTorch head is not the engine's.
+
 ## v2 downstream check: next-token agreement through the teacher's real LM head
 
 **Outcome (negative for the quantizers): the best reconstruction keeps the teacher's next token at 12% of held-out positions.** Neither
