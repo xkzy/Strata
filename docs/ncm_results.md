@@ -30,6 +30,28 @@ match plain RVQ with K levels. The A rows reproduce v2 exactly, which checks the
   anything beyond NMSE. The agreement result ([above](#v2-downstream-check-next-token-agreement-of-reconstructed-residuals-through-the-real-lm-head))
   showed no downstream difference either. The hypothesis that temporal lifting helps this target is **not supported** by these data.
 
+### Two more random splits
+
+Split 0 is the manifest split above. Splits 1 and 2 hold out a random 20% of each source's prompts (`NCM_SPLIT_SEED=1|2` in `ncm/train_ms2.py`; 256 train /
+64 test windows each), same everything else, run on a GPU (split 1: RTX 4060, split 2: RTX 5060 Ti, `NCM_DEVICE`), so rounding differs slightly from the
+CPU run of split 0 (plain RVQ K=1/K=2 test NMSE on split 2: 0.859/0.817 vs split 0's 0.853/0.808). Results: `bench/ncm/matched_cap2_split{1,2}.json`.
+Filter bank minus plain RVQ, held-out NMSE (negative = filter bank better; each cell is the mean of 3 seeds):
+
+| Comparison | K | split 0 | split 1 | split 2 |
+|---|---|---|---|---|
+| shared codebook (equal bits and params) | 1 | +0.010 | +0.009 | +0.016 |
+| | 2 | +0.006 | −0.002 | −0.007 |
+| | 4 | −0.003 | −0.002 | −0.004 |
+| two sets (2x params, equal bits) | 1 | −0.015 | −0.018 | −0.011 |
+| | 2 | −0.018 | −0.024 | −0.023 |
+| | 4 | −0.021 | −0.021 | −0.021 |
+
+- At equal bits and parameters the filter bank is worse at K=1 on every split (+0.009 to +0.016) and about neutral at K=2 and K=4 (−0.007 to +0.006).
+  No multiscale advantage. A K=1 penalty is the only pattern that repeats.
+- The two-set advantage (−0.011 to −0.024) repeats on every split, so it is a stable effect of doubling the codebook parameters.
+- Plain RVQ with 2K books (same parameters as the two-set bank, twice the bits) is better again on every split (e.g. K=4: 0.733 / 0.738 / 0.735).
+- Still one dataset, one projection (PCA-128), NMSE only for these splits. Prompts are the same five sources, so this is data variance within them, not domain shift.
+
 ## v2 downstream check: next-token agreement through the teacher's real LM head
 
 **Outcome (negative for the quantizers): the best reconstruction keeps the teacher's next token at 12% of held-out positions.** Neither

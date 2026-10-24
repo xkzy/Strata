@@ -12,6 +12,7 @@ from dataset import load_sequences
 from multiscale import LiftingFilterBank, ResidualVQ
 
 T = 128
+DEV = torch.device(os.environ.get("NCM_DEVICE", "cpu"))  # the committed results were produced on cpu; cuda rounds differently
 R = int(sys.argv[3]) if len(sys.argv) > 3 else 128
 CODES = int(sys.argv[4]) if len(sys.argv) > 4 else 256
 STEPS = int(sys.argv[5]) if len(sys.argv) > 5 else 600
@@ -21,6 +22,15 @@ BITS = int(np.log2(CODES))
 def prep(cap):
     man = json.load(open(f"{cap}/manifest.json"))
     seqs = load_sequences(cap)
+    if os.environ.get("NCM_SPLIT_SEED"):  # a different random held-out set: 20% of each source's prompts, instead of every 5th
+        import random
+        rng, by_src = random.Random(int(os.environ["NCM_SPLIT_SEED"])), {}
+        for i, m in enumerate(man):
+            by_src.setdefault(m["source"], []).append(i)
+        for ids in by_src.values():
+            rng.shuffle(ids)
+            for j, i in enumerate(ids):
+                man[i]["split"] = "test" if j < round(len(ids) / 5) else "train"
     tr, te, src = [], [], []
     for k, s in sorted(seqs.items()):
         m = man[int(k)]
@@ -28,7 +38,7 @@ def prep(cap):
         for w in range(len(x) // T):
             (te if m["split"] == "test" else tr).append(x[w * T:(w + 1) * T])
             src.append((m["source"], m["split"]))
-    tr, te = torch.tensor(np.stack(tr)), torch.tensor(np.stack(te))
+    tr, te = torch.tensor(np.stack(tr), device=DEV), torch.tensor(np.stack(te), device=DEV)
     mu, sd = tr.mean((0, 1)), tr.std((0, 1)).clamp_min(1e-3)
     tr, te = (tr - mu) / sd, (te - mu) / sd
     flat = tr.reshape(-1, tr.shape[-1])
@@ -60,12 +70,12 @@ def run(method, K1, K2, seed, ztr, zte, P, xtr, xte, return_zte=False):
     torch.manual_seed(seed)
     D = ztr.shape[-1]
     if method == "A":
-        rvq = ResidualVQ(D, K1, CODES)
+        rvq = ResidualVQ(D, K1, CODES).to(DEV)
         init_books(rvq, ztr)
         f = lambda z: (lambda o: (o[0], o[2]))(rvq(z))
         params, bits = list(rvq.parameters()), K1 * BITS
     else:
-        fb, rs, rd = LiftingFilterBank(D), ResidualVQ(D, K1, CODES), ResidualVQ(D, K2, CODES)
+        fb, rs, rd = LiftingFilterBank(D).to(DEV), ResidualVQ(D, K1, CODES).to(DEV), ResidualVQ(D, K2, CODES).to(DEV)
         with torch.no_grad():
             s, d = fb.analyze(ztr)
             init_books(rs, s); init_books(rd, d)

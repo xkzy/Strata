@@ -7,7 +7,7 @@ The v2 comparison gave the filter bank two codebook sets, so ~2x the parameters 
   A2 rvq 2K           2K books                         (same codebook params as B K+K, 2x the bits/pos)
 usage: python ncm/train_matched.py CAP_DIR OUT.json
 """
-import json, sys
+import json, os, sys
 import numpy as np, torch
 args, sys.argv = sys.argv[1:], sys.argv[:1]  # train_ms2 reads R/CODES/STEPS from argv at import
 import train_ms2 as t
@@ -16,7 +16,7 @@ from multiscale import LiftingFilterBank, ResidualVQ
 
 def run_shared(K, seed, ztr, zte, P, xtr, xte):
     torch.manual_seed(seed)
-    fb, rq = LiftingFilterBank(ztr.shape[-1]), ResidualVQ(ztr.shape[-1], K, t.CODES)
+    fb, rq = LiftingFilterBank(ztr.shape[-1]).to(t.DEV), ResidualVQ(ztr.shape[-1], K, t.CODES).to(t.DEV)
     with torch.no_grad():
         s, d = fb.analyze(ztr)
         t.init_books(rq, torch.cat([s, d], 1))
@@ -43,6 +43,7 @@ if __name__ == "__main__":
     cap, out = args
     xtr, xte, P = t.prep(cap)
     ztr, zte = xtr @ P, xte @ P
+    print(f"split seed {os.environ.get('NCM_SPLIT_SEED', '(manifest: every 5th prompt)')}: train windows {len(xtr)}, test windows {len(xte)}", flush=True)
     rows = []
     for K in (1, 2, 4):
         for name, fn, bits in [("A", lambda s: t.run("A", K, 0, s, ztr, zte, P, xtr, xte)[:2] + (nparams("A", K, 0),), K * t.BITS),
