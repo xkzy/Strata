@@ -1,0 +1,38 @@
+package autotune
+
+import (
+	"fmt"
+	"testing"
+)
+
+// Throwaway probe (not committed): does the planner's KV overcount change a feasibility verdict for the real teacher?
+func TestZZKVProbe(t *testing.T) {
+	g, err := GeometryFromGGUF("/home/khing/Downloads/Strata-data/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Printf("planner KV/token = %d B ; hybrid-correct (12 attention layers) = %d B\n", g.KVBytesPerToken(), uint64(12*2*2*256*2))
+	caps := Capabilities{
+		Memory:   MemoryInfo{TotalBytes: 60 << 30, AvailableBytes: 50 << 30},
+		Backends: []string{"cpu", "cuda"},
+		Accelerators: []Accelerator{{ID: "gpu0", Vendor: "nvidia", Backend: "cuda", Name: "RTX 5060 Ti",
+			MemoryTotalBytes: 16311 << 20, MemoryFreeBytes: 16000 << 20, ComputeClass: "12.0", Health: HealthOK}},
+	}
+	fixed := g
+	fixed.Layers = 12 // counterfactual: only the 12 attention layers hold K/V
+	cand := Candidate{Placement: "gpu", Devices: []int{0}, PCIeFrac: -1, Batch: 1}
+	for _, ctx := range []int{32768, 131072, 262144} {
+		for _, c := range []struct {
+			name string
+			geo  Geometry
+		}{{"as shipped (48 layers)", g}, {"counterfactual (12 layers)", fixed}} {
+			w := NewWorkload(c.geo, DefaultEnvelope(ctx), ctx)
+			f := Check(cand, w, caps, DefaultConstraints(caps, w))
+			fmt.Printf("ctx=%-7d %-28s KV=%5.2f GiB  OK=%v", ctx, c.name, float64(c.geo.KVBytesPerToken()*uint64(ctx))/(1<<30), f.OK)
+			for _, r := range f.Reasons {
+				fmt.Printf("  [%s: %s]", r.Code, r.Detail)
+			}
+			fmt.Println()
+		}
+	}
+}

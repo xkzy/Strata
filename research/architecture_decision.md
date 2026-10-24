@@ -17,7 +17,7 @@ The **unmodified checkpoint run by Strata's tuned path with its own MTP head**: 
 - NCM's published speedups are against diffusion LMs at ~100 M scale, ≤ 1,024 positions [L].
 - Factorised blocks cannot be exact; exactness needs a verifier, i.e. the teacher (Prop. 3 in `mathematical_analysis.md`).
 - Same-tier training state is ≥ 1.05–1.86 TB [D].
-- Separately, fixable defects exist that no new architecture should compensate for: planner KV overcount (4×) [V], never-profiled kernels [U].
+- Separately, fixable defects exist that no new architecture should compensate for: planner KV overcount (4×; affects plan verdicts only, E1b). Kernels were profiled (E1): about two thirds of decode GPU time is waiting on CPU/PCIe expert work.
 
 ## 4. Candidate algorithms investigated
 Brief's families A–F (`algorithm_comparison.md`): A improved AR student / systems / quantisation; B MTP and speculative decoding; C NCM; D wavelet/filter bank; E sparse MoE (incl. locality-aware routing); F other. Plus the weight-derivation options of the third message: direct reuse + quantisation, SVD/low-rank, structured pruning, clustering, function-preserving transforms, sensitivity-driven selection, weight-derived architecture + selective fine-tune, hybrids (`weight_provenance.md` §4).
@@ -72,7 +72,7 @@ The 1.25× gate and every margin are proposals pending approval.
 3. hc probes are weight-space only; the re-quantiser is a simple block quantiser, not Strata's kernels; no activation data.
 4. Quantised trunk tensors were not dequantised; SVD/pruning sensitivity unmeasured.
 5. CPU, RAM speed and PCIe link not collected; 448/272 GB/s are vendor specs; 40 TFLOP/s is an assumption.
-6. Planner KV defect's effect on the engine split is unknown; resident experts per layer unknown.
+6. Planner KV defect: checked (E1b), it does not change the engine's VRAM split, only plan verdicts at 262 K; resident experts per layer ≈ 92 (4,424 slots, E0).
 7. SHA-256 not recomputed; upstream facts from a summarising fetcher; licence conflict.
 8. Earlier-session measurements cited with provenance, not re-run.
 9. GPU: the 5060 Ti has a fault history (Xid 79); every GPU stage needs monitoring, and none has been run.

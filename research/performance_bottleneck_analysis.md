@@ -54,7 +54,7 @@ Consistency check [D]: 13.99 distinct experts × 48 layers × 2.046 MB per exper
 
 | Item | Class | Evidence | Impact |
 |---|---|---|---|
-| Autotune KV estimate counts 48 layers; only 12 hold per-token K/V | **Implementation defect (planner), fixable** | `pkg/autotune/workload.go:214-266` sets `Layers = block_count = 48` and never reads `qwen4exp.full_attention_interval`; `KVBytesPerToken` = Layers × KVHeads × HeadDim × 2 × bytes → 98,304 B/token fp16 vs true 24,576 B (12 layers). 262 K context: planner 24.0 GiB vs true 6.0 GiB (fp16), 3.4 GiB at the engine's 8-bit default. Cross-check: `docs/DETAILS.md:72` quotes "~13.7 KB of RAM per context token" for 8-bit KV, matching 12 layers × 2 × 256 × 2 = 12,288 elements + scales. | Planner may withhold VRAM for KV that is not needed, leaving fewer expert-cache slots. **Whether the engine uses this estimate for its VRAM split is [U]**; the shipped config sets `--kv-resident` by hand. Test in E1. |
+| Autotune KV estimate counts 48 layers; only 12 hold per-token K/V | **Implementation defect (planner), fixable** | `pkg/autotune/workload.go:214-266` sets `Layers = block_count = 48` and never reads `qwen4exp.full_attention_interval`; `KVBytesPerToken` = Layers × KVHeads × HeadDim × 2 × bytes → 98,304 B/token fp16 vs true 24,576 B (12 layers). 262 K context: planner 24.0 GiB vs true 6.0 GiB (fp16), 3.4 GiB at the engine's 8-bit default. Cross-check: `docs/DETAILS.md:72` quotes "~13.7 KB of RAM per context token" for 8-bit KV, matching 12 layers × 2 × 256 × 2 = 12,288 elements + scales. | Planner may withhold VRAM for KV that is not needed, leaving fewer expert-cache slots. **Checked in E1b (§8): the engine does not use this estimate for its VRAM split** (the planner only rewrites `--pool-workers`, `--pcie-frac`, `--spec-min-p`, and only when measured); it changes feasibility verdicts and predictions only, and a verdict only at 262 K context. |
 | `ActiveParams()` / `TotalParams()` use a generic transformer formula | Implementation defect (planner), minor | They assume dense FFN (4×hidden default) and attention 4·h² every layer, no DeltaNet, hyper-connections, PLE or shared experts. For this geometry ActiveParams ≈ 8.7 B vs true 6.64 B [D]. | Roofline predictions ~30 % pessimistic; low severity. |
 | Cold-expert reads from RAM/PCIe | **Algorithmic/placement limit** | §2 | Dominant. Not a bug. |
 | Kernel efficiency, occupancy, launch latency, CPU↔GPU sync | **Measured in E1 (§7)**: GPU spends ≈ 65 % of kernel time in `wait_flag_ge` spin kernels waiting for the CPU expert pool / PCIe | `nsys` 2025.6.3 capture, 256-token request; `verify.cpp:1300–1327` | Confirms §2: the GPU is idle-waiting on cold-expert work, not slow at compute |
@@ -110,3 +110,25 @@ Consistency check [D]: 13.99 distinct experts × 48 layers × 2.046 MB per exper
 **Reading [D].** This is the same bottleneck §2 derived from the one instrumented round, now seen from the GPU side with the production build: about two thirds of GPU time during decode is waiting on cold-expert work done by the CPU and PCIe. Faster GPU kernels cannot help; only reducing or overlapping the cold-expert work can (higher hit rate, fewer distinct experts per pass, more overlap between GPU compute and the CPU pool). The wait kernel has a timeout (`max_ns`); timeout events were not examined **[U]**.
 
 **Limits [U].** One request, 1 K prompt, 256 tokens; spin time may include launch gaps; I did not separate CPU-pool wait from PCIe wait (flags A/B vs `m_flag_`); no CPU-side profile of the pool threads; `ncu` not used because no compute kernel is large enough to matter; the planner-KV half of E1 is not done.
+
+## 8. E1b planner KV check (measured 2026-10-25; no GPU used)
+
+**Question.** Does the 4× KV overcount in `pkg/autotune` change what the engine does or what the plan says?
+
+**Code path [V].** `GeometryFromArgs` reads the GGUF header (`workload.go:214`), `KVBytesPerToken` feeds `Check` (feasibility, `solver.go:271–341`), the cost model (`cost.go:211,254`) and the plan record. `ApplyArgs` (`apply.go:26–38`) is the only thing that edits engine arguments, and it can set only `--pool-workers`, `--pcie-frac` and `--spec-min-p`, each only if that value was measured. Device placement, `--kv-resident` and the expert cache are never set by the planner; the engine sizes its own expert cache at start ("expert cache auto: 9.32 GiB free, 700 MiB reserved … 4424 slots", E0 log) with its own KV geometry.
+
+**Probe [M].** A throwaway Go test (kept as `scripts/autotune_kv_probe_test.go.txt`, not built) loads the real teacher header and runs `Check` for a single-GPU candidate on a synthetic 5060 Ti with 16,000 MiB free, as shipped vs with `Layers = 12`:
+
+| Context | KV as shipped | Verdict as shipped | KV corrected | Verdict corrected |
+|---|---|---|---|---|
+| 32,768 | 3.00 GiB | OK | 0.75 GiB | OK |
+| 131,072 | 12.00 GiB | OK | 3.00 GiB | OK |
+| 262,144 | 24.00 GiB | **rejected: needs 25.1 GiB free, has 15.6 GiB** | 6.00 GiB | OK |
+
+Planner values: KV 98,304 B/token (48 layers) vs hybrid-correct 24,576 B/token (12 attention layers); `ActiveParams()` 8.66 B vs 6.64 B true; weight bytes 4.50 GB (not the 58 GB file). The model's default context is 262,144 and the shipped config passes no `--max-context`, so the planner's single-GPU verdict for this model at the default context is "infeasible" although the engine runs fine on that card.
+
+**Conclusion [M/D].**
+- The defect does **not** reduce tok/s today: no engine VRAM split depends on it. The E2 hypothesis "fixing it frees VRAM for more cached experts" is **falsified** for the present code.
+- It does give a wrong plan at 262 K context (GPU placement rejected), wrong cost-model inputs and a roughly 30 % high `ActiveParams`. The risk is that a future change that does apply the plan (placement, `--kv-resident`) would inherit the 4× error.
+- Fix, if the owner wants it: read `qwen4exp.full_attention_interval` (every 4th layer here) in `GeometryFromGGUF` and count only attention layers for KV; add the DeltaNet state (≈ 108 MiB per sequence, inferred) and a test with the real layer pattern. Not implemented: production code is under the approval gate.
+- Limits: synthetic capabilities (not live discovery); only single-GPU placement checked; `ctx` is the planner's `MaxContext`, which I took as the model default because the shipped config has no `--max-context`.
