@@ -15,7 +15,7 @@ Tests: `cd ncm && python -m pytest -q test_ncm.py` (torch + pytest; 8 pass on CP
 ## Not done
 
 - No coarse-to-fine generator, no MoE-vs-dense comparison on real data, no student, no export, no distillation to teacher logits (logits not available on this path).
-- No downstream metric: reconstructions were never passed through the LM head to check next-token agreement. NMSE alone says nothing about language quality.
+- Downstream check done once (engine `--head-eval`, [ncm_results.md](ncm_results.md)): best quantized reconstruction keeps the teacher's next token at 12% of held-out positions (true stream mean alone: 80%). One seed, one split. Not yet run: sampled generation, per-layer states, logits KL.
 - No speculative-verification study, no long-context memory evaluation on real data, no runtime integration, no throughput/VRAM/latency benchmarks of any student.
 - Docs from the brief still missing: `model_architecture`, `context_memory`, `runtime_integration`, `benchmark_protocol`.
 - The ±2% same-budget student is out of scope on this hardware (65.3 B weights without the PLE table).

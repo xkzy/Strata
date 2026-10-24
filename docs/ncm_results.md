@@ -1,5 +1,35 @@
 # Stage 2 results: filter bank + residual VQ vs residual VQ alone, on real teacher residuals
 
+## v2 downstream check: next-token agreement through the teacher's real LM head
+
+**Outcome (negative for the quantizers): the best reconstruction keeps the teacher's next token at 12% of held-out positions.** Neither
+quantizer is usable as a residual codec at these sizes, and the filter bank does not help here (A K=4 0.121 vs B 4+4 0.119).
+
+Method: `ncm/head_agreement.py` rebuilds the 64 held-out windows (8,192 positions, same split/statistics/PCA-128/256 codes/600 steps as v2,
+seed 0 only), forms a 4-stream residual for each variant, and the engine's `--head-eval` (final norm, hyper-connection mix, the engine's native
+Q5_K LM head) returns the argmax. Agreement = argmax equals the teacher's own recorded next token. The quantizers see only the stream mean, so
+variants "dev+..." put the true per-stream deviations back: `R[s] - mean_s(R) + x_hat`. Raw numbers: `bench/ncm/head_agreement_cap2.json`.
+
+| Variant | Top-1 agreement |
+|---|---|
+| true residual (sanity: head is faithful) | 1.0000 |
+| train mean broadcast to all streams | 0.0222 |
+| **true stream mean, deviations dropped** | **0.7961** |
+| true deviations + train mean | 0.0009 |
+| true deviations + PCA-128 mean (no quantizer) | 0.2972 |
+| true deviations + A rvq K=1 (8 bits/pos) | 0.0776 |
+| true deviations + B fb+rvq 1+1 (8 bits/pos) | 0.0607 |
+| true deviations + A rvq K=4 (32 bits/pos) | 0.1213 |
+| true deviations + B fb+rvq 4+4 (32 bits/pos) | 0.1185 |
+
+Reading it:
+- The stream deviations are not the problem: the true stream mean alone gives 0.80. The error is in the mean, and NMSE 0.55 (PCA) to 0.75 (best
+  code) is far too large for the head: even the unquantized PCA-128 mean keeps only 0.30.
+- NMSE ranks the methods the same way as agreement here (PCA > K=4 > K=1), but the filter bank's small NMSE edge does not show up downstream.
+- Caveats: one seed and one split; the A/B difference at 32 bits (0.003) is not resolved; the reconstruction mixes a reconstructed mean with the
+  true deviations (a real codec would also have to code them); the head is the engine's native Q5_K head, which reproduces the recorded tokens
+  exactly on the true residual (1.0000), so that part is checked; decode positions only; no sampling or generation was run.
+
 ## v2 (160 prompts, ~41k positions, PCA to 128-d): the quantizers generalize, and the filter bank is consistently a little better
 
 **Outcome:** held-out error is now below the train-mean baseline (0.75–0.85 vs 1.0), and at equal bits the filter bank + RVQ beats plain RVQ

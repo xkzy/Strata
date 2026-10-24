@@ -56,7 +56,7 @@ def fit(model_fwd, params, ztr, steps=STEPS):
         opt.zero_grad(); loss.backward(); opt.step()
 
 
-def run(method, K1, K2, seed, ztr, zte, P, xtr, xte):
+def run(method, K1, K2, seed, ztr, zte, P, xtr, xte, return_zte=False):
     torch.manual_seed(seed)
     D = ztr.shape[-1]
     if method == "A":
@@ -78,6 +78,8 @@ def run(method, K1, K2, seed, ztr, zte, P, xtr, xte):
         params, bits = list(fb.parameters()) + list(rs.parameters()) + list(rd.parameters()), (K1 + K2) * BITS / 2
     fit(f, params, ztr)
     with torch.no_grad():
+        if return_zte:  # head_agreement.py: the reconstructed held-out codes, in PCA space
+            return f(zte)[0]
         return nmse(f(ztr)[0] @ P.T, xtr), nmse(f(zte)[0] @ P.T, xte), bits
 
 

@@ -521,6 +521,7 @@ struct Options {
     /// Plan v0.3 P6: after every processed position, append the residual after the last layer (hc x n_embd
     /// floats, the MTP draft head's input) to this file.  Token path only.
     std::string dump_final_r;
+    std::string head_eval_in, head_eval_out;   ///< --head-eval IN OUT: run the real LM head on float32 [N, hc, n_embd] rows, write int32 argmax
     /// Plan v0.3 P6: speculative decoding with a verify window of this many tokens (the last accepted token and
     /// spec-1 drafts); 0 = plain decode.  `spec_oracle` drafts from a token file (the expected continuation, for
     /// the exactness test); `spec_corrupt` N > 0 replaces every Nth draft with a wrong token.
@@ -1752,6 +1753,7 @@ int main(int argc, char** argv) {
         else if (a == "--vram-segment-mib") o.vram_segment_mib = std::atoll(next("--vram-segment-mib"));
         else if (a == "--prefill-until") o.prefill_until = std::atoll(next("--prefill-until"));
         else if (a == "--dump-final-r") o.dump_final_r = next("--dump-final-r");
+        else if (a == "--head-eval") { o.head_eval_in = next("--head-eval"); o.head_eval_out = next("--head-eval"); }
         else if (a == "--spec") o.spec = std::atoi(next("--spec"));
         else if (a == "--batch") o.batch = std::atoi(next("--batch"));
         else if (a == "--slots") o.batch = std::atoi(next("--slots"));   // the same as --batch
@@ -5057,6 +5059,36 @@ int main(int argc, char** argv) {
     //
     // This flag is what "pure GPU" has to mean, and it replaces that number everywhere.  No pool runs, so
     // `parts` keeps whatever the buffer holds and the timing is GPU work alone.
+    if (!o.head_eval_in.empty()) {
+        // Research tool: the engine's own final norm / hyper-connection mix / LM head on caller-supplied residual rows
+        // (what --dump-final-r writes), so a reconstructed residual can be scored by the token the teacher would pick.
+        std::FILE* fi = std::fopen(o.head_eval_in.c_str(), "rb");
+        std::FILE* fo = std::fopen(o.head_eval_out.c_str(), "wb");
+        if (fi == nullptr || fo == nullptr) {
+            std::fprintf(stderr, "strata generate: --head-eval cannot open %s / %s\n", o.head_eval_in.c_str(), o.head_eval_out.c_str());
+            return 1;
+        }
+        const size_t row = (size_t) (g.hc * g.n_embd);
+        std::vector<float> rbuf(row), lg((size_t) n_vocab);
+        int64_t n_rows = 0;
+        while (std::fread(rbuf.data(), sizeof(float), row, fi) == row) {
+            if (cudaMemcpyAsync(ss.R, rbuf.data(), row * sizeof(float), cudaMemcpyHostToDevice, (cudaStream_t) main_cs) != cudaSuccess ||
+                !run_head(main_cs) ||
+                cudaMemcpyAsync(lg.data(), d_logits, (size_t) n_vocab * 4, cudaMemcpyDeviceToHost, (cudaStream_t) main_cs) != cudaSuccess ||
+                cudaStreamSynchronize((cudaStream_t) main_cs) != cudaSuccess) {
+                std::fprintf(stderr, "strata generate: --head-eval failed at row %lld: %s\n", (long long) n_rows, err.c_str());
+                return 1;
+            }
+            int32_t best = 0;
+            for (int64_t v = 1; v < (int64_t) n_vocab; ++v) if (lg[(size_t) v] > lg[(size_t) best]) best = (int32_t) v;
+            std::fwrite(&best, sizeof best, 1, fo);
+            ++n_rows;
+        }
+        std::fclose(fi);
+        if (std::fclose(fo) != 0) { std::fprintf(stderr, "strata generate: --head-eval cannot finish %s\n", o.head_eval_out.c_str()); return 1; }
+        std::printf("head-eval                %lld rows -> %s\n", (long long) n_rows, o.head_eval_out.c_str());
+        return 0;
+    }
     if (o.gpu_only_full) {
         strata::core::doorbell_reset(db);
         const int reps = 20;
