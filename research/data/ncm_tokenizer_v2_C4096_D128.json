@@ -1,0 +1,69 @@
+{
+ "C": 4096,
+ "L": 32,
+ "D": 128,
+ "levels": [
+  1,
+  2,
+  4,
+  8,
+  16,
+  32
+ ],
+ "steps": 5000,
+ "windows": {
+  "train": 28991,
+  "test": 256
+ },
+ "learned_params_total": 32007937,
+ "pca_energy_kept": {
+  "token_embd": 0.18903659026775782,
+  "output": 0.11776121272928834
+ },
+ "copied_or_transformed": {
+  "wte (PCA of teacher token_embd, then trained)": 31784960,
+  "Oz (PCA of teacher output.weight, frozen)": 31784960
+ },
+ "bits_per_token_cum": [
+  0.375,
+  1.125,
+  2.625,
+  5.625,
+  11.625,
+  23.625
+ ],
+ "train_acc_unquantised_z": 0.9992012607360905,
+ "train_acc_by_level": [
+  0.09959017453692526,
+  0.11303184609016591,
+  0.1497361250043117,
+  0.2548064485529992,
+  0.4992465334069194,
+  0.9444030043806698
+ ],
+ "train_codes_used_by_level": [
+  3709,
+  3924,
+  4018,
+  4062,
+  4086,
+  4094
+ ],
+ "test_acc_unquantised_z": 0.895751953125,
+ "test_acc_by_level": [
+  0.0706787109375,
+  0.0821533203125,
+  0.1153564453125,
+  0.2061767578125,
+  0.4124755859375,
+  0.7529296875
+ ],
+ "test_codes_used_by_level": [
+  173,
+  350,
+  398,
+  554,
+  920,
+  1592
+ ]
+}
