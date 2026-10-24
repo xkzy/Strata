@@ -1,0 +1,170 @@
+{
+ "J": 8,
+ "epochs": 6,
+ "n_train_pairs": null,
+ "rows": [
+  {
+   "variant": "A",
+   "j": 0,
+   "test_acc": 0.9968280792236328,
+   "train_acc": null,
+   "learned": false
+  },
+  {
+   "variant": "A",
+   "j": 1,
+   "test_acc": 0.40171462297439575,
+   "train_acc_first4096": 0.95263671875,
+   "final_loss": 0.31672728061676025,
+   "secs": 45.483232259750366,
+   "learned_params": 13112320
+  },
+  {
+   "variant": "A",
+   "j": 2,
+   "test_acc": 0.2042296677827835,
+   "train_acc_first4096": 0.908447265625,
+   "final_loss": 0.3328196108341217,
+   "secs": 45.41657853126526,
+   "learned_params": 13112320
+  },
+  {
+   "variant": "A",
+   "j": 3,
+   "test_acc": 0.12998396158218384,
+   "train_acc_first4096": 0.876220703125,
+   "final_loss": 0.6036893725395203,
+   "secs": 45.087066411972046,
+   "learned_params": 13112320
+  },
+  {
+   "variant": "A",
+   "j": 4,
+   "test_acc": 0.10930722951889038,
+   "train_acc_first4096": 0.85546875,
+   "final_loss": 0.4668269157409668,
+   "secs": 45.118085861206055,
+   "learned_params": 13112320
+  },
+  {
+   "variant": "A",
+   "j": 5,
+   "test_acc": 0.09070548415184021,
+   "train_acc_first4096": 0.849609375,
+   "final_loss": 0.6467378735542297,
+   "secs": 44.76766896247864,
+   "learned_params": 13112320
+  },
+  {
+   "variant": "A",
+   "j": 6,
+   "test_acc": 0.08394753187894821,
+   "train_acc_first4096": 0.83447265625,
+   "final_loss": 0.5882969498634338,
+   "secs": 44.73743987083435,
+   "learned_params": 13112320
+  },
+  {
+   "variant": "A",
+   "j": 7,
+   "test_acc": 0.07174213230609894,
+   "train_acc_first4096": 0.834716796875,
+   "final_loss": 0.9606243371963501,
+   "secs": 44.41419267654419,
+   "learned_params": 13112320
+  },
+  {
+   "variant": "A",
+   "j": 8,
+   "test_acc": 0.06636443734169006,
+   "train_acc_first4096": 0.839111328125,
+   "final_loss": 0.7758432626724243,
+   "secs": 44.41636848449707,
+   "learned_params": 13112320
+  },
+  {
+   "variant": "B",
+   "j": 1,
+   "test_acc": 0.4012247323989868,
+   "train_acc_first4096": 0.955810546875,
+   "final_loss": 0.20224663615226746,
+   "secs": 49.647136926651,
+   "learned_params": 26219520
+  },
+  {
+   "variant": "B",
+   "j": 2,
+   "test_acc": 0.20754948258399963,
+   "train_acc_first4096": 0.904296875,
+   "final_loss": 0.4132521450519562,
+   "secs": 49.67375349998474,
+   "learned_params": 26219520
+  },
+  {
+   "variant": "B",
+   "j": 3,
+   "test_acc": 0.1389951854944229,
+   "train_acc_first4096": 0.874755859375,
+   "final_loss": 0.4776853919029236,
+   "secs": 49.220035552978516,
+   "learned_params": 26219520
+  },
+  {
+   "variant": "B",
+   "j": 4,
+   "test_acc": 0.10843970626592636,
+   "train_acc_first4096": 0.862548828125,
+   "final_loss": 0.5829946994781494,
+   "secs": 49.25838351249695,
+   "learned_params": 26219520
+  },
+  {
+   "variant": "B",
+   "j": 5,
+   "test_acc": 0.09194973111152649,
+   "train_acc_first4096": 0.8623046875,
+   "final_loss": 0.5485208630561829,
+   "secs": 48.90145421028137,
+   "learned_params": 26219520
+  },
+  {
+   "variant": "B",
+   "j": 6,
+   "test_acc": 0.08307307958602905,
+   "train_acc_first4096": 0.848876953125,
+   "final_loss": 0.8161633610725403,
+   "secs": 48.838876247406006,
+   "learned_params": 26219520
+  },
+  {
+   "variant": "B",
+   "j": 7,
+   "test_acc": 0.07111501693725586,
+   "train_acc_first4096": 0.837890625,
+   "final_loss": 0.6547937393188477,
+   "secs": 48.48590636253357,
+   "learned_params": 26219520
+  },
+  {
+   "variant": "B",
+   "j": 8,
+   "test_acc": 0.0687570795416832,
+   "train_acc_first4096": 0.83056640625,
+   "final_loss": 0.8481788635253906,
+   "secs": 48.51943588256836,
+   "learned_params": 26219520
+  }
+ ],
+ "prefix_A": {
+  "mean_accepted_prefix_of_8": 0.8223145604133606,
+  "tokens_per_pass_if_verified": 1.8223145604133606,
+  "frac_full_block": 0.022037526592612267,
+  "n": 7941
+ },
+ "prefix_B": {
+  "mean_accepted_prefix_of_8": 0.7990177273750305,
+  "tokens_per_pass_if_verified": 1.7990177273750305,
+  "frac_full_block": 0.018889307975769043,
+  "n": 7941
+ }
+}
