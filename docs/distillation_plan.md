@@ -59,7 +59,7 @@ matmul per step), the kernel logged `NVRM: Xid (PCI:0000:01:00): 79, GPU has fal
 `nvidia-smi` again cannot get a handle for `0000:01:00.0`; `torch.cuda` init now fails with `CUDA unknown error` even with only the 4060's UUID in
 `CUDA_VISIBLE_DEVICES`, as on 2026-10-23. The 4060 itself still answers `nvidia-smi`. Earlier the same day the card ran the engine and two multi-minute
 PyTorch jobs without trouble, so it faults intermittently, not on every use. Not retried, no reset or reboot attempted; anything after this point that needs CUDA waits
-for the owner (driver reload or reboot; PCIe slot, riser and power are the usual suspects for Xid 79). Work that needs no GPU continues on the CPU.
+for the owner (driver reload or reboot; PCIe slot, riser and power are the usual suspects for Xid 79). Training never runs on the CPU (standing rule); only reading, analysis and writing continue.
 
 ## Stages for the modules
 
