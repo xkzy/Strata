@@ -10964,6 +10964,7 @@ int main(int argc, char** argv) {
             return 1;
         }
         std::vector<float> hash_rows;
+        std::FILE* spec_final_r = final_r;   // opened above for --dump-final-r; the verify path writes its own record format
         std::vector<int64_t> accepted_hist((size_t) o.spec, 0);
         int64_t rounds = 0, drafts_total = 0, drafts_ok = 0, corrupt_counter = 0;
         const int S_mtp = o.mtp_max_t > 0 ? std::min(o.mtp_max_t, o.spec) : o.spec;
@@ -11069,6 +11070,21 @@ int main(int argc, char** argv) {
                 std::fprintf(hashes, "%lld %lld %d %016llx", (long long) rounds, (long long) p, T, (unsigned long long) h);
                 for (int i = 0; i < T; ++i) std::fprintf(hashes, " %d", (int) outv[(size_t) i]);
                 std::fprintf(hashes, "\n");
+            }
+            if (spec_final_r != nullptr) {
+                // --dump-final-r on the verify path: record = int64 p, int64 T, int64 n_valid, int32 window[T], int32 argmax[T],
+                // float rows[T x hc x n_embd].  Row i was computed with window[0..i] as its context, so it is the teacher's
+                // true residual only while every draft before it matched the previous argmax: n_valid counts those rows.
+                int64_t n_valid = 1;
+                while (n_valid < T && window[(size_t) n_valid] == outv[(size_t) n_valid - 1]) ++n_valid;
+                const size_t n_floats = (size_t) T * (size_t) (g.hc * g.n_embd);
+                hash_rows.resize(n_floats);
+                cudaMemcpy(hash_rows.data(), ver.final_R_all(), n_floats * sizeof(float), cudaMemcpyDeviceToHost);
+                const int64_t head[3] = {(int64_t) p, (int64_t) T, n_valid};
+                std::fwrite(head, sizeof head, 1, spec_final_r);
+                std::fwrite(window.data(), sizeof(int32_t), (size_t) T, spec_final_r);
+                std::fwrite(outv.data(), sizeof(int32_t), (size_t) T, spec_final_r);
+                std::fwrite(hash_rows.data(), sizeof(float), n_floats, spec_final_r);
             }
             if (!follow.empty()) {   // the continuation stands in for the argmax
                 const size_t k0 = produced.size();

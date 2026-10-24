@@ -37,6 +37,26 @@ def load_routing(path, n_layers=N_LAYERS):
     return r[:, 0].copy(), r[:, 2:2 + k].copy(), r[:, 2 + k:].view("<f4").copy()
 
 
+def load_spec_residuals(path, hc=HC, n_embd=N_EMBD):
+    """Reader for `--dump-final-r` on the --spec verify path (added in this fork, generate.cpp near the window loop).
+    Record: int64 p, int64 T, int64 n_valid, int32 window[T], int32 argmax[T], float32 rows[T, hc, n_embd].
+    Only the first n_valid rows are the teacher's true residuals (later rows followed a rejected draft).
+    Returns (positions [N], tokens [N] (input token at that position), argmax [N] (teacher's next token), rows [N, hc, n_embd])."""
+    raw, off = open(path, "rb").read(), 0
+    pos, tok, nxt, rows = [], [], [], []
+    while off < len(raw):
+        p, T, nv = np.frombuffer(raw, "<i8", 3, off)
+        off += 24
+        w = np.frombuffer(raw, "<i4", T, off); off += 4 * T
+        a = np.frombuffer(raw, "<i4", T, off); off += 4 * T
+        n = T * hc * n_embd
+        if not (1 <= nv <= T) or off + 4 * n > len(raw):
+            raise ValueError(f"{path}: bad or truncated record at byte {off} (n_valid={nv}, T={T})")
+        r = np.frombuffer(raw, "<f4", n, off).reshape(T, hc, n_embd); off += 4 * n
+        pos += list(range(p, p + nv)); tok += w[:nv].tolist(); nxt += a[:nv].tolist(); rows.append(r[:nv])
+    return np.array(pos), np.array(tok), np.array(nxt), np.concatenate(rows)
+
+
 def load_residual(path):
     raw = open(path, "rb").read()
     hc, n_embd = np.frombuffer(raw[:8], "<i4")

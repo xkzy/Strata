@@ -63,6 +63,23 @@ def test_routing_reader(tmp_path):
         load_routing(p)
 
 
+def test_spec_residual_reader_keeps_only_valid_rows(tmp_path):
+    import numpy as np
+    from capture import load_spec_residuals
+    hc, ne, T = 2, 3, 3
+    with open(tmp_path / "s.bin", "wb") as f:
+        for p, nv in ((0, 3), (3, 1)):  # second window: only the first row is true
+            f.write(np.array([p, T, nv], "<i8").tobytes())
+            f.write(np.arange(T, dtype="<i4").tobytes() + (np.arange(T, dtype="<i4") + 10).tobytes())
+            f.write((np.arange(T * hc * ne, dtype="<f4") + 100 * p).tobytes())
+    pos, tok, nxt, rows = load_spec_residuals(tmp_path / "s.bin", hc, ne)
+    assert pos.tolist() == [0, 1, 2, 3] and tok.tolist() == [0, 1, 2, 0] and nxt.tolist() == [10, 11, 12, 10]
+    assert rows.shape == (4, hc, ne) and rows[3, 0, 0] == 300
+    (tmp_path / "t.bin").write_bytes((tmp_path / "s.bin").read_bytes()[:-4])
+    with pytest.raises(ValueError):
+        load_spec_residuals(tmp_path / "t.bin", hc, ne)
+
+
 def test_memory_provenance_isolation_and_spill(tmp_path):
     torch.manual_seed(0)
     mem = ContextMemory(str(tmp_path), ram_budget_segments=2)

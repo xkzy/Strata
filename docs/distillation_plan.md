@@ -24,9 +24,24 @@ tokens (`1892 1042`), 3.2 tok/s decode, 1.9 s to first token, `--expert-cache 25
 | `--dump-logits` | **Empty file** (0 bytes) on the `--spec` path, although the run prints "logits dumped". |
 | `--dump-layers` | **Cannot be combined** with this pack: the native pack requires `--spec`, which needs the single-graph token path, and `--dump-layers`/`--dump-halves` disable it (`generate.cpp:5141`). |
 
-So the engine as shipped yields **no usable hidden states or logits** for this pack, only expert ids. Getting activations needs an engine
-change (write the residual/logits inside the verify-window path) and a CUDA rebuild; `nvcc` is not on PATH here, so that was not attempted.
-The `ncm/capture.py` readers for routing and residual are tested on synthetic files, and the routing reader also parses the real file.
+So the engine as shipped yields **no usable hidden states or logits** for this pack, only expert ids.
+
+**Engine patch, same day.** `nvcc` 13.2 is at `/usr/local/cuda-13.2` (not on PATH; needs `g++-15` as host compiler, as the existing
+`build-fat` used). `src/program/generate.cpp` now writes the verify window's final residual rows for `--dump-final-r` on the `--spec`
+path (record layout in `ncm/capture.py:load_spec_residuals`; row validity tracked with `n_valid` so rows after a rejected draft are
+dropped). Built to `build-ncm/` with `-DCMAKE_CUDA_ARCHITECTURES=89` (the 4060 only; not tested on other GPUs). Re-capture with the
+patched binary (`BIN=build-ncm/strata bash ncm/capture_short.sh`):
+
+- 2 decode positions, rows `[2, 4, 2560]` float32, all finite and nonzero, mean |x| 0.26, max 2.87.
+- Generated tokens `1892 1042` are the same as with the unpatched binary, so the dump does not change the teacher's output
+  (2 tokens only: weak evidence).
+- Prompt positions are **not** captured (they run through the batched prefill path, which has no dump); only positions produced
+  by verify windows. A dataset therefore comes from the teacher's own continuation (`--max-new N`) and each sequence's prompt rows are lost.
+- Logits are still not dumped on this path (only the argmax token per row). Distillation to teacher *distributions* is not possible yet;
+  hidden-state and argmax-token targets are.
+- Untouched: `--dump-layers` (per-layer residuals) remains incompatible with this pack.
+
+The `ncm/capture.py` readers are tested on synthetic files; the routing reader and the new residual reader also parsed real captures.
 
 **Earlier attempt 2026-10-23, blocked by a GPU/driver fault.** `ncm/capture_short.sh` (unmodified teacher, 4-token prompt, `--spec 2 --prefill auto`
 because the native pack requires both) got past argument checks and failed at start-up with
