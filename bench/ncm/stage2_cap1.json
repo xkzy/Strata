@@ -1,0 +1,135 @@
+{
+ "meta": {
+  "codes": 64,
+  "steps": 400,
+  "seq_len": 96,
+  "n_train_seq": 9,
+  "n_test_seq": 3,
+  "seeds": [
+   0,
+   1,
+   2
+  ],
+  "torch": "2.10.0+cu128",
+  "files": {
+   "final_r_00.bin": "6b26665e73d944ac",
+   "final_r_01.bin": "7eefa83550cf5db4",
+   "final_r_02.bin": "08daa33fbf1be205",
+   "final_r_03.bin": "352d8a93faf1de34",
+   "final_r_04.bin": "0c662314441624d1",
+   "final_r_05.bin": "88acf8c89e17f14c",
+   "final_r_06.bin": "aec032d2eb5477a2",
+   "final_r_07.bin": "fa9f5ca10f8faa27",
+   "final_r_08.bin": "3cab307d3493267b",
+   "final_r_09.bin": "9983faab71f63249",
+   "final_r_10.bin": "69077d2934fff5b6",
+   "final_r_11.bin": "fc0df77fdced7b6c"
+  }
+ },
+ "results": [
+  {
+   "method": "A rvq",
+   "cfg": "K=1",
+   "bits_per_pos": 6.0,
+   "train_nmse": [
+    0.7334801952044169,
+    0.0026919526511375463
+   ],
+   "test_nmse": [
+    1.0515658458073933,
+    0.014610955689317163
+   ]
+  },
+  {
+   "method": "B fb+rvq even",
+   "cfg": "K1=K2=1",
+   "bits_per_pos": 6.0,
+   "train_nmse": [
+    0.6178033947944641,
+    0.014414473507974269
+   ],
+   "test_nmse": [
+    1.0794213215510051,
+    0.01153964657126244
+   ]
+  },
+  {
+   "method": "A rvq",
+   "cfg": "K=2",
+   "bits_per_pos": 12.0,
+   "train_nmse": [
+    0.5926399032274882,
+    0.00968272389776224
+   ],
+   "test_nmse": [
+    1.043540120124817,
+    0.01598140847550026
+   ]
+  },
+  {
+   "method": "B fb+rvq even",
+   "cfg": "K1=K2=2",
+   "bits_per_pos": 12.0,
+   "train_nmse": [
+    0.4367224673430125,
+    0.012908257258216177
+   ],
+   "test_nmse": [
+    1.0178159077962239,
+    0.011052567264731701
+   ]
+  },
+  {
+   "method": "B fb+rvq coarse-heavy",
+   "cfg": "K1=3,K2=1",
+   "bits_per_pos": 12.0,
+   "train_nmse": [
+    0.4134048521518707,
+    0.0027211309805583008
+   ],
+   "test_nmse": [
+    1.0454922517140706,
+    0.020595522692594476
+   ]
+  },
+  {
+   "method": "A rvq",
+   "cfg": "K=3",
+   "bits_per_pos": 18.0,
+   "train_nmse": [
+    0.5118784606456757,
+    0.015213300942659548
+   ],
+   "test_nmse": [
+    1.0444382826487224,
+    0.008643645405838521
+   ]
+  },
+  {
+   "method": "B fb+rvq even",
+   "cfg": "K1=K2=3",
+   "bits_per_pos": 18.0,
+   "train_nmse": [
+    0.34803201754887897,
+    0.003135855086015667
+   ],
+   "test_nmse": [
+    1.0250747601191204,
+    0.013782574729717428
+   ]
+  },
+  {
+   "method": "B fb+rvq coarse-heavy",
+   "cfg": "K1=4,K2=2",
+   "bits_per_pos": 18.0,
+   "train_nmse": [
+    0.32708380619684857,
+    0.009348618147143143
+   ],
+   "test_nmse": [
+    1.0309945344924927,
+    0.009026587672027351
+   ]
+  }
+ ]
+}
