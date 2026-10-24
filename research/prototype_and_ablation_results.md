@@ -33,6 +33,19 @@ Accepted prefix over 8: A 0.82, B 0.80 → 1.82 / 1.80 tokens per pass; fully co
 | train acc, level 6 | 0.752 | 0.944 | 0.967 |
 | codes used on test, level 6 | 198/256 | 1592/4096 | 1387/4096 |
 | bits/token at level 6 | 15.75 | 23.63 | 23.63 |
+**v3 (more text).** `build_corpus.py` tokenises hh-rlhf, oasst1 and wikitext-2 (cached, Dolly excluded) with the teacher's own BPE (55 of 56 captured runs of ordinary tokens re-encode to identical ids) into 600,000 windows (19.2M tokens; 125,666 distinct ids); train = 626,943 windows, 15,000 steps at batch 8 (≈ 0.19 epoch), C = 4096, d = 128. Data: `ncm_tokenizer_v3_corpus_C4096_D128.json`.
+
+| Level (codes) | cap2 test (256 windows) | held-out corpus (2,048 windows) |
+|---|---|---|
+| 1 | 0.075 | 0.072 |
+| 2 | 0.089 | 0.093 |
+| 3 (4) | 0.122 | 0.139 |
+| 4 (8) | 0.215 | 0.267 |
+| 5 (16) | 0.443 | 0.497 |
+| 6 (32) | **0.721** | **0.751** |
+| unquantised z | 0.976 | 0.969 |
+Train accuracy at level 6 (cap2 train windows) is 0.671, so the train–test gap closed (v2 0.94 vs 0.75) and the memorisation is gone. The unquantised decoder now reaches 97–98% (v2: 0.896), so the embedding transform and decoder generalise; what holds the result at 0.72–0.75 is the quantised path, which is under-trained (≈ 0.19 epoch, loss flat near 35) and, at level 1, sees only 8 vectors per step for 4,096 codes (≈ 3,000 codes re-seeded at every restart). **Result vs v2 on the same cap2 test: 0.721 vs 0.753, no gain from 20× the text at this training budget** [M]; whether a longer or larger-batch run helps is untested [U].
+
 Observations [M]: the collapse is fixed (all codes used on train at every level); capacity now matters (C = 4096 beats 256 by 13.5 points); d = 256 does not help (0.746 vs 0.753), so the 128-d PCA is not the limit; coarse levels carry little (7–21% through level 4); the train–test gap (0.94–0.97 vs 0.75) and 23.6 bits per token (a raw token id is ~17.9) say the finest level memorises a small corpus. **Still far from the paper's 98.8–99.99%; the paper's data, vocabulary and ~100M-parameter scale differ, so this is not evidence against NCM.** Whether more data closes the gap is untested [U]. The hierarchical-vs-flat ablation was **not run**: coarse levels are too weak to compare.
 
 ## 4. Weight-structure nulls

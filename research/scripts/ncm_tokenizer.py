@@ -18,6 +18,7 @@ cap, outp, C = sys.argv[1], sys.argv[2], int(sys.argv[3])
 STEPS = int(sys.argv[4]) if len(sys.argv) > 4 else 3000
 dev = sys.argv[5] if len(sys.argv) > 5 else 'cuda:1'
 D = int(sys.argv[6]) if len(sys.argv) > 6 else 128
+CORP = sys.argv[7] if len(sys.argv) > 7 else None      # optional .npy of [N, 32] teacher-tokenizer windows (build_corpus.py)
 L, LV, BETA, DECAY, RES = 32, [1, 2, 4, 8, 16, 32], 0.25, 0.99, 8192
 torch.manual_seed(0); np.random.seed(0)
 
@@ -44,6 +45,8 @@ for f in sorted(glob.glob(cap + '/final_r_*.bin')):
     s = np.concatenate([tok, nxt[-1:]]); stride = 1 if man[k]['split'] == 'train' else L   # stride 1: ~28k train windows (1.9k before)
     W[man[k]['split']] += [s[i:i + L] for i in range(0, len(s) - L + 1, stride)]
 W = {k: torch.from_numpy(np.stack(v).astype(np.int64)).to(dev) for k, v in W.items()}
+if CORP:                                               # extra text: last 2048 windows held out as test_corpus, the rest added to train
+    c = torch.from_numpy(np.load(CORP).astype(np.int64)).to(dev); W['test_corpus'] = c[:2048]; W['train'] = torch.cat([W['train'], c[2048:]])
 print({k: tuple(v.shape) for k, v in W.items()}, flush=True)
 
 class Quant(nn.Module):
@@ -103,6 +106,15 @@ learned = sum(p.numel() for n, p in m.named_parameters())
 copied = {'wte (PCA of teacher token_embd, then trained)': Ez.numel(), 'Oz (PCA of teacher output.weight, frozen)': Oz.numel()}
 opt = torch.optim.AdamW([p for p in m.parameters()], 1e-3, weight_decay=0.0, betas=(0.9, 0.98))
 sched = torch.optim.lr_scheduler.OneCycleLR(opt, 2e-3, total_steps=STEPS, pct_start=0.1)
+@torch.no_grad()
+def evaluate(split):
+    m.eval(); n = 0; ok = np.zeros(len(LV) + 1); X = W[split][:4096]; used = [set() for _ in LV]
+    for i in range(0, len(X), 16):
+        tok = X[i:i + 16]; z, cum, _, codes = m.encode(tok)
+        for k in range(len(LV)): used[k] |= set(codes[k].unique().tolist())
+        for j, zh in enumerate([z] + cum): ok[j] += (m.decode(zh).argmax(-1) == tok).sum().item()
+        n += tok.numel()
+    return ok / n, [len(u) for u in used]
 B = 8
 with torch.no_grad():                            # seed every level's codebook from 16k windows (sequentially: level k sees level k-1's residual)
     m.eval(); m.encode(W['train'][torch.randperm(len(W['train']), device=dev)[:16384 if D <= 128 else 6144]], init=True)
@@ -115,22 +127,14 @@ for step in range(STEPS):
         l = F.cross_entropy(m.decode(zh).reshape(-1, V).float(), tok.reshape(-1)); l.backward(retain_graph=True); loss_tot += l.item()
     opt.step(); sched.step()
     if step % 100 == 99: print('step', step + 1, 'loss', round(loss_tot, 3), flush=True)
+    if step % 2500 == 2499: print('  cap2-test acc by level', [round(x, 3) for x in evaluate('test')[0][1:]], flush=True)
     if step % 500 == 499:
         with torch.no_grad(): print('  restarted (zero hits in last 500 steps):', [m.q[k].restart() for k in range(len(LV))], flush=True)
 
-@torch.no_grad()
-def evaluate(split):
-    m.eval(); n = 0; ok = np.zeros(len(LV) + 1); X = W[split]; used = [set() for _ in LV]
-    for i in range(0, len(X), 16):
-        tok = X[i:i + 16]; z, cum, _, codes = m.encode(tok)
-        for k in range(len(LV)): used[k] |= set(codes[k].unique().tolist())
-        for j, zh in enumerate([z] + cum): ok[j] += (m.decode(zh).argmax(-1) == tok).sum().item()
-        n += tok.numel()
-    return ok / n, [len(u) for u in used]
 res = {'C': C, 'L': L, 'D': D, 'levels': LV, 'steps': STEPS, 'windows': {k: len(v) for k, v in W.items()}, 'learned_params_total': learned,
        'pca_energy_kept': {'token_embd': ve, 'output': vo}, 'copied_or_transformed': copied,
        'bits_per_token_cum': [sum(l * math.log2(C) for l in LV[:k + 1]) / L for k in range(len(LV))]}
-for sp in ('train', 'test'):
+for sp in [k for k in ('train', 'test', 'test_corpus') if k in W]:
     a, used = evaluate(sp); res[sp + '_acc_unquantised_z'] = float(a[0]); res[sp + '_acc_by_level'] = a[1:].tolist(); res[sp + '_codes_used_by_level'] = used
 print(json.dumps(res, indent=1))
 json.dump(res, open(outp, 'w'), indent=1)
