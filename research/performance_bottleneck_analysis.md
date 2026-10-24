@@ -186,3 +186,29 @@ Planner values: KV 98,304 B/token (48 layers) vs hybrid-correct 24,576 B/token (
 - E0 (baseline_report §9) is the 1-worker default path; the clean 4-worker baseline is this table's 43.9-44.4.
 - The E1 profile (§7) and wait split (§9) were taken at 1 worker, where the GPU waited 66 % of kernel time for a single CPU worker. At 4 workers the wait is expected to be smaller, but **that is not measured**: the profile must be repeated with `-no-autotune --pool-workers 4` before any statement about where the 4-worker time goes.
 - Limits: ~913-token prompts, batch 1, GPU 0, `--spec 4`; no `perf` data (hardware events are denied here: SELinux and `perf_event_paranoid` 2).
+
+## 11. E1 re-profile at 4 pool workers (measured 2026-10-25, nsys, no Xid)
+
+**Why.** §7 and §9 were profiled in the 1-worker state that the autotune layer forced (§10). This repeats the profile with `-no-autotune` and the engine's `--pool-workers 4` verified from `/proc` before profiling. Method otherwise as §7/§9: one warmed request (913-token prompt, 256 tokens, unique prefix) captured with `nsys start/stop` around it, kernels labelled A/B/C by the kernel that follows each wait. Scripts: `scripts/e2_nsys.py`, `scripts/e2_split.py`; output: `data/e2_split.txt`. The trace itself (`.nsys-rep`, 463,793 events) is not committed.
+
+**Request.** 256 tokens in 5,678 ms = **45.1 tok/s under the profiler** (the unprofiled sweep gave 43.9-44.4), prefill 1,950 ms for 913 tokens (468 tok/s).
+
+| Decode phase | 1 worker (§9) | **4 workers** |
+|---|---|---|
+| wait A (plan) | 0.1 % of kernel time | 0.1 % |
+| wait B (PCIe share) | 0.1 % | 0.2 % |
+| **wait C (CPU share)** | **66.4 %** (sum 4,009 ms, median 807 µs, p90 2,318 µs) | **51.3 %** (sum 2,929 ms, median 419 µs, p90 1,241 µs, max 3.5 ms) |
+| GPU busy, waits excluded | about 35 % of span | **47 % of span** (2,650 of 5,677 ms) |
+
+**Result [M].**
+- Four workers roughly halve the median CPU-share wait per layer (807 -> 419 µs) and cut the waiting share from 66 % to 51 % of decode kernel time, which is consistent with the 31.7 -> 44 tok/s gain in §10.
+- **The GPU still sits idle about half of the decode time (52 % of the span) waiting for the CPU's share of the cold experts.** The plan hand-off and the PCIe share are done when the GPU reaches them (about 1.5-1.7 µs each), as before.
+- No compute kernel exceeds 8.5 % of kernel time (the largest are Q6_K matrix-vector kernels); prefill is dominated by the usual GEMM and dequantisation kernels, with waits only 5.8 % of kernel time.
+- Together with §10 this means the critical path on this PC is the CPU expert share: 4 workers help over 1, but 6 and 8 add nothing (45.1 and 44.7 tok/s). So the remaining CPU wait is not removed by more threads. **Why** is not shown by this trace.
+
+**What this does not show.**
+- It does not say what the CPU workers are doing during the wait: memory bandwidth or page-cache reads of the mmapped cold experts, a serial part of the hand-off, or scheduling. `perf` is denied here (hardware events: SELinux and `perf_event_paranoid` 2, see §10); a per-thread view needs either that setting changed by the owner or a software-clock `perf` attempt, not done.
+- One request of 256 tokens, one profile, no repeats; the wait percentages carry no confidence interval. ~913-token prompt, batch 1, GPU 0, `--spec 4`.
+- The profiler slightly changes timing (45.1 under nsys against 43.9-44.4 without).
+
+**Consequence for the plan.** The lever that remains is fewer or cheaper cold-expert reads per pass (higher resident hit rate, 56 % in E0; locality-aware routing, E5; better expert placement), not more threads or a different PCIe split. This is consistent with the bytes-per-pass argument of §3, but no change of this kind has been measured end to end.
