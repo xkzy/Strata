@@ -1,0 +1,212 @@
+[
+ {
+  "workers": 4,
+  "pcie_frac": 0.25,
+  "log": "/home/khing/.claude/jobs/189fb9b9/tmp/sweep-0-w4-f0.25.log",
+  "engine_workers": 4,
+  "engine_pcie": 0.25,
+  "n": 5,
+  "decode_tps": [
+   47.8,
+   41.1,
+   43.0,
+   43.8,
+   43.8
+  ],
+  "decode_mean": 43.9,
+  "decode_sd": 2.4433583445741216,
+  "prefill_tps_mean": 447.98,
+  "prompt_tokens": 913.0,
+  "accept_mean": 0.7727902006024995,
+  "xid": []
+ },
+ {
+  "workers": 4,
+  "pcie_frac": 0,
+  "log": "/home/khing/.claude/jobs/189fb9b9/tmp/sweep-1-w4-f0.log",
+  "engine_workers": 4,
+  "engine_pcie": 0.0,
+  "n": 5,
+  "decode_tps": [
+   47.8,
+   41.5,
+   44.1,
+   44.0,
+   44.5
+  ],
+  "decode_mean": 44.38,
+  "decode_sd": 2.248777445635738,
+  "prefill_tps_mean": 451.06,
+  "prompt_tokens": 913.0,
+  "accept_mean": 0.766064874929335,
+  "xid": []
+ },
+ {
+  "workers": 4,
+  "pcie_frac": 0.15,
+  "log": "/home/khing/.claude/jobs/189fb9b9/tmp/sweep-2-w4-f0.15.log",
+  "engine_workers": 4,
+  "engine_pcie": 0.15,
+  "n": 5,
+  "decode_tps": [
+   46.3,
+   41.8,
+   45.0,
+   44.3,
+   44.8
+  ],
+  "decode_mean": 44.44,
+  "decode_sd": 1.6501515081955356,
+  "prefill_tps_mean": 447.98,
+  "prompt_tokens": 913.0,
+  "accept_mean": 0.7631398876856871,
+  "xid": []
+ },
+ {
+  "workers": 4,
+  "pcie_frac": 0.4,
+  "log": "/home/khing/.claude/jobs/189fb9b9/tmp/sweep-3-w4-f0.4.log",
+  "engine_workers": 4,
+  "engine_pcie": 0.4,
+  "n": 5,
+  "decode_tps": [
+   46.2,
+   41.8,
+   45.0,
+   44.3,
+   44.8
+  ],
+  "decode_mean": 44.42,
+  "decode_sd": 1.6223439832538615,
+  "prefill_tps_mean": 447.76,
+  "prompt_tokens": 913.0,
+  "accept_mean": 0.7631398876856871,
+  "xid": []
+ },
+ {
+  "workers": 4,
+  "pcie_frac": 0.5,
+  "log": "/home/khing/.claude/jobs/189fb9b9/tmp/sweep-4-w4-f0.5.log",
+  "engine_workers": 4,
+  "engine_pcie": 0.5,
+  "n": 5,
+  "decode_tps": [
+   46.2,
+   41.8,
+   45.0,
+   44.3,
+   44.8
+  ],
+  "decode_mean": 44.42,
+  "decode_sd": 1.6223439832538615,
+  "prefill_tps_mean": 451.42,
+  "prompt_tokens": 913.0,
+  "accept_mean": 0.7639859511404462,
+  "xid": []
+ },
+ {
+  "workers": 2,
+  "pcie_frac": 0.25,
+  "log": "/home/khing/.claude/jobs/189fb9b9/tmp/sweep-5-w2-f0.25.log",
+  "engine_workers": 2,
+  "engine_pcie": 0.25,
+  "n": 5,
+  "decode_tps": [
+   40.7,
+   36.8,
+   38.9,
+   38.6,
+   38.7
+  ],
+  "decode_mean": 38.74,
+  "decode_sd": 1.3831124321616104,
+  "prefill_tps_mean": 442.97999999999996,
+  "prompt_tokens": 913.0,
+  "accept_mean": 0.7833175494594911,
+  "xid": []
+ },
+ {
+  "workers": 3,
+  "pcie_frac": 0.25,
+  "log": "/home/khing/.claude/jobs/189fb9b9/tmp/sweep-6-w3-f0.25.log",
+  "engine_workers": 3,
+  "engine_pcie": 0.25,
+  "n": 5,
+  "decode_tps": [
+   44.8,
+   40.4,
+   43.7,
+   42.7,
+   43.1
+  ],
+  "decode_mean": 42.94,
+  "decode_sd": 1.6257306049896458,
+  "prefill_tps_mean": 444.58,
+  "prompt_tokens": 913.0,
+  "accept_mean": 0.7639859511404462,
+  "xid": []
+ },
+ {
+  "workers": 6,
+  "pcie_frac": 0.25,
+  "log": "/home/khing/.claude/jobs/189fb9b9/tmp/sweep-7-w6-f0.25.log",
+  "engine_workers": 6,
+  "engine_pcie": 0.25,
+  "n": 5,
+  "decode_tps": [
+   46.9,
+   42.4,
+   45.6,
+   45.0,
+   45.5
+  ],
+  "decode_mean": 45.08,
+  "decode_sd": 1.6543881044059767,
+  "prefill_tps_mean": 450.52,
+  "prompt_tokens": 913.0,
+  "accept_mean": 0.7639859511404462,
+  "xid": []
+ },
+ {
+  "workers": 8,
+  "pcie_frac": 0.25,
+  "log": "/home/khing/.claude/jobs/189fb9b9/tmp/sweep-8-w8-f0.25.log",
+  "engine_workers": 8,
+  "engine_pcie": 0.25,
+  "n": 5,
+  "decode_tps": [
+   48.1,
+   41.7,
+   45.0,
+   44.0,
+   44.7
+  ],
+  "decode_mean": 44.7,
+  "decode_sd": 2.2989127865145296,
+  "prefill_tps_mean": 454.86,
+  "prompt_tokens": 913.0,
+  "accept_mean": 0.766064874929335,
+  "xid": []
+ },
+ {
+  "workers": 4,
+  "pcie_frac": 0.25,
+  "log": "/home/khing/.claude/jobs/189fb9b9/tmp/sweep-9-w4-f0.25.log",
+  "engine_workers": 4,
+  "engine_pcie": 0.25,
+  "n": 5,
+  "decode_tps": [
+   46.3,
+   41.8,
+   44.9,
+   44.2,
+   44.8
+  ],
+  "decode_mean": 44.4,
+  "decode_sd": 1.6446884203398526,
+  "prefill_tps_mean": 447.86,
+  "prompt_tokens": 913.0,
+  "accept_mean": 0.7631398876856871,
+  "xid": []
+ }
+]

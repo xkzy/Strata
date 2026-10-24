@@ -8,7 +8,7 @@ Arch `qwen4exp`: 48 layers = 12 × [3 Gated-DeltaNet + 1 sparse attention]; hidd
 **116.514 B total** (band 114.2–118.8 B), 65.314 B excluding the PLE table, **6.640 B active/token**, bytes read per token 5.096 GB [V/D]. It is an expert-pruned, quantised derivative of `Qwen/Qwen3.8-Flash-Next` (HF cards, secondary); teacher logits are p_T′. Licence conflict (Coder card Apache-2.0 vs upstream `qwen-community-1.0`) unresolved.
 
 ## 2. The strongest baseline
-The **unmodified checkpoint run by Strata's tuned path with its own MTP head**: 44.8 tok/s decode, 335 tok/s prefill on this PC (tuner "search-9", 256 decode tokens, 3,001-token prompt, 2026-10-18) — **a recorded value, not re-run in this session** [M, recorded]. The RTX 5070 benchmark PC figures (58.9 → 42.8 tok/s from 1 K to 262 K context) are another machine. A clean baseline (no control-vector/abliteration flags, ≥ 5 repeats) is experiment E0 and needs the owner's OK to use the GPU.
+The **unmodified checkpoint run by Strata's tuned path with its own MTP head**: 44.8 tok/s decode, 335 tok/s prefill on this PC (tuner "search-9", 256 decode tokens, 3,001-token prompt, 2026-10-18) — **recorded; decode re-measured 2026-10-25 at 43.9-44.4 tok/s with 4 workers and `-no-autotune`, but only 31.7 tok/s on the default `strata serve` path (autotune sets 1 worker)** [M, recorded]. The RTX 5070 benchmark PC figures (58.9 → 42.8 tok/s from 1 K to 262 K context) are another machine. A clean baseline (no control-vector/abliteration flags, ≥ 5 repeats) is experiment E0 and needs the owner's OK to use the GPU.
 
 ## 3. Why the current approach underperforms
 - No trained NCM-style student exists, so there is no measured student performance to explain; what can be said is why the evidence does not support one.
@@ -67,7 +67,7 @@ Full detail, costs and stop criteria: `experiment_plan.md`.
 The 1.25× gate and every margin are proposals pending approval.
 
 ## 12. Known uncertainties
-1. Live baseline not re-run (recorded 2026-10-18; variance "several percent").
+1. Live baseline: re-run (E0, E1 sweep). The default `strata serve` path gives ~31.7 tok/s because the autotune layer sets 1 pool worker; with `-no-autotune` and 4 workers it gives ~44 tok/s, matching the recorded 44.8. Only ~913-token prompts at batch 1 were re-measured; cause of the planner's choice of 1 not investigated.
 2. Routing statistics: 12 prompts, 2,109 positions; includes rejected drafts from a low-acceptance run; weights were zero in the dumps.
 3. hc probes are weight-space only; the re-quantiser is a simple block quantiser, not Strata's kernels; no activation data.
 4. Quantised trunk tensors were not dequantised; SVD/pruning sensitivity unmeasured.

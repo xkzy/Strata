@@ -156,26 +156,33 @@ Planner values: KV 98,304 B/token (48 layers) vs hybrid-correct 24,576 B/token (
 
 ## 10. E1 sweep: `--pool-workers` x `--pcie-frac` (measured 2026-10-25, GPU 0 = RTX 5060 Ti, no Xid)
 
-**Method [M].** `scripts/e1_sweep.py`: one fresh server per config, the E0 clean config otherwise unchanged, temperature 0, 256 tokens, ~913-token prompt, unique prefix per request, 1 warm-up + 5 repeats, decode tok/s from the server log. Xid checked after every config. Data: `data/e1_sweep.json`. The first config was repeated at the end to check drift.
+**Correction first [M].** A first version of this section reported that neither knob changes decode speed (31.3-31.9 tok/s for 2-8 workers). **That was wrong for workers.** `strata serve` runs an autotune layer (`pkg/autotune`, switched off by `-no-autotune`) that rewrote `--pool-workers 4` to `--pool-workers 1` before starting the engine, whatever the config said; the engine log said "1 pool workers" in every one of those runs and the engine command line (read from `/proc`) showed `--pool-workers 1` and an added `--max-context 262144`. So that sweep measured one worker ten times. Its data is kept as `data/e1_sweep_autotuned_1worker.json` (decode 31.3-31.9 tok/s, i.e. the 1-worker figure; only its pcie-frac column is informative). **The E0 baseline (31.7 tok/s), the E1 nsys profile (30.6 tok/s) and §9 were all taken in this 1-worker state.**
 
-| workers | pcie-frac | decode tok/s (mean ± sd, n=5) | prefill tok/s | accept |
+**Method [M].** `scripts/e1_sweep.py`, now with `-no-autotune`; after each server is up it reads the engine's real `--pool-workers` and `--pcie-frac` from `/proc` and aborts the config if they differ from the request (all ten matched). One fresh server per config, otherwise the E0 clean config, temperature 0, 256 tokens, ~913-token prompt, unique prefix per request, 1 warm-up + 5 repeats, decode tok/s from the server log, Xid checked after each config, the base config repeated at the end. Data: `data/e1_sweep_noautotune.json`.
+
+| engine workers | pcie-frac | decode tok/s (mean ± sd, n=5) | prefill tok/s | accept |
 |---|---|---|---|---|
-| 4 | 0.25 (base) | 31.58 ± 2.00 | 431 | 0.75 |
-| 4 | 0 | 31.62 ± 1.80 | 432 | 0.78 |
-| 4 | 0.15 | 31.82 ± 1.68 | 437 | 0.77 |
-| 4 | 0.40 | 31.80 ± 1.55 | 436 | 0.77 |
-| 4 | 0.50 | 31.60 ± 2.07 | 443 | 0.75 |
-| 2 | 0.25 | 31.78 ± 1.65 | 435 | 0.77 |
-| 3 | 0.25 | 31.92 ± 2.04 | 435 | 0.75 |
-| 6 | 0.25 | 31.26 ± 1.21 | 439 | 0.76 |
-| 8 | 0.25 | 31.68 ± 1.63 | 434 | 0.74 |
-| 4 | 0.25 (repeat) | 31.86 ± 2.09 | 437 | 0.75 |
+| 1 (autotune default, from E0) | 0.25 | 31.7 ± 2.5 | 476 | 0.76 |
+| 2 | 0.25 | 38.74 ± 1.38 | 443 | 0.78 |
+| 3 | 0.25 | 42.94 ± 1.63 | 445 | 0.76 |
+| 4 | 0.25 (base) | 43.90 ± 2.44 | 448 | 0.77 |
+| 4 | 0 | 44.38 ± 2.25 | 451 | 0.77 |
+| 4 | 0.15 | 44.44 ± 1.65 | 448 | 0.76 |
+| 4 | 0.40 | 44.42 ± 1.62 | 448 | 0.76 |
+| 4 | 0.50 | 44.42 ± 1.62 | 451 | 0.76 |
+| 6 | 0.25 | 45.08 ± 1.65 | 451 | 0.76 |
+| 8 | 0.25 | 44.70 ± 2.30 | 455 | 0.77 |
+| 4 (repeat) | 0.25 | 44.40 ± 1.64 | 448 | 0.76 |
 
-**Result.** Decode is flat: all ten means lie in 31.3–31.9 tok/s, a spread of 0.7 tok/s (2 %) against a standard error of about 0.7–0.9 tok/s per config (sd ≈ 1.2–2.1, n = 5). The base config repeated at the end differs from its first run by 0.3 tok/s. Prefill is flat too (431–443 tok/s). **Neither knob moves throughput; nothing here approaches the proposed 1.25x gate** (the best config is +1.0 % over base, inside the noise).
+**Result.**
+- **Workers matter up to about 4.** 1 -> 2 -> 3 -> 4 workers: 31.7 -> 38.7 -> 42.9 -> 43.9 tok/s. From 4 to 6 or 8 the means differ by under 1.2 tok/s with a standard error of about 0.7-1.0 per config, so no gain is shown; the knee is at 3-4 on this PC. Drift between the first and last base run: 0.5 tok/s.
+- **`--pcie-frac` does not matter:** 0 to 0.5 gives 43.9-44.4 tok/s at 4 workers (spread within the noise).
+- **The strongest honest baseline on this PC is therefore about 44 tok/s decode** (4+ workers, autotune off), which reproduces the recorded 44.8 tok/s (tuner "search-9", 2026-10-18) to within 2 %. The 31.7 tok/s of E0 was the *default startup path* with its 1-worker override, not the engine's capability.
+- **Against the proposed 1.25x gate:** 44.4 / 31.7 = 1.40x, but that compares with the autotuned default and is a configuration defect, not a model improvement. Against the strongest baseline (44.4) the best config (6 workers, 45.1) is +1.5 %, inside the noise.
 
-**What this means with §9 [D, hypotheses not tested].**
-- §9 showed the GPU waits mostly on the CPU share, yet 1 to 8 pool workers and 0 to 50 % PCIe share change nothing. So the CPU-share wait is not limited by the number of pool threads, and pcie-frac 0 equals 0.5, so the PCIe path neither helps nor hurts here.
-- Candidates for what limits it: memory bandwidth or page-cache reads of the mmapped cold experts (`--mmap-experts`), a serial part of the pool hand-off, or the 56 % cache hit rate setting how many cold experts exist. None of these was measured. Raising the expert-cache hit rate (placement, E5 locality router) remains consistent with the bytes-per-pass argument in §3; thread count does not.
-- Not covered: only 913-token prompts, only batch 1, only GPU 0, `--spec 4`, no `perf` on the pool threads, no RAM-speed or NUMA information. A different workers value might matter on a machine whose cold-expert reads are not bandwidth-bound.
+**Why the planner chose 1 [U].** `ApplyArgs` rewrites `--pool-workers` only if the stored measurement record has a "measured CPU scaling curve" and `BestPoolWorkers` picks "the smallest count reaching 97 % of the measured peak" (`pkg/autotune/cost.go:90`, `apply.go:28`). That 1 came from a stored record is my inference from this code; I did not read the record (`autotune.DefaultRecordPath()`) or check why its curve peaks at 1. This is a candidate bug or stale record to report to the owner; I did not change it.
 
-**Consequence for the plan.** Drop "tune pool-workers / pcie-frac" as a lever for this machine. The CPU wait needs a profile of where the pool threads spend time (`perf record` on the engine during decode) before any further change is proposed.
+**What this changes elsewhere.**
+- E0 (baseline_report §9) is the 1-worker default path; the clean 4-worker baseline is this table's 43.9-44.4.
+- The E1 profile (§7) and wait split (§9) were taken at 1 worker, where the GPU waited 66 % of kernel time for a single CPU worker. At 4 workers the wait is expected to be smaller, but **that is not measured**: the profile must be repeated with `-no-autotune --pool-workers 4` before any statement about where the 4-worker time goes.
+- Limits: ~913-token prompts, batch 1, GPU 0, `--spec 4`; no `perf` data (hardware events are denied here: SELinux and `perf_event_paranoid` 2).

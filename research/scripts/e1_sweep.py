@@ -33,12 +33,21 @@ def one(w, f, reps, idx):
     json.dump(cfg, open(f'{TMP}sweep-cfg.json', 'w'))
     since = time.strftime('%Y-%m-%d %H:%M:%S')
     proc = subprocess.Popen(['/home/khing/Downloads/Strata copy/bin/strata', 'serve', '-binary-path',
-                             '/home/khing/Downloads/Strata copy/engine/strata', '-config', f'{TMP}sweep-cfg.json', '-port', '8091'],
+                             '/home/khing/Downloads/Strata copy/engine/strata', '-config', f'{TMP}sweep-cfg.json', '-port', '8091', '-no-autotune'],
                             cwd='/home/khing/Downloads/Strata copy', start_new_session=True,
                             stdout=open(log + '.out', 'w'), stderr=subprocess.STDOUT)
     res = {'workers': w, 'pcie_frac': f, 'log': log}
     try:
         if not ready(proc): res['error'] = 'server did not come up'; return res
+        # the engine's real flags: without -no-autotune the Go planner rewrote --pool-workers 4 to 1 (E1 perf finding)
+        for d in os.listdir('/proc'):
+            if d.isdigit():
+                try: c = open(f'/proc/{d}/cmdline', 'rb').read().decode().split('\0')
+                except OSError: continue
+                if c and c[0].endswith('engine/strata') and '--serve' in c:
+                    res['engine_workers'] = int(c[c.index('--pool-workers') + 1]); res['engine_pcie'] = float(c[c.index('--pcie-frac') + 1])
+        if res.get('engine_workers') != w or res.get('engine_pcie') != f:
+            res['error'] = f"engine got workers={res.get('engine_workers')} pcie={res.get('engine_pcie')}, wanted {w}/{f}"; return res
         for i in range(reps + 1):
             e0_bench.run(CTX_CHARS, i, 256)
         rows = [dict(zip(('prompt', 'prefill_ms', 'prefill_tps', 'gen', 'gen_ms', 'decode_tps', 'acc', 'drafts'), map(float, m.groups())))

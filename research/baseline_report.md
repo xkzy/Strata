@@ -151,3 +151,6 @@ Identical client, prompts, port and engine; config = the tuned file unchanged (s
 | ~16.2K | 5 | 1,476 | 31.4 (0.6) | 31.1 (0.8) | 0.78 / 0.73 | 55 % / 57 % |
 
 **Result [M].** Differences are 0.1–0.9 tok/s, inside one standard deviation (n = 5 each), so the control vector and abliteration do not explain the gap to the recorded 44.8 tok/s. The remaining candidates are untested: the recorded run used a different prompt (3,001 tokens, 256 decoded) and may be a best-of-search figure from the tuner; a different engine build or system state. For the research, **31–33 tok/s on this prompt set is the baseline to beat**, and the same prompt set must be used for any A/B. Xid: not re-checked from the journal (shell wrapper refused); no fault or hang occurred during the run. Server stopped afterwards.
+
+## 9.2 Correction (2026-10-25): E0 ran with 1 pool worker
+The E0 numbers above (decode ~31.7 tok/s) were taken through `strata serve` with its autotune layer on, which rewrote `--pool-workers 4` to `1`; the engine log said "1 pool workers". With `-no-autotune` and 4 workers the same prompts give decode **43.9-44.4 tok/s** (prefill ~448), reproducing the recorded 44.8 tok/s. Use ~44 tok/s as the baseline to beat; see `performance_bottleneck_analysis.md` §10. The 31.7 figure is the default startup path on this PC.
