@@ -13,7 +13,22 @@ scope** on this hardware; the ±2% criterion does not apply to these modules and
 - Constraint from source: `--dump-layers` is written by `session_loop`, so `--no-capture` cannot be used (`:4719`); `--dump-routing` needs the expert pool (`:4650`); `--logits-stride >1` needs `--max-new 1`.
 - Cost: ~2 MB/position, so 1 M positions of layer dumps is ~2 TB. Capture a chosen subset of layers (e.g. 12, 24, 36, 48) by post-filtering, and use sequences of a few thousand tokens.
 
-**Attempted 2026-10-23, blocked by a GPU/driver fault.** `ncm/capture_short.sh` (unmodified teacher, 4-token prompt, `--spec 2 --prefill auto`
+**First real capture, 2026-10-24 (RTX 4060 8 GB, after the driver recovered).** `ncm/capture_short.sh`: prompt `9707,11,1879,0`, 2 new
+tokens (`1892 1042`), 3.2 tok/s decode, 1.9 s to first token, `--expert-cache 256 --prefill 16` (the defaults left 2 MiB free and the
+8192-token prefill buffers failed to allocate). What each dump gave:
+
+| Dump | Result |
+|---|---|
+| `--dump-routing` | **Usable ids.** 144 records = 48 layers x 3 passes, k=10, ids in 0..255 (matches the pruned 256-expert model). Weights are **all zero**: the verify-window path fuses router weights into the kernel and writes zeros (`generate.cpp:973`). |
+| `--dump-residual` | **Empty of data.** Header 4 x 2560, every float is 0 on the `--spec` path. |
+| `--dump-logits` | **Empty file** (0 bytes) on the `--spec` path, although the run prints "logits dumped". |
+| `--dump-layers` | **Cannot be combined** with this pack: the native pack requires `--spec`, which needs the single-graph token path, and `--dump-layers`/`--dump-halves` disable it (`generate.cpp:5141`). |
+
+So the engine as shipped yields **no usable hidden states or logits** for this pack, only expert ids. Getting activations needs an engine
+change (write the residual/logits inside the verify-window path) and a CUDA rebuild; `nvcc` is not on PATH here, so that was not attempted.
+The `ncm/capture.py` readers for routing and residual are tested on synthetic files, and the routing reader also parses the real file.
+
+**Earlier attempt 2026-10-23, blocked by a GPU/driver fault.** `ncm/capture_short.sh` (unmodified teacher, 4-token prompt, `--spec 2 --prefill auto`
 because the native pack requires both) got past argument checks and failed at start-up with
 `native embedding: cannot pin 322 MiB: unknown error, nor place it in VRAM`. The same machine state fails outside Strata:
 `torch.cuda` init raises `CUDA unknown error`, and `nvidia-smi` prints `Unable to determine the device handle for GPU0`. A second attempt on the other card

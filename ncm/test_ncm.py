@@ -50,6 +50,19 @@ def test_capture_reader_layout_and_truncation(tmp_path):
         load_layers(p, 2, 2, 4)
 
 
+def test_routing_reader(tmp_path):
+    import numpy as np
+    from capture import load_routing
+    k, p = 3, tmp_path / "r.bin"
+    rec = lambda layer, ids, w: np.concatenate([np.array([layer, k], "<i4"), np.array(ids, "<i4"), np.array(w, "<f4").view("<i4")])
+    np.concatenate([rec(0, [5, 6, 7], [.5, .3, .2]), rec(47, [1, 2, 3], [0, 0, 0])]).tofile(p)
+    l, ids, w = load_routing(p)
+    assert l.tolist() == [0, 47] and ids[0].tolist() == [5, 6, 7] and abs(w[0].sum() - 1) < 1e-6
+    np.concatenate([rec(48, [1, 2, 3], [0, 0, 0])]).tofile(p)  # layer outside 0..47 must be refused
+    with pytest.raises(ValueError):
+        load_routing(p)
+
+
 def test_memory_provenance_isolation_and_spill(tmp_path):
     torch.manual_seed(0)
     mem = ContextMemory(str(tmp_path), ram_budget_segments=2)
