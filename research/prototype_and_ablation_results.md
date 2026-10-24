@@ -15,18 +15,25 @@ Residual-MLP map from the final state `h_t` (A) or `h_t` plus the known next tok
 Accepted prefix over 8: A 0.82, B 0.80 → 1.82 / 1.80 tokens per pass; fully correct 8-token blocks 2.2% / 1.9%. Train agreement was 0.83–0.95 against test 0.07–0.40: the 13M-parameter maps memorised 33k positions. **Limit:** more data or smaller maps untested [U]; the next-token conditioning used only an output row.
 
 ## 3. NCM tokenizer on teacher tokens (`ncm_tokenizer.py`)
-32-token windows, levels 1, 2, 4, 8, 16, 32, d = 128, 3,000 steps, 1,920 train / 256 test windows, full 248,320 vocabulary.
+32-token windows, levels 1, 2, 4, 8, 16, 32, 5,000 steps, full 248,320 vocabulary, test = 256 windows from held-out prompts.
 
-| Level (codes) | C = 256 test | C = 4096 test |
-|---|---|---|
-| 1 | 0.058 | 0.055 |
-| 2 | 0.077 | 0.073 |
-| 3 (4) | 0.108 | 0.101 |
-| 4 (8) | 0.181 | 0.180 |
-| 5 (16) | 0.350 | 0.351 |
-| 6 (32) | 0.606 | 0.623 |
-| unquantised z | 0.879 | 0.885 |
-Observations [M]: codebook size changes nothing; ~249/256 and ~4,090/4,096 first-level codes are dead at alternate restart checks (the quantiser uses tens of codes); the decoder alone reaches 88%. **This is a failed reproduction of the paper's 98.8–99.99%, attributable to this implementation (EMA collapse, 128-d PCA, 1,920 windows), not evidence against NCM.** The hierarchical-vs-flat ablation was **not run**: it needs a working tokenizer. [U]
+**v1 (3,000 steps, 1,920 train windows, restarts drawn from the current batch).** Finest level 0.606 (C = 256), 0.623 (C = 4096). Cause found: restarts copied the ≤ 8 level-1 vectors of a batch, so ~250 of 256 codes were duplicates that nearest-code search never picked. Data in `ncm_tokenizer_C*.json`.
+
+**v2 (fixed).** Codebooks seeded from a no-grad pass over 16k windows (6k at d = 256); unused codes re-seeded every 500 steps from a per-level reservoir of 8,192 recent vectors; 28,991 stride-1 train windows. Data in `ncm_tokenizer_v2_*.json`.
+
+| Level (codes) | C=256, d=128 | C=4096, d=128 | C=4096, d=256 |
+|---|---|---|---|
+| 1 | 0.064 | 0.071 | 0.073 |
+| 2 | 0.086 | 0.082 | 0.085 |
+| 3 (4) | 0.121 | 0.115 | 0.120 |
+| 4 (8) | 0.204 | 0.206 | 0.211 |
+| 5 (16) | 0.376 | 0.412 | 0.404 |
+| 6 (32) | 0.618 | 0.753 | 0.746 |
+| unquantised z | 0.881 | 0.896 | 0.914 |
+| train acc, level 6 | 0.752 | 0.944 | 0.967 |
+| codes used on test, level 6 | 198/256 | 1592/4096 | 1387/4096 |
+| bits/token at level 6 | 15.75 | 23.63 | 23.63 |
+Observations [M]: the collapse is fixed (all codes used on train at every level); capacity now matters (C = 4096 beats 256 by 13.5 points); d = 256 does not help (0.746 vs 0.753), so the 128-d PCA is not the limit; coarse levels carry little (7–21% through level 4); the train–test gap (0.94–0.97 vs 0.75) and 23.6 bits per token (a raw token id is ~17.9) say the finest level memorises a small corpus. **Still far from the paper's 98.8–99.99%; the paper's data, vocabulary and ~100M-parameter scale differ, so this is not evidence against NCM.** Whether more data closes the gap is untested [U]. The hierarchical-vs-flat ablation was **not run**: coarse levels are too weak to compare.
 
 ## 4. Weight-structure nulls
 - **Wavelets** (12 dense matrices, layers 0/3/7/47; `wavelet_stats.py`): fraction of coefficients holding 99% of the energy: raw 0.58–0.72, Haar 0.65–0.73, db4 0.65–0.73, random-sign Haar control 0.67–0.73. No compaction beyond a random basis. SVD storage for 99% energy is 1.03–1.38× the matrix, so no low-rank structure. [M]
