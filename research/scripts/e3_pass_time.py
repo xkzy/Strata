@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""E3: measured decode pass time vs window size. Sweeps --spec 0..5 with --spec-min-p 0 (every round drafts exactly `spec` tokens),
+"""E3: measured decode pass time vs window size. Sweeps --spec 2..6 with --spec-min-p 0 (every round uses the full window),
 4 pool workers, -no-autotune (engine flags asserted from /proc). From the server log line of each request:
-    rounds = drafts_total / spec  (spec 0: rounds = generated tokens);  t_round = gen_ms / rounds;  tokens/round = generated / rounds.
+    rounds = generated - accepted;  t_round = gen_ms / rounds;  tokens/round = generated / rounds.
 Usage: e3_pass_time.py out.json [repeats]"""
 import json, os, re, signal, subprocess, sys, time, statistics as st
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -36,7 +36,7 @@ def one(spec, reps):
         rows = [r for r in rows if r['gen'] >= 200][1:]
         out = []
         for r in rows:
-            rounds = r['gen'] if spec == 0 else r['drafts'] / spec
+            rounds = r['gen'] - r['acc']  # each pass emits its accepted drafts + 1 token
             out.append({'rounds': rounds, 't_round_ms': r['gen_ms'] / rounds, 'tok_per_round': r['gen'] / rounds, 'decode_tps': r['decode_tps'],
                         'accept': (r['acc'] / r['drafts']) if r['drafts'] else None})
         res['runs'] = out
@@ -53,7 +53,7 @@ def one(spec, reps):
 if __name__ == '__main__':
     out, reps = sys.argv[1], int(sys.argv[2]) if len(sys.argv) > 2 else 5
     results = []
-    for spec in (0, 1, 2, 3, 4, 5):
+    for spec in (2, 3, 4, 5, 6):  # engine needs --spec >= 2 for the native pack
         r = one(spec, reps); results.append(r); json.dump(results, open(out, 'w'), indent=1)
         print(spec, {k: (round(v, 2) if isinstance(v, float) else v) for k, v in r.items() if k not in ('runs',)}, flush=True)
         if r.get('xid') or r.get('error'): print('ABORT'); break

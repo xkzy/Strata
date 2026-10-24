@@ -1,0 +1,262 @@
+[
+ {
+  "spec": 2,
+  "engine": {
+   "--spec": "2",
+   "--spec-min-p": "0",
+   "--pool-workers": "4"
+  },
+  "runs": [
+   {
+    "rounds": 140.0,
+    "t_round_ms": 46.58571428571429,
+    "tok_per_round": 1.8285714285714285,
+    "decode_tps": 39.3,
+    "accept": 0.8111888111888111
+   },
+   {
+    "rounds": 155.0,
+    "t_round_ms": 39.909677419354836,
+    "tok_per_round": 1.6516129032258065,
+    "decode_tps": 41.4,
+    "accept": 0.6558441558441559
+   },
+   {
+    "rounds": 156.0,
+    "t_round_ms": 42.19230769230769,
+    "tok_per_round": 1.641025641025641,
+    "decode_tps": 38.9,
+    "accept": 0.6172839506172839
+   },
+   {
+    "rounds": 153.0,
+    "t_round_ms": 41.09803921568628,
+    "tok_per_round": 1.673202614379085,
+    "decode_tps": 40.7,
+    "accept": 0.6645161290322581
+   },
+   {
+    "rounds": 164.0,
+    "t_round_ms": 40.926829268292686,
+    "tok_per_round": 1.5609756097560976,
+    "decode_tps": 38.1,
+    "accept": 0.5575757575757576
+   }
+  ],
+  "t_round_ms_mean": 42.142513576271156,
+  "t_round_ms_sd": 2.612416712959714,
+  "tok_per_round_mean": 1.6710776393916118,
+  "tok_per_round_sd": 0.0977410669045595,
+  "decode_tps_mean": 39.68,
+  "decode_tps_sd": 1.3461054936371073,
+  "xid": []
+ },
+ {
+  "spec": 3,
+  "engine": {
+   "--spec": "3",
+   "--spec-min-p": "0",
+   "--pool-workers": "4"
+  },
+  "runs": [
+   {
+    "rounds": 116.0,
+    "t_round_ms": 53.41379310344828,
+    "tok_per_round": 2.206896551724138,
+    "decode_tps": 41.3,
+    "accept": 0.6086956521739131
+   },
+   {
+    "rounds": 102.0,
+    "t_round_ms": 59.11764705882353,
+    "tok_per_round": 2.5098039215686274,
+    "decode_tps": 42.5,
+    "accept": 0.751219512195122
+   },
+   {
+    "rounds": 122.0,
+    "t_round_ms": 52.131147540983605,
+    "tok_per_round": 2.098360655737705,
+    "decode_tps": 40.2,
+    "accept": 0.5403225806451613
+   },
+   {
+    "rounds": 112.0,
+    "t_round_ms": 54.526785714285715,
+    "tok_per_round": 2.2857142857142856,
+    "decode_tps": 41.9,
+    "accept": 0.64
+   },
+   {
+    "rounds": 103.0,
+    "t_round_ms": 59.58252427184466,
+    "tok_per_round": 2.4854368932038833,
+    "decode_tps": 41.7,
+    "accept": 0.7320574162679426
+   }
+  ],
+  "t_round_ms_mean": 55.754379537877156,
+  "t_round_ms_sd": 3.3940905290564025,
+  "tok_per_round_mean": 2.317242461589728,
+  "tok_per_round_sd": 0.17779818146310894,
+  "decode_tps_mean": 41.52,
+  "decode_tps_sd": 0.8555699854482965,
+  "xid": []
+ },
+ {
+  "spec": 4,
+  "engine": {
+   "--spec": "4",
+   "--spec-min-p": "0",
+   "--pool-workers": "4"
+  },
+  "runs": [
+   {
+    "rounds": 115.0,
+    "t_round_ms": 61.34782608695652,
+    "tok_per_round": 2.226086956521739,
+    "decode_tps": 36.3,
+    "accept": 0.41228070175438597
+   },
+   {
+    "rounds": 98.0,
+    "t_round_ms": 62.91836734693877,
+    "tok_per_round": 2.6122448979591835,
+    "decode_tps": 41.5,
+    "accept": 0.5374149659863946
+   },
+   {
+    "rounds": 111.0,
+    "t_round_ms": 64.1891891891892,
+    "tok_per_round": 2.3063063063063063,
+    "decode_tps": 35.9,
+    "accept": 0.44072948328267475
+   },
+   {
+    "rounds": 109.0,
+    "t_round_ms": 64.78899082568807,
+    "tok_per_round": 2.3486238532110093,
+    "decode_tps": 36.3,
+    "accept": 0.450920245398773
+   },
+   {
+    "rounds": 85.0,
+    "t_round_ms": 71.17647058823529,
+    "tok_per_round": 3.011764705882353,
+    "decode_tps": 42.3,
+    "accept": 0.6732283464566929
+   }
+  ],
+  "t_round_ms_mean": 64.88416880740157,
+  "t_round_ms_sd": 3.756834187098867,
+  "tok_per_round_mean": 2.5010053439761184,
+  "tok_per_round_sd": 0.32013954687881,
+  "decode_tps_mean": 38.46,
+  "decode_tps_sd": 3.1572139617073787,
+  "xid": []
+ },
+ {
+  "spec": 5,
+  "engine": {
+   "--spec": "5",
+   "--spec-min-p": "0",
+   "--pool-workers": "4"
+  },
+  "runs": [
+   {
+    "rounds": 99.0,
+    "t_round_ms": 78.70707070707071,
+    "tok_per_round": 2.585858585858586,
+    "decode_tps": 32.9,
+    "accept": 0.4005102040816326
+   },
+   {
+    "rounds": 74.0,
+    "t_round_ms": 89.52702702702703,
+    "tok_per_round": 3.4594594594594597,
+    "decode_tps": 38.6,
+    "accept": 0.5909090909090909
+   },
+   {
+    "rounds": 102.0,
+    "t_round_ms": 77.50980392156863,
+    "tok_per_round": 2.5098039215686274,
+    "decode_tps": 32.4,
+    "accept": 0.3719806763285024
+   },
+   {
+    "rounds": 95.0,
+    "t_round_ms": 79.36842105263158,
+    "tok_per_round": 2.694736842105263,
+    "decode_tps": 34.0,
+    "accept": 0.4316353887399464
+   },
+   {
+    "rounds": 101.0,
+    "t_round_ms": 80.20792079207921,
+    "tok_per_round": 2.5346534653465347,
+    "decode_tps": 31.6,
+    "accept": 0.3875
+   }
+  ],
+  "t_round_ms_mean": 81.06404870007543,
+  "t_round_ms_sd": 4.832652260434478,
+  "tok_per_round_mean": 2.7569024548676944,
+  "tok_per_round_sd": 0.3991112663588983,
+  "decode_tps_mean": 33.9,
+  "decode_tps_sd": 2.76767050061961,
+  "xid": []
+ },
+ {
+  "spec": 6,
+  "engine": {
+   "--spec": "6",
+   "--spec-min-p": "0",
+   "--pool-workers": "4"
+  },
+  "runs": [
+   {
+    "rounds": 95.0,
+    "t_round_ms": 89.3578947368421,
+    "tok_per_round": 2.694736842105263,
+    "decode_tps": 30.2,
+    "accept": 0.3389473684210526
+   },
+   {
+    "rounds": 93.0,
+    "t_round_ms": 96.76344086021506,
+    "tok_per_round": 2.752688172043011,
+    "decode_tps": 28.4,
+    "accept": 0.3528138528138528
+   },
+   {
+    "rounds": 101.0,
+    "t_round_ms": 94.23762376237623,
+    "tok_per_round": 2.5346534653465347,
+    "decode_tps": 26.9,
+    "accept": 0.30876494023904383
+   },
+   {
+    "rounds": 90.0,
+    "t_round_ms": 94.16666666666667,
+    "tok_per_round": 2.8444444444444446,
+    "decode_tps": 30.2,
+    "accept": 0.36323851203501095
+   },
+   {
+    "rounds": 71.0,
+    "t_round_ms": 99.98591549295774,
+    "tok_per_round": 3.6056338028169015,
+    "decode_tps": 36.1,
+    "accept": 0.5285714285714286
+   }
+  ],
+  "t_round_ms_mean": 94.90230830381157,
+  "t_round_ms_sd": 3.9060969139782973,
+  "tok_per_round_mean": 2.886431345351231,
+  "tok_per_round_sd": 0.4175514251305716,
+  "decode_tps_mean": 30.36,
+  "decode_tps_sd": 3.4932792616680404,
+  "xid": []
+ }
+]
