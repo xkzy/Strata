@@ -1,0 +1,359 @@
+{
+ "output.weight": {
+  "params": 635699200,
+  "bytes": 521472000.0,
+  "types": {
+   "14": 1
+  }
+ },
+ "output_hc_down.weight": {
+  "params": 3276800,
+  "bytes": 6553600.0,
+  "types": {
+   "30": 1
+  }
+ },
+ "output_hc_norm.weight": {
+  "params": 10240,
+  "bytes": 40960.0,
+  "types": {
+   "0": 1
+  }
+ },
+ "output_hc_up.weight": {
+  "params": 3276800,
+  "bytes": 6553600.0,
+  "types": {
+   "30": 1
+  }
+ },
+ "token_embd.weight": {
+  "params": 635699200,
+  "bytes": 337715200.0,
+  "types": {
+   "23": 1
+  }
+ },
+ "attn_gate.weight": {
+  "params": 566231040,
+  "bytes": 379207680.0,
+  "types": {
+   "12": 10,
+   "14": 14,
+   "23": 8,
+   "13": 4
+  }
+ },
+ "attn_qkv.weight": {
+  "params": 943718400,
+  "bytes": 710656000.0,
+  "types": {
+   "14": 22,
+   "13": 10,
+   "12": 2,
+   "23": 2
+  }
+ },
+ "ffn_down_exps.weight": {
+  "params": 20132659200,
+  "bytes": 10262937600.0,
+  "types": {
+   "20": 39,
+   "42": 9
+  }
+ },
+ "ffn_down_shexp.weight": {
+  "params": 78643200,
+  "bytes": 45056000.0,
+  "types": {
+   "20": 47,
+   "8": 1
+  }
+ },
+ "ffn_gate_exps.weight": {
+  "params": 20132659200,
+  "bytes": 7441612800.0,
+  "types": {
+   "18": 17,
+   "22": 20,
+   "21": 10,
+   "23": 1
+  }
+ },
+ "ffn_gate_inp.weight": {
+  "params": 31457280,
+  "bytes": 62914560.0,
+  "types": {
+   "30": 48
+  }
+ },
+ "ffn_gate_inp_shexp.weight": {
+  "params": 122880,
+  "bytes": 245760.0,
+  "types": {
+   "30": 48
+  }
+ },
+ "ffn_gate_shexp.weight": {
+  "params": 78643200,
+  "bytes": 49779200.0,
+  "types": {
+   "12": 16,
+   "23": 15,
+   "14": 13,
+   "13": 4
+  }
+ },
+ "ffn_up_exps.weight": {
+  "params": 20132659200,
+  "bytes": 7441612800.0,
+  "types": {
+   "18": 17,
+   "22": 20,
+   "21": 10,
+   "23": 1
+  }
+ },
+ "ffn_up_shexp.weight": {
+  "params": 78643200,
+  "bytes": 50700800.0,
+  "types": {
+   "23": 13,
+   "12": 14,
+   "14": 13,
+   "13": 8
+  }
+ },
+ "hc_attn_down.weight": {
+  "params": 157286400,
+  "bytes": 314572800.0,
+  "types": {
+   "30": 48
+  }
+ },
+ "hc_attn_inject.weight": {
+  "params": 1966080,
+  "bytes": 3932160.0,
+  "types": {
+   "30": 48
+  }
+ },
+ "hc_attn_norm.weight": {
+  "params": 491520,
+  "bytes": 1966080.0,
+  "types": {
+   "0": 48
+  }
+ },
+ "hc_attn_up.weight": {
+  "params": 157286400,
+  "bytes": 314572800.0,
+  "types": {
+   "30": 48
+  }
+ },
+ "hc_ffn_down.weight": {
+  "params": 157286400,
+  "bytes": 314572800.0,
+  "types": {
+   "30": 48
+  }
+ },
+ "hc_ffn_inject.weight": {
+  "params": 1966080,
+  "bytes": 3932160.0,
+  "types": {
+   "30": 48
+  }
+ },
+ "hc_ffn_norm.weight": {
+  "params": 491520,
+  "bytes": 1966080.0,
+  "types": {
+   "0": 48
+  }
+ },
+ "hc_ffn_up.weight": {
+  "params": 157286400,
+  "bytes": 314572800.0,
+  "types": {
+   "30": 48
+  }
+ },
+ "ssm_a": {
+  "params": 1728,
+  "bytes": 6912.0,
+  "types": {
+   "0": 36
+  }
+ },
+ "ssm_alpha.weight": {
+  "params": 4423680,
+  "bytes": 8847360.0,
+  "types": {
+   "30": 36
+  }
+ },
+ "ssm_beta.weight": {
+  "params": 4423680,
+  "bytes": 8847360.0,
+  "types": {
+   "30": 36
+  }
+ },
+ "ssm_conv1d.weight": {
+  "params": 1474560,
+  "bytes": 5898240.0,
+  "types": {
+   "0": 36
+  }
+ },
+ "ssm_dt.bias": {
+  "params": 1728,
+  "bytes": 6912.0,
+  "types": {
+   "0": 36
+  }
+ },
+ "ssm_norm.weight": {
+  "params": 4608,
+  "bytes": 18432.0,
+  "types": {
+   "0": 36
+  }
+ },
+ "ssm_out.weight": {
+  "params": 566231040,
+  "bytes": 443965440.0,
+  "types": {
+   "14": 29,
+   "12": 3,
+   "13": 4
+  }
+ },
+ "ple_conv1d.weight": {
+  "params": 40960,
+  "bytes": 81920.0,
+  "types": {
+   "1": 1
+  }
+ },
+ "ple_key.weight": {
+  "params": 26214400,
+  "bytes": 52428800.0,
+  "types": {
+   "30": 1
+  }
+ },
+ "ple_norm_conv.weight": {
+  "params": 10240,
+  "bytes": 40960.0,
+  "types": {
+   "0": 1
+  }
+ },
+ "ple_norm_key.weight": {
+  "params": 10240,
+  "bytes": 40960.0,
+  "types": {
+   "0": 1
+  }
+ },
+ "ple_norm_query.weight": {
+  "params": 10240,
+  "bytes": 40960.0,
+  "types": {
+   "0": 1
+  }
+ },
+ "ple_value.weight": {
+  "params": 6553600,
+  "bytes": 13107200.0,
+  "types": {
+   "30": 1
+  }
+ },
+ "attn_k.weight": {
+  "params": 15728640,
+  "bytes": 12523520.0,
+  "types": {
+   "14": 11,
+   "23": 1
+  }
+ },
+ "attn_k_norm.weight": {
+  "params": 3072,
+  "bytes": 12288.0,
+  "types": {
+   "0": 12
+  }
+ },
+ "attn_output.weight": {
+  "params": 188743680,
+  "bytes": 150773760.0,
+  "types": {
+   "12": 1,
+   "14": 11
+  }
+ },
+ "attn_q.weight": {
+  "params": 377487360,
+  "bytes": 261734400.0,
+  "types": {
+   "23": 3,
+   "12": 1,
+   "13": 3,
+   "14": 5
+  }
+ },
+ "attn_q_norm.weight": {
+  "params": 3072,
+  "bytes": 12288.0,
+  "types": {
+   "0": 12
+  }
+ },
+ "attn_v.weight": {
+  "params": 15728640,
+  "bytes": 12554240.0,
+  "types": {
+   "14": 10,
+   "13": 2
+  }
+ },
+ "indexer.k_norm.weight": {
+  "params": 1536,
+  "bytes": 6144.0,
+  "types": {
+   "0": 12
+  }
+ },
+ "indexer.k_proj.weight": {
+  "params": 3932160,
+  "bytes": 7864320.0,
+  "types": {
+   "30": 12
+  }
+ },
+ "indexer.q_norm.weight": {
+  "params": 1536,
+  "bytes": 6144.0,
+  "types": {
+   "0": 12
+  }
+ },
+ "indexer.q_proj.weight": {
+  "params": 15728640,
+  "bytes": 31457280.0,
+  "types": {
+   "30": 12
+  }
+ },
+ "per_layer_token_embd.weight": {
+  "params": 51200245760,
+  "bytes": 28800138240.0,
+  "types": {
+   "20": 1
+  }
+ }
+}

@@ -1,0 +1,29 @@
+group                              params (B)       %
+routed experts (256/layer)             60.398  51.84%
+PLE n-gram table                       51.200  43.94%
+DeltaNet mixer                          2.087   1.79%
+embedding / LM head                     1.271   1.09%
+hyper-connection (BF16)                 0.641   0.55%
+sparse attention + indexer              0.617   0.53%
+shared expert (+gate)                   0.236   0.20%
+PLE query/key/value projections         0.033   0.03%
+MoE router                              0.031   0.03%
+TOTAL                                 116.514
+
+S0 optimised teacher (placement/kernels only)
+   C                     116.514 B  100.00%
+
+S1 = S0 + hc re-quantised (Q8/Q6)
+   C                     115.874 B   99.45%
+   D                       0.641 B    0.55%
+
+S2 = S1 + router & MTP-head fine-tune
+   C                     115.842 B   99.42%
+   D                       0.641 B    0.55%
+   L                       0.031 B    0.03%
+
+S3 = S2 + experts pruned 256->192 (structural)
+   C                     100.743 B   86.46%
+   D                       0.641 B    0.55%
+   pruned (removed)       15.099 B   12.96%
+   L                       0.031 B    0.03%

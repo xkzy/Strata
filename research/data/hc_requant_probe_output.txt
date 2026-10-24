@@ -1,0 +1,10 @@
+relative Frobenius error vs exact BF16 weights, 32-value blocks with fp16 scale (Q8_0/Q4_0-style, symmetric absmax)
+tensor role (48 layers)    Q8 (8b)    Q6-like    Q4 (4b)
+hc_attn_down              0.00617    0.02525    0.11109
+hc_attn_up                0.00693    0.02830    0.12321
+hc_ffn_down               0.00614    0.02515    0.11108
+hc_ffn_up                 0.00660    0.02697    0.11779
+ffn_gate_inp              0.00757    0.02931    0.11399
+
+reference: BF16 round-to-nearest relative element error bound 2^-9 = 0.00195 (rms ~ 0.00113)
+bytes vs BF16: Q8_0 53%, Q6_K 41%, Q4_0/Q4_K 28%  -> hc bytes/token 1283 MB -> 682 / 526 / 361 MB

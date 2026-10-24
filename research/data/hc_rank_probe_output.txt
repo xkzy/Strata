@@ -1,0 +1,17 @@
+sanity ok: blk.0.hc_attn_down (320, 10240) mean|w|=0.0193
+
+hc_attn: bottleneck units (of 320) holding X of sum s_j^2, mean over 48 layers [min..max]; and SVD(D) rank for energy
+  units 90%     233.7  [175..260]
+  units 95%     269.9  [232..286]
+  units 99%     307.2  [296..312]
+  svd(D) 90%    229.4  [165..247]
+  svd(D) 99%    305.9  [287..310]
+  stable rank   165.5  [56..216]
+
+hc_ffn: bottleneck units (of 320) holding X of sum s_j^2, mean over 48 layers [min..max]; and SVD(D) rank for energy
+  units 90%     235.0  [197..260]
+  units 95%     269.0  [243..287]
+  units 99%     306.4  [299..313]
+  svd(D) 90%    212.1  [190..225]
+  svd(D) 99%    302.0  [291..307]
+  stable rank   134.5  [90..178]

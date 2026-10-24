@@ -1,0 +1,21 @@
+total stored bytes (model) = 58.40 GB ; shard-1 on disk 29.61 GB, shard-2 28.80 GB => sum 58.41 GB
+bytes read per decoded token (non-gather) = 5.096 GB ; of which routed experts 0.982 GB, dense/other 4.114 GB
+
+Top dense (non-expert) byte streams per token:
+      710.7 MB  attn_qkv.weight                    params  0.9437 B  bits/w  6.02  types {14: 22, 13: 10, 12: 2, 23: 2}
+      521.5 MB  output.weight                      params  0.6357 B  bits/w  6.56  types {14: 1}
+      444.0 MB  ssm_out.weight                     params  0.5662 B  bits/w  6.27  types {14: 29, 12: 3, 13: 4}
+      379.2 MB  attn_gate.weight                   params  0.5662 B  bits/w  5.36  types {12: 10, 14: 14, 23: 8, 13: 4}
+      314.6 MB  hc_ffn_up.weight                   params  0.1573 B  bits/w 16.00  types {30: 48}
+      314.6 MB  hc_ffn_down.weight                 params  0.1573 B  bits/w 16.00  types {30: 48}
+      314.6 MB  hc_attn_up.weight                  params  0.1573 B  bits/w 16.00  types {30: 48}
+      314.6 MB  hc_attn_down.weight                params  0.1573 B  bits/w 16.00  types {30: 48}
+      261.7 MB  attn_q.weight                      params  0.3775 B  bits/w  5.55  types {23: 3, 12: 1, 13: 3, 14: 5}
+      150.8 MB  attn_output.weight                 params  0.1887 B  bits/w  6.39  types {12: 1, 14: 11}
+       62.9 MB  ffn_gate_inp.weight                params  0.0315 B  bits/w 16.00  types {30: 48}
+       52.4 MB  ple_key.weight                     params  0.0262 B  bits/w 16.00  types {30: 1}
+
+hyper-connection tensors: 1283.2 MB/token = 25.2% of all bytes read, 31.2% of dense bytes; params 0.641 B
+average bytes per expert (gate+up+down) = 2.046 MB ; per token routed reads = 0.982 GB
+GPU-side floor if dense bytes resident on 5060Ti 448GB/s:  9.18 ms/pass ; if routed experts too: 11.37 ms
+GPU-side floor if dense bytes resident on 4060 272GB/s: 15.12 ms/pass ; if routed experts too: 18.73 ms

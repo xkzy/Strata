@@ -1,0 +1,26 @@
+layers=48 attn_layers=12 deltanet_layers=36 attn_layer_idx=[3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 43, 47]
+P_total              =  116.514 B  (ε=2% band 114.2..118.8 B)
+P_ple_table          =   51.200 B  (43.9%) lookup, ~0 FLOPs
+P_routed_experts     =   60.398 B  (51.8%)
+P_total w/o PLE      =   65.314 B
+P_active/token       =    6.640 B  (upstream card says ~6B)
+IQ4_NL table size    =    28.80 GB (shard 2 on disk: 28.80 GB)
+KV @ 32768: hybrid-correct   0.75 GiB | repo formula x48 layers   3.00 GiB
+KV @262144: hybrid-correct   6.00 GiB | repo formula x48 layers  24.00 GiB
+KV bytes/token: 24576 (= 24 KiB) vs repo-formula 98304
+DeltaNet state (inferred, fp32): 108 MiB per sequence, independent of context
+expert coverage 1-(1-k/E)^n  (uniform-routing upper bound on sparsity benefit):
+   n=    1  coverage=  3.9%  routed-bytes-read/pass=   2.4 B-params
+   n=    4  coverage= 14.7%  routed-bytes-read/pass=   8.9 B-params
+   n=   16  coverage= 47.1%  routed-bytes-read/pass=  28.5 B-params
+   n=   64  coverage= 92.2%  routed-bytes-read/pass=  55.7 B-params
+   n=  128  coverage= 99.4%  routed-bytes-read/pass=  60.0 B-params
+   n=  256  coverage=100.0%  routed-bytes-read/pass=  60.4 B-params
+   n= 1024  coverage=100.0%  routed-bytes-read/pass=  60.4 B-params
+NCM budget LM1B(100M): 13.4B positions = 134 positions per param
+NCM budget OWT(100M): 127.2B positions = 1272 positions per param
+train tokens=1e+09: 6*N_act*D = 3.98e+19 FLOP ->       11.5 GPU-days at 40 TFLOP/s
+train tokens=1e+10: 6*N_act*D = 3.98e+20 FLOP ->      115.3 GPU-days at 40 TFLOP/s
+train tokens=1e+11: 6*N_act*D = 3.98e+21 FLOP ->     1152.7 GPU-days at 40 TFLOP/s
+AdamW full training state = 16 B/param -> 1.86 TB for 116.5B params (vs 16+8 GB VRAM)
+  same, excluding PLE table (frozen/sparse-updated) = 1.05 TB
