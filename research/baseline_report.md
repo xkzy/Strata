@@ -138,3 +138,16 @@ Source: server log of a live run, parsed by `scripts/e0_parse.py` into `data/e0_
 **Consistency with the analysis [D].** The measured decode hit rate (56–57 %) matches the 57.5 % that the static top-64 profile coverage predicted (`performance_bottleneck_analysis.md` §3 item 5), now with about 92 resident per layer, so the profile coverage curve is a reasonable predictor of the hit rate.
 
 **Not collected.** Context sizes of 32K, 128K and 262K; batch/concurrency; peak VRAM during a request; load time; power; RAM speed; logit dump and quality; a clean-config run with the control vector restored to isolate the 29 % gap. Xid: a kernel-journal watcher ran during the benchmark and raised no event; I could not re-query the journal after the run because the shell wrapper refused `journalctl`, so the end-of-run check is by that watcher only. Server stopped after the run.
+
+
+### 9.1 Same matrix with the control vector restored (2026-10-25)
+
+Identical client, prompts, port and engine; config = the tuned file unchanged (speed-projection control vector layers 4–44, abliteration 0.8, `STRATA_CVEC_FUSE=1`). `data/e0_cv_results.json`.
+
+| Prompt | n | Prefill tok/s | Decode tok/s, control vector on (sd) | Decode tok/s, clean (sd) | Acceptance on / clean | Hit rate on / clean |
+|---|---|---|---|---|---|---|
+| ~1.0K | 5 | 476 | 31.8 (1.7) | 31.7 (2.5) | 0.73 / 0.76 | 58 % / 56 % |
+| ~3.8K | 5 | 1,185 | 32.9 (2.3) | 32.0 (1.5) | 0.74 / 0.75 | 61 % / 57 % |
+| ~16.2K | 5 | 1,476 | 31.4 (0.6) | 31.1 (0.8) | 0.78 / 0.73 | 55 % / 57 % |
+
+**Result [M].** Differences are 0.1–0.9 tok/s, inside one standard deviation (n = 5 each), so the control vector and abliteration do not explain the gap to the recorded 44.8 tok/s. The remaining candidates are untested: the recorded run used a different prompt (3,001 tokens, 256 decoded) and may be a best-of-search figure from the tuner; a different engine build or system state. For the research, **31–33 tok/s on this prompt set is the baseline to beat**, and the same prompt set must be used for any A/B. Xid: not re-checked from the journal (shell wrapper refused); no fault or hang occurred during the run. Server stopped afterwards.
