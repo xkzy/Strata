@@ -132,3 +132,24 @@ Planner values: KV 98,304 B/token (48 layers) vs hybrid-correct 24,576 B/token (
 - It does give a wrong plan at 262 K context (GPU placement rejected), wrong cost-model inputs and a roughly 30 % high `ActiveParams`. The risk is that a future change that does apply the plan (placement, `--kv-resident`) would inherit the 4× error.
 - Fix, if the owner wants it: read `qwen4exp.full_attention_interval` (every 4th layer here) in `GeometryFromGGUF` and count only attention layers for KV; add the DeltaNet state (≈ 108 MiB per sequence, inferred) and a test with the real layer pattern. Not implemented: production code is under the approval gate.
 - Limits: synthetic capabilities (not live discovery); only single-GPU placement checked; `ctx` is the planner's `MaxContext`, which I took as the model default because the shipped config has no `--max-context`.
+
+## 9. E1 wait split: CPU pool vs PCIe (measured 2026-10-25, from the E1 trace; no new GPU run)
+
+**Method [M].** Each `wait_flag_ge_kernel` launch in the E1 nsys trace (`verify.cpp:1300–1327`) is labelled by the kernel that follows it: `copy_i32_from_mapped` = flag A (pool published the GPU plan), `fetch_blobs` = flag B (PCIe share staged), `copy_rows_from_mapped` = flag C (CPU share in the mapped rows). Every layer shows this A, B, C order in the trace. Script: `scripts/e1_wait_split.py`. Config: `--pool-workers 4`, `--pcie-frac 0.25`, spec 4.
+
+| Phase | Flag | Waits | Sum | Share of all kernel time | Median | p90 |
+|---|---|---|---|---|---|---|
+| decode | A plan | 3,880 | 7 ms | 0.1 % | 1.6 µs | 2.1 µs |
+| decode | B PCIe | 3,880 | 6 ms | 0.1 % | 1.6 µs | 1.8 µs |
+| decode | **C CPU share** | 3,880 | **4,009 ms** | **66.4 %** | 807 µs | 2,318 µs |
+| prefill | A / B | 1,832 each | 3 ms each | 0.1 % each | 1.6 µs | ≤ 2.1 µs |
+| prefill | **C CPU share** | 1,832 | **1,367 ms** | **59.2 %** | 645 µs | 1,472 µs |
+
+**Result.** Essentially all of the wait is flag C, the CPU's share of the cold experts. The PCIe share (B) and the plan hand-off (A) are already done when the GPU reaches them (about 1.6 µs, i.e. the kernel's own launch cost). The "CPU/PCIe" wording in §7 should read "CPU pool". Per MoE layer-group the GPU idles about 0.8 ms median (2.3 ms p90) waiting for the CPU rows, over 3,880 decode layer-groups.
+
+**What this does and does not show.**
+- PCIe is not the late party at `pcie_frac 0.25`. It does not show that raising `--pcie-frac` would help: that moves work from the CPU to PCIe and was not tried.
+- Flag C also covers time the CPU spends after the GPU has finished its own share; the trace cannot separate CPU compute from CPU-side scheduling and wake-up. That needs a profile of the pool threads (`perf`), which was not run.
+- One request, 256 tokens, 30.6 tok/s under profiling; no repeats, so no confidence interval.
+
+**Next measurement (needs the owner's OK for the GPU).** A `--pcie-frac` sweep (0.25, 0.4, 0.5) and a `--pool-workers` sweep with ≥ 5 repeats each, plus `perf` on the pool threads. Gate and margins as in `experiment_plan.md`.
