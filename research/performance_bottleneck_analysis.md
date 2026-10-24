@@ -153,3 +153,29 @@ Planner values: KV 98,304 B/token (48 layers) vs hybrid-correct 24,576 B/token (
 - One request, 256 tokens, 30.6 tok/s under profiling; no repeats, so no confidence interval.
 
 **Next measurement (needs the owner's OK for the GPU).** A `--pcie-frac` sweep (0.25, 0.4, 0.5) and a `--pool-workers` sweep with ≥ 5 repeats each, plus `perf` on the pool threads. Gate and margins as in `experiment_plan.md`.
+
+## 10. E1 sweep: `--pool-workers` x `--pcie-frac` (measured 2026-10-25, GPU 0 = RTX 5060 Ti, no Xid)
+
+**Method [M].** `scripts/e1_sweep.py`: one fresh server per config, the E0 clean config otherwise unchanged, temperature 0, 256 tokens, ~913-token prompt, unique prefix per request, 1 warm-up + 5 repeats, decode tok/s from the server log. Xid checked after every config. Data: `data/e1_sweep.json`. The first config was repeated at the end to check drift.
+
+| workers | pcie-frac | decode tok/s (mean ± sd, n=5) | prefill tok/s | accept |
+|---|---|---|---|---|
+| 4 | 0.25 (base) | 31.58 ± 2.00 | 431 | 0.75 |
+| 4 | 0 | 31.62 ± 1.80 | 432 | 0.78 |
+| 4 | 0.15 | 31.82 ± 1.68 | 437 | 0.77 |
+| 4 | 0.40 | 31.80 ± 1.55 | 436 | 0.77 |
+| 4 | 0.50 | 31.60 ± 2.07 | 443 | 0.75 |
+| 2 | 0.25 | 31.78 ± 1.65 | 435 | 0.77 |
+| 3 | 0.25 | 31.92 ± 2.04 | 435 | 0.75 |
+| 6 | 0.25 | 31.26 ± 1.21 | 439 | 0.76 |
+| 8 | 0.25 | 31.68 ± 1.63 | 434 | 0.74 |
+| 4 | 0.25 (repeat) | 31.86 ± 2.09 | 437 | 0.75 |
+
+**Result.** Decode is flat: all ten means lie in 31.3–31.9 tok/s, a spread of 0.7 tok/s (2 %) against a standard error of about 0.7–0.9 tok/s per config (sd ≈ 1.2–2.1, n = 5). The base config repeated at the end differs from its first run by 0.3 tok/s. Prefill is flat too (431–443 tok/s). **Neither knob moves throughput; nothing here approaches the proposed 1.25x gate** (the best config is +1.0 % over base, inside the noise).
+
+**What this means with §9 [D, hypotheses not tested].**
+- §9 showed the GPU waits mostly on the CPU share, yet 1 to 8 pool workers and 0 to 50 % PCIe share change nothing. So the CPU-share wait is not limited by the number of pool threads, and pcie-frac 0 equals 0.5, so the PCIe path neither helps nor hurts here.
+- Candidates for what limits it: memory bandwidth or page-cache reads of the mmapped cold experts (`--mmap-experts`), a serial part of the pool hand-off, or the 56 % cache hit rate setting how many cold experts exist. None of these was measured. Raising the expert-cache hit rate (placement, E5 locality router) remains consistent with the bytes-per-pass argument in §3; thread count does not.
+- Not covered: only 913-token prompts, only batch 1, only GPU 0, `--spec 4`, no `perf` on the pool threads, no RAM-speed or NUMA information. A different workers value might matter on a machine whose cold-expert reads are not bandwidth-bound.
+
+**Consequence for the plan.** Drop "tune pool-workers / pcie-frac" as a lever for this machine. The CPU wait needs a profile of where the pool threads spend time (`perf record` on the engine during decode) before any further change is proposed.
