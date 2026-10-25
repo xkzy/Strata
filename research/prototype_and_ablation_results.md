@@ -60,6 +60,28 @@ Train accuracy at level 6 (cap2 train windows) is 0.671, so the train–test gap
 | train acc, level 6 | 0.768 | – |
 Mid-run cap2 readings at the finest level: 0.776 (step 2,500), 0.783 (5,000), 0.785 (7,500), 0.785 (10,000): it plateaued by step 5,000 while level 5 kept creeping up (0.396 → 0.493). Versus v3 (0.721 / 0.751): +6.3 and +5.0 points at the finest level, with 3× the windows seen and a changed loss (sampled levels), so the gain is not attributable to batch size alone [M]. Still far below the paper's 98.8–99.99%; coarse levels (1–3 codes) stay at 8–16%; 23.6 bits per token at level 6 is above a raw token id (~17.9). First-level idle codes at restart stayed ~1,700 of 4,096, at the finest level ~0 [M].
 
+**v5 (finite scalar quantisation instead of EMA-VQ).** Same corpus, d = 128, big-batch loss; 8,000 steps; each level's latent is squashed and rounded to a fixed grid (no learned codebook, so no dead codes by construction: restart column 0). Data: `ncm_tokenizer_v5_fsq4096.json` (grid 8·8·8·8), `ncm_tokenizer_v5_fsq64000.json` (grid 8·8·8·5·5·5).
+
+| Run | cap2 test, level 6 | held-out corpus, level 6 | bits/token | levels 1–5 (cap2) |
+|---|---|---|---|---|
+| VQ v4 (4,096 codes, 12k steps) | 0.784 | 0.801 | 23.6 | 0.077 / 0.096 / 0.138 / 0.243 / 0.496 |
+| FSQ 4,096 (8k steps) | 0.735 | 0.751 | 23.6 | 0.061 / 0.073 / 0.088 / 0.130 / 0.226 |
+| FSQ 64,000 (8k steps) | **0.799** | **0.804** | 31.4 | 0.058 / 0.074 / 0.093 / 0.143 / 0.266 |
+
+At equal bits (23.6) FSQ is 4.9 points below VQ (0.735 vs 0.784, 8k vs 12k steps, so not a clean comparison). The 64,000-code grid reaches 0.799, +1.5 points on cap2 and +0.3 on new text over VQ v4, which is within what two single-seed runs can distinguish, and costs 7.8 more bits per token (31.4, nearly twice a raw token id). Coarse levels are weaker than VQ's. Mid-run cap2 level 6: FSQ-4096 0.646 (step 2,500) → 0.735 (7,500); FSQ-64000 0.705 → 0.776 (5,000) → 0.799. **Result: FSQ does not fix the weak coarse levels or beat VQ at equal bits** [M]; single seed each [U].
+
+**v6 (VQ-4096, 5,000 steps, recall@K diagnostic).** Same setup as v4 with the evaluation extended: for every level, the share of true tokens whose rank in that level's decoder logits is below K. Data: `ncm_tokenizer_v6_vq4096_recall.json`; checkpoint kept outside the repo.
+
+| Level (codes) | top-1 | top-16 | top-256 | top-4096 |
+|---|---|---|---|---|
+| 1 | 0.075 | 0.348 | 0.592 | 0.812 |
+| 2 | 0.092 | 0.383 | 0.610 | 0.825 |
+| 3 (4) | 0.132 | 0.451 | 0.639 | 0.835 |
+| 4 (8) | 0.228 | 0.555 | 0.685 | 0.850 |
+| 5 (16) | 0.438 | 0.703 | 0.785 | 0.891 |
+| 6 (32) | 0.788 | 0.878 | 0.934 | 0.981 |
+(cap2 test, 256 windows; held-out corpus level 6: 0.806 / 0.882 / 0.931 / 0.975.) A 5,000-step rerun of v4 gave 0.788 at level 6 (v4 final 0.784), so the result is repeatable to about ±0.01 [M]. What this says: **the level-5 decoder already puts the true token in its top 4,096 for 89% of positions (12 bits)**, and the level-6 decoder does so for 98%, so replacing the last level's learned 12-bit code with the rank of the true token (escape otherwise) would make 89% of positions lossless at the same 12 bits for that level (23.6 cumulative, unchanged), against 79% exact now. The saving is quality, not bits. That rank-coded tokenizer was **not built or trained** [U]; this is a coverage measurement, not a reconstruction result, and the escape path and its cost are unspecified.
+
 Observations [M]: the collapse is fixed (all codes used on train at every level); capacity now matters (C = 4096 beats 256 by 13.5 points); d = 256 does not help (0.746 vs 0.753), so the 128-d PCA is not the limit; coarse levels carry little (7–21% through level 4); the train–test gap (0.94–0.97 vs 0.75) and 23.6 bits per token (a raw token id is ~17.9) say the finest level memorises a small corpus. **Still far from the paper's 98.8–99.99%; the paper's data, vocabulary and ~100M-parameter scale differ, so this is not evidence against NCM.** Whether more data closes the gap is untested [U]. The hierarchical-vs-flat ablation was **not run**: coarse levels are too weak to compare.
 
 ## 4. Weight-structure nulls
