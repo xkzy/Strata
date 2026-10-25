@@ -1,0 +1,329 @@
+{
+ "ckpt": "/home/khing/Downloads/Strata-data/ncm/ckpt_ncm_tokenizer_v6_vq4096_recall.pt",
+ "raw_id_bits": 17.92184093707449,
+ "unigram_entropy_bits": 10.653112599849528,
+ "bits_cum_levels": [
+  0.375,
+  1.125,
+  2.625,
+  5.625,
+  11.625,
+  23.625
+ ],
+ "test": [
+  {
+   "level": 1,
+   "roundtrip_exact": 1.0,
+   "rank0": 0.0750732421875,
+   "median_rank": 80.0,
+   "gamma_bits": 14.213134765625,
+   "total_bits_gamma": 14.588134765625,
+   "within_16": 0.348388671875,
+   "total_bits_fixed16_lossless": 16.140537416702443,
+   "total_bits_fixed16_lossy_exact": [
+    4.375,
+    0.348388671875
+   ],
+   "within_256": 0.5921630859375,
+   "total_bits_fixed256_lossless": 15.689812851289322,
+   "total_bits_fixed256_lossy_exact": [
+    8.375,
+    0.5921630859375
+   ],
+   "within_4096": 0.811767578125,
+   "total_bits_fixed4096_lossless": 15.748823701524351,
+   "total_bits_fixed4096_lossy_exact": [
+    12.375,
+    0.811767578125
+   ]
+  },
+  {
+   "level": 2,
+   "roundtrip_exact": 1.0,
+   "rank0": 0.0916748046875,
+   "median_rank": 57.0,
+   "gamma_bits": 13.58935546875,
+   "total_bits_gamma": 14.71435546875,
+   "within_16": 0.383056640625,
+   "total_bits_fixed16_lossless": 16.26922359515347,
+   "total_bits_fixed16_lossy_exact": [
+    5.125,
+    0.383056640625
+   ],
+   "within_256": 0.6102294921875,
+   "total_bits_fixed256_lossless": 16.116029592172254,
+   "total_bits_fixed256_lossy_exact": [
+    9.125,
+    0.6102294921875
+   ],
+   "within_4096": 0.8253173828125,
+   "total_bits_fixed4096_lossless": 16.25598625718655,
+   "total_bits_fixed4096_lossy_exact": [
+    13.125,
+    0.8253173828125
+   ]
+  },
+  {
+   "level": 3,
+   "roundtrip_exact": 1.0,
+   "rank0": 0.1318359375,
+   "median_rank": 31.0,
+   "gamma_bits": 12.58203125,
+   "total_bits_gamma": 15.20703125,
+   "within_16": 0.4508056640625,
+   "total_bits_fixed16_lossless": 16.555036373464468,
+   "total_bits_fixed16_lossy_exact": [
+    6.625,
+    0.4508056640625
+   ],
+   "within_256": 0.639404296875,
+   "total_bits_fixed256_lossless": 17.093163383192664,
+   "total_bits_fixed256_lossy_exact": [
+    10.625,
+    0.639404296875
+   ],
+   "within_4096": 0.834716796875,
+   "total_bits_fixed4096_lossless": 17.587531453456723,
+   "total_bits_fixed4096_lossy_exact": [
+    14.625,
+    0.834716796875
+   ]
+  },
+  {
+   "level": 4,
+   "roundtrip_exact": 1.0,
+   "rank0": 0.2275390625,
+   "median_rank": 6.0,
+   "gamma_bits": 10.83056640625,
+   "total_bits_gamma": 16.45556640625,
+   "within_16": 0.5550537109375,
+   "total_bits_fixed16_lossless": 17.686719459370032,
+   "total_bits_fixed16_lossy_exact": [
+    9.625,
+    0.5550537109375
+   ],
+   "within_256": 0.6845703125,
+   "total_bits_fixed256_lossless": 19.283705235399992,
+   "total_bits_fixed256_lossy_exact": [
+    13.625,
+    0.6845703125
+   ],
+   "within_4096": 0.850341796875,
+   "total_bits_fixed4096_lossless": 20.307502688814935,
+   "total_bits_fixed4096_lossy_exact": [
+    17.625,
+    0.850341796875
+   ]
+  },
+  {
+   "level": 5,
+   "roundtrip_exact": 1.0,
+   "rank0": 0.4381103515625,
+   "median_rank": 1.0,
+   "gamma_bits": 7.776123046875,
+   "total_bits_gamma": 19.401123046875,
+   "within_16": 0.7027587890625,
+   "total_bits_fixed16_lossless": 21.03957254361562,
+   "total_bits_fixed16_lossy_exact": [
+    15.625,
+    0.7027587890625
+   ],
+   "within_256": 0.7845458984375,
+   "total_bits_fixed256_lossless": 23.491958686637297,
+   "total_bits_fixed256_lossy_exact": [
+    19.625,
+    0.7845458984375
+   ],
+   "within_4096": 0.8912353515625,
+   "total_bits_fixed4096_lossless": 25.574614906354004,
+   "total_bits_fixed4096_lossy_exact": [
+    23.625,
+    0.8912353515625
+   ]
+  },
+  {
+   "level": 6,
+   "roundtrip_exact": 1.0,
+   "rank0": 0.7882080078125,
+   "median_rank": 0.0,
+   "gamma_bits": 3.295654296875,
+   "total_bits_gamma": 26.920654296875,
+   "within_16": 0.8778076171875,
+   "total_bits_fixed16_lossless": 29.902375289738078,
+   "total_bits_fixed16_lossy_exact": [
+    27.625,
+    0.8778076171875
+   ],
+   "within_256": 0.9344482421875,
+   "total_bits_fixed256_lossless": 32.805432725855134,
+   "total_bits_fixed256_lossy_exact": [
+    31.625,
+    0.9344482421875
+   ],
+   "within_4096": 0.9805908203125,
+   "total_bits_fixed4096_lossless": 35.973200408558775,
+   "total_bits_fixed4096_lossy_exact": [
+    35.625,
+    0.9805908203125
+   ]
+  }
+ ],
+ "test_corpus": [
+  {
+   "level": 1,
+   "roundtrip_exact": 1.0,
+   "rank0": 0.0738525390625,
+   "median_rank": 106.0,
+   "gamma_bits": 14.790130615234375,
+   "total_bits_gamma": 15.165130615234375,
+   "within_16": 0.323089599609375,
+   "total_bits_fixed16_lossless": 16.593943365702525,
+   "total_bits_fixed16_lossy_exact": [
+    4.375,
+    0.323089599609375
+   ],
+   "within_256": 0.56939697265625,
+   "total_bits_fixed256_lossless": 16.097823512271304,
+   "total_bits_fixed256_lossy_exact": [
+    8.375,
+    0.56939697265625
+   ],
+   "within_4096": 0.795166015625,
+   "total_bits_fixed4096_lossless": 16.046354263956253,
+   "total_bits_fixed4096_lossy_exact": [
+    12.375,
+    0.795166015625
+   ]
+  },
+  {
+   "level": 2,
+   "roundtrip_exact": 1.0,
+   "rank0": 0.0951995849609375,
+   "median_rank": 81.0,
+   "gamma_bits": 14.14874267578125,
+   "total_bits_gamma": 15.27374267578125,
+   "within_16": 0.36175537109375,
+   "total_bits_fixed16_lossless": 16.650981559450287,
+   "total_bits_fixed16_lossy_exact": [
+    5.125,
+    0.36175537109375
+   ],
+   "within_256": 0.5879058837890625,
+   "total_bits_fixed256_lossless": 16.51610975103059,
+   "total_bits_fixed256_lossy_exact": [
+    9.125,
+    0.5879058837890625
+   ],
+   "within_4096": 0.8049163818359375,
+   "total_bits_fixed4096_lossless": 16.621609751645604,
+   "total_bits_fixed4096_lossy_exact": [
+    13.125,
+    0.8049163818359375
+   ]
+  },
+  {
+   "level": 3,
+   "roundtrip_exact": 1.0,
+   "rank0": 0.1430816650390625,
+   "median_rank": 42.0,
+   "gamma_bits": 12.97052001953125,
+   "total_bits_gamma": 15.59552001953125,
+   "within_16": 0.4330902099609375,
+   "total_bits_fixed16_lossless": 16.872529924000712,
+   "total_bits_fixed16_lossy_exact": [
+    6.625,
+    0.4330902099609375
+   ],
+   "within_256": 0.62078857421875,
+   "total_bits_fixed256_lossless": 17.426791403566668,
+   "total_bits_fixed256_lossy_exact": [
+    10.625,
+    0.62078857421875
+   ],
+   "within_4096": 0.81805419921875,
+   "total_bits_fixed4096_lossless": 17.886155878250506,
+   "total_bits_fixed4096_lossy_exact": [
+    14.625,
+    0.81805419921875
+   ]
+  },
+  {
+   "level": 4,
+   "roundtrip_exact": 1.0,
+   "rank0": 0.27069091796875,
+   "median_rank": 4.0,
+   "gamma_bits": 10.90679931640625,
+   "total_bits_gamma": 16.53179931640625,
+   "within_16": 0.55462646484375,
+   "total_bits_fixed16_lossless": 17.694376495903203,
+   "total_bits_fixed16_lossy_exact": [
+    9.625,
+    0.55462646484375
+   ],
+   "within_256": 0.6735076904296875,
+   "total_bits_fixed256_lossless": 19.481967788491104,
+   "total_bits_fixed256_lossy_exact": [
+    13.625,
+    0.6735076904296875
+   ],
+   "within_4096": 0.83612060546875,
+   "total_bits_fixed4096_lossless": 20.562372619133438,
+   "total_bits_fixed4096_lossy_exact": [
+    17.625,
+    0.83612060546875
+   ]
+  },
+  {
+   "level": 5,
+   "roundtrip_exact": 1.0,
+   "rank0": 0.49005126953125,
+   "median_rank": 1.0,
+   "gamma_bits": 7.564300537109375,
+   "total_bits_gamma": 19.189300537109375,
+   "within_16": 0.720550537109375,
+   "total_bits_fixed16_lossless": 20.72071166512702,
+   "total_bits_fixed16_lossy_exact": [
+    15.625,
+    0.720550537109375
+   ],
+   "within_256": 0.7845001220703125,
+   "total_bits_fixed256_lossless": 23.492779083408706,
+   "total_bits_fixed256_lossy_exact": [
+    19.625,
+    0.7845001220703125
+   ],
+   "within_4096": 0.8799285888671875,
+   "total_bits_fixed4096_lossless": 25.777252908892642,
+   "total_bits_fixed4096_lossy_exact": [
+    23.625,
+    0.8799285888671875
+   ]
+  },
+  {
+   "level": 6,
+   "roundtrip_exact": 1.0,
+   "rank0": 0.8057403564453125,
+   "median_rank": 0.0,
+   "gamma_bits": 3.30828857421875,
+   "total_bits_gamma": 26.93328857421875,
+   "within_16": 0.8819427490234375,
+   "total_bits_fixed16_lossless": 29.828266114720574,
+   "total_bits_fixed16_lossy_exact": [
+    27.625,
+    0.8819427490234375
+   ],
+   "within_256": 0.9312591552734375,
+   "total_bits_fixed256_lossless": 32.86258703426347,
+   "total_bits_fixed256_lossy_exact": [
+    31.625,
+    0.9312591552734375
+   ],
+   "within_4096": 0.9749603271484375,
+   "total_bits_fixed4096_lossless": 36.07410921144239,
+   "total_bits_fixed4096_lossy_exact": [
+    35.625,
+    0.9749603271484375
+   ]
+  }
+ ]
+}

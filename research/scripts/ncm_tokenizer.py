@@ -20,7 +20,8 @@ dev = sys.argv[5] if len(sys.argv) > 5 else 'cuda:1'
 D = int(sys.argv[6]) if len(sys.argv) > 6 else 128
 BIG = len(sys.argv) > 8 and sys.argv[8] == 'big'         # big-batch mode: 128 windows for the codebooks, CE on 32 (chunks of 8), finest + 2 sampled levels per step
 FLEVELS = [int(x) for x in sys.argv[9].split('=')[1].split(',')] if len(sys.argv) > 9 and sys.argv[9].startswith('fsq=') else None   # finite scalar quantisation instead of the VQ
-CORP = sys.argv[7] if len(sys.argv) > 7 else None      # optional .npy of [N, 32] teacher-tokenizer windows (build_corpus.py)
+LOAD = next((a[5:] for a in sys.argv if a.startswith('load=')), None)   # load=CKPT.pt: skip training, run the rank-coding test on a saved model
+CORP = sys.argv[7] if len(sys.argv) > 7 else None     # optional .npy of [N, 32] teacher-tokenizer windows (build_corpus.py)
 L, LV, BETA, DECAY, RES = 32, [1, 2, 4, 8, 16, 32], 0.25, 0.99, 8192
 if FLEVELS: C = int(np.prod(FLEVELS))
 torch.manual_seed(0); np.random.seed(0)
@@ -143,7 +144,38 @@ def evaluate(split):
             for a, K in enumerate(KS): rec[j, a] += (rank < K).sum().item()
         n += tok.numel()
     return ok / n, [len(u) for u in used], rec / n
+@torch.no_grad()
+def rankcode():
+    """Rank-coded level j: the encoder sends the rank of the true token in the level-j decoder's logits instead of a learned code; the decoder
+    returns the token at that rank (stable sort, so ties cannot break the round trip). Costs are per token on top of the codes of levels <= j:
+    gamma = Elias-gamma code of the rank (lossless, no escape); fixedK = ceil-free log2(K+1) bits with rank K reserved as 'escape + raw id' (lossless)."""
+    cnt = np.bincount(np.load(CORP).ravel(), minlength=V).astype(np.float64); p = cnt[cnt > 0] / cnt.sum()
+    bc = [sum(l * math.log2(C) for l in LV[:k + 1]) / L for k in range(len(LV))]
+    out = {'ckpt': LOAD, 'raw_id_bits': math.log2(V), 'unigram_entropy_bits': float(-(p * np.log2(p)).sum()), 'bits_cum_levels': bc}
+    m.eval()
+    for sp in ('test', 'test_corpus'):
+        X = W[sp]; rk = [[] for _ in LV]; rt = [0] * len(LV)
+        for i in range(0, len(X), 4):
+            tok = X[i:i + 4]; _, cum, _, _ = m.encode(tok)
+            for j, zh in enumerate(cum):
+                order = m.decode(zh).argsort(dim=-1, descending=True, stable=True)
+                r = (order == tok[..., None]).int().argmax(-1)
+                rt[j] += (order.gather(-1, r[..., None]).squeeze(-1) == tok).sum().item(); rk[j].append(r.flatten().cpu())
+        n = X.numel(); res_sp = []
+        for j in range(len(LV)):
+            r = torch.cat(rk[j]).numpy().astype(np.float64); d = {'level': j + 1, 'roundtrip_exact': rt[j] / n, 'rank0': float((r == 0).mean()), 'median_rank': float(np.median(r)),
+                'gamma_bits': float((2 * np.floor(np.log2(r + 1)) + 1).mean())}
+            d['total_bits_gamma'] = bc[j] + d['gamma_bits']
+            for K in (16, 256, 4096):
+                f = float((r < K).mean()); d['within_%d' % K] = f
+                d['total_bits_fixed%d_lossless' % K] = bc[j] + math.log2(K + 1) + (1 - f) * math.log2(V)
+                d['total_bits_fixed%d_lossy_exact' % K] = [bc[j] + math.log2(K), f]            # [bits, share of positions exact]
+            res_sp.append(d)
+        out[sp] = res_sp
+    print(json.dumps(out, indent=1)); json.dump(out, open(outp, 'w'), indent=1)
+
 B = 8
+if LOAD: m.load_state_dict(torch.load(LOAD, map_location=dev, weights_only=True)); rankcode(); sys.exit(0)
 with torch.no_grad():                            # seed every level's codebook from 16k windows (sequentially: level k sees level k-1's residual)
     m.eval(); m.encode(W['train'][torch.randperm(len(W['train']), device=dev)[:16384 if D <= 128 else 6144]], init=True)
 for step in range(STEPS):

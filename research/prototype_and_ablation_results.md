@@ -80,7 +80,20 @@ At equal bits (23.6) FSQ is 4.9 points below VQ (0.735 vs 0.784, 8k vs 12k steps
 | 4 (8) | 0.228 | 0.555 | 0.685 | 0.850 |
 | 5 (16) | 0.438 | 0.703 | 0.785 | 0.891 |
 | 6 (32) | 0.788 | 0.878 | 0.934 | 0.981 |
-(cap2 test, 256 windows; held-out corpus level 6: 0.806 / 0.882 / 0.931 / 0.975.) A 5,000-step rerun of v4 gave 0.788 at level 6 (v4 final 0.784), so the result is repeatable to about ±0.01 [M]. What this says: **the level-5 decoder already puts the true token in its top 4,096 for 89% of positions (12 bits)**, and the level-6 decoder does so for 98%, so replacing the last level's learned 12-bit code with the rank of the true token (escape otherwise) would make 89% of positions lossless at the same 12 bits for that level (23.6 cumulative, unchanged), against 79% exact now. The saving is quality, not bits. That rank-coded tokenizer was **not built or trained** [U]; this is a coverage measurement, not a reconstruction result, and the escape path and its cost are unspecified.
+(cap2 test, 256 windows; held-out corpus level 6: 0.806 / 0.882 / 0.931 / 0.975.) A 5,000-step rerun of v4 gave 0.788 at level 6 (v4 final 0.784), so the result is repeatable to about ±0.01 [M]. What this says: **the level-5 decoder already puts the true token in its top 4,096 for 89% of positions (12 bits)**, and the level-6 decoder does so for 98%, so replacing the last level's learned 12-bit code with the rank of the true token (escape otherwise) would make 89% of positions lossless at the same 12 bits for that level (23.6 cumulative, unchanged), against 79% exact now. The saving is quality, not bits.
+
+**v7 (rank-coded level, measured on the saved v6 model, no retraining).** `ncm_tokenizer.py ... load=CKPT`: the encoder sends the rank of the true token in the level-j decoder's logits; the decoder returns the token at that rank (stable sort; round trip checked exact on all 8,192 + 65,536 test tokens). Cost = bits of levels ≤ j + the rank code. Data: `ncm_rankcode_v6.json`. Baselines on the 19.2M-token corpus: raw id 17.92 bits, unigram entropy 10.65 bits.
+
+| Scheme (rank from level-5 decoder, K = 4,096) | bits/token | exact: cap2 test | exact: new text |
+|---|---|---|---|
+| learned 12-bit level 6 (v6, as before) | 23.6 | 0.788 | 0.806 |
+| rank code, rank ≥ 4,096 left wrong (lossy) | 23.6 | **0.891** | **0.880** |
+| rank code + escape (rank 4,096 = "raw id follows") | 25.6 | 1.000 | 1.000 |
+| rank code, Elias-gamma, no escape | 19.4 (cap2) / 19.2 (new text) | 1.000 | 1.000 |
+| level 6 learned code + rank code, K = 4,096, lossy | 35.6 | 0.981 | 0.975 |
+| level 6 learned code + Elias-gamma rank | 26.9 | 1.000 | 1.000 |
+
+At the same 23.6 bits, swapping the learned last level for its rank code lifts exact reconstruction by +10.3 points (cap2) and +7.4 points (new text) [M]. Every lossless variant costs more than a plain token id (19.2 bits at best against 17.92) and far more than an entropy-coded token stream (10.65) [M]. Median rank at level 5 is 1 (rank 0: 44–49%); at levels 1–3 it is 31–106, i.e. the coarse codes narrow the candidates very little. **Limits:** one model trained for its own learned codes, not for ranking [U]; 256 + 2,048 test windows, single seed; "lossless" means the round trip, not a better compressor.
 
 Observations [M]: the collapse is fixed (all codes used on train at every level); capacity now matters (C = 4096 beats 256 by 13.5 points); d = 256 does not help (0.746 vs 0.753), so the 128-d PCA is not the limit; coarse levels carry little (7–21% through level 4); the train–test gap (0.94–0.97 vs 0.75) and 23.6 bits per token (a raw token id is ~17.9) say the finest level memorises a small corpus. **Still far from the paper's 98.8–99.99%; the paper's data, vocabulary and ~100M-parameter scale differ, so this is not evidence against NCM.** Whether more data closes the gap is untested [U]. The hierarchical-vs-flat ablation was **not run**: coarse levels are too weak to compare.
 
