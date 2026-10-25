@@ -13,6 +13,7 @@ No NCM variant ran end to end, so there is **no measured tok/s for any NCM varia
 | NCM tokenizer v4, finest level, C = 4096 | – | 78.4% (cap2 test) / 80.1% (new-text test) token reconstruction; 23.6 bits/token | defines a different distribution | [M] |
 | NCM tokenizer v5, FSQ 4,096 / 64,000 codes, finest level | – | 73.5% / 79.9% (cap2 test), 75.1% / 80.4% (new text); 23.6 / 31.4 bits/token | defines a different distribution | [M] |
 | NCM tokenizer v6/v7, finest level rank-coded from the level-5 decoder (K = 4,096, ranks ≥ K wrong) | – | 89.1% (cap2 test) / 88.0% (new text); 23.6 bits/token; lossless variants 19.2–25.6 bits/token | closer to the teacher's tokens, still not exact | [M] |
+| NCM tokenizer v9, flat full-resolution levels, 1 level / 2 levels | – | 78.2% / 91.1% (cap2 test), 79.4% / 91.5% (new text); 12 / 24 bits/token | defines a different distribution | [M] |
 | NCM tokenizer v8, same with a soft-rank training loss | – | no change against a matched control (level-5 exact 42.9% vs 44.5%) | – | [M] |
 
 ## Distribution statement

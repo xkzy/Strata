@@ -105,7 +105,17 @@ At the same 23.6 bits, swapping the learned last level for its rank code lifts e
 
 **No effect** [M]: against the matched control the rank loss is 0.3–1.6 points worse at rank 0, equal within ±0.4 points at ranks 16 and 4,096, and +0.07 bits worse in lossless cost; finest-level exact accuracy 0.782 / 0.806 against 0.791 / 0.807. All differences are inside the ±0.01 run-to-run spread seen between v4 and v6. Cross-entropy already ranks the true token as well as a direct rank loss does at this scale and budget; the loss was also 2× larger in value and ~2× slower per step. Single seed, one λ and one τ tried [U]. Not tried: a rank loss with a different τ, ranking under a larger decoder, or any change to what the lower levels transmit — the coarse codes (median rank 31–106 at levels 1–3) are what limit rank coding, not the decoder's objective.
 
-Observations [M]: the collapse is fixed (all codes used on train at every level); capacity now matters (C = 4096 beats 256 by 13.5 points); d = 256 does not help (0.746 vs 0.753), so the 128-d PCA is not the limit; coarse levels carry little (7–21% through level 4); the train–test gap (0.94–0.97 vs 0.75) and 23.6 bits per token (a raw token id is ~17.9) say the finest level memorises a small corpus. **Still far from the paper's 98.8–99.99%; the paper's data, vocabulary and ~100M-parameter scale differ, so this is not evidence against NCM.** Whether more data closes the gap is untested [U]. The hierarchical-vs-flat ablation was **not run**: coarse levels are too weak to compare.
+**v9 (hierarchical vs flat).** Same VQ-4096, d = 128, big batch, 5,000 steps, seed 0 as v6, only the levels change: flat = full-resolution levels (32 codes per 32-token window each) instead of 1, 2, 4, 8, 16, 32. Data: `ncm_tokenizer_v9_flat{1,2}.json`; reference v6.
+
+| Tokenizer | bits/token | cap2 test | held-out corpus | sequential stages |
+|---|---|---|---|---|
+| hierarchical, finest level (v6) | 23.6 | 0.788 | 0.806 | 6 |
+| hierarchical, level 5 | 11.6 | 0.438 | 0.490 | 5 |
+| **flat, 1 level** | **12.0** | **0.782** | **0.794** | 1 |
+| **flat, 2 levels** | 24.0 | **0.911** | **0.915** | 2 |
+Flat-2 stage 1 alone (12 bits): 0.768 / 0.792. Unquantised decoder: 0.979–0.989 for all three. **At equal bits the flat tokenizers win by a large margin** [M]: one full-resolution level at 12 bits matches the hierarchy's 23.6 bits (0.782 vs 0.788), and two flat levels at 24 bits reach 0.911 / 0.915, +12.3 / +10.9 points over the hierarchy. The 31 coarse codes (11.6 bits/token) of the hierarchy buy nothing a full-resolution level does not. Rank coding on the flat levels is stronger too (finest-level top-16 / 256 / 4,096 on cap2 test: flat-2 0.970 / 0.991 / 0.999; flat-1 0.895 / 0.954 / 0.991; hierarchy 0.878 / 0.934 / 0.981), not run as a lossless code. **What this does not show** [U]: the hierarchy's purpose is that coarse codes are easy for a generator to predict, so fewer, cheaper passes can draft them; this measures only the tokenizer's reconstruction at matched bits, not how well a stage-2 generator predicts either code set. A flat stage 1 is 32 codes with no coarse context, i.e. near non-autoregressive generation of 32 tokens, which the earlier heads-only result (0.40 / 0.20 / 0.13 agreement) suggests is hard. Single seed.
+
+Observations [M]: the collapse is fixed (all codes used on train at every level); capacity now matters (C = 4096 beats 256 by 13.5 points); d = 256 does not help (0.746 vs 0.753), so the 128-d PCA is not the limit; coarse levels carry little (7–21% through level 4); the train–test gap (0.94–0.97 vs 0.75) and 23.6 bits per token (a raw token id is ~17.9) say the finest level memorises a small corpus. **Still far from the paper's 98.8–99.99%; the paper's data, vocabulary and ~100M-parameter scale differ, so this is not evidence against NCM.** Whether more data closes the gap is untested [U]. The hierarchical-vs-flat ablation is in v9 below.
 
 ## 4. Weight-structure nulls
 - **Wavelets** (12 dense matrices, layers 0/3/7/47; `wavelet_stats.py`): fraction of coefficients holding 99% of the energy: raw 0.58–0.72, Haar 0.65–0.73, db4 0.65–0.73, random-sign Haar control 0.67–0.73. No compaction beyond a random basis. SVD storage for 99% energy is 1.03–1.38× the matrix, so no low-rank structure. [M]
@@ -115,4 +125,4 @@ Observations [M]: the collapse is fixed (all codes used on train at every level)
 See mathematical_cost_model.md §1 (15.4 + 13.1·T ms). [M]
 
 ## 6. Not done
-Engine-side NCM prototype (needs approval), the flat-vs-hierarchical ablation, long-context scaling, sustained-stability runs of an NCM variant.
+Engine-side NCM prototype (needs approval), a stage-2 generator on either code set (the only test of the hierarchy's actual purpose), long-context scaling, sustained-stability runs of an NCM variant.

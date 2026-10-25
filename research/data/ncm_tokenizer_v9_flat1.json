@@ -1,0 +1,91 @@
+{
+ "C": 4096,
+ "L": 32,
+ "D": 128,
+ "levels": [
+  32
+ ],
+ "steps": 5000,
+ "windows": {
+  "train": 626943,
+  "test": 256,
+  "test_corpus": 2048
+ },
+ "learned_params_total": 32007937,
+ "big_batch": true,
+ "fsq_levels": null,
+ "pca_energy_kept": {
+  "token_embd": 0.18903659026775782,
+  "output": 0.11776121272928834
+ },
+ "copied_or_transformed": {
+  "wte (PCA of teacher token_embd, then trained)": 31784960,
+  "Oz (PCA of teacher output.weight, frozen)": 31784960
+ },
+ "bits_per_token_cum": [
+  12.0
+ ],
+ "train_acc_unquantised_z": 0.99688720703125,
+ "train_acc_by_level": [
+  0.7633514404296875
+ ],
+ "train_codes_used_by_level": [
+  1225
+ ],
+ "train_recall_at_K_by_level": {
+  "1": [
+   0.7633514404296875
+  ],
+  "16": [
+   0.898406982421875
+  ],
+  "256": [
+   0.9687347412109375
+  ],
+  "4096": [
+   0.9980316162109375
+  ]
+ },
+ "test_acc_unquantised_z": 0.9852294921875,
+ "test_acc_by_level": [
+  0.7816162109375
+ ],
+ "test_codes_used_by_level": [
+  1416
+ ],
+ "test_recall_at_K_by_level": {
+  "1": [
+   0.7816162109375
+  ],
+  "16": [
+   0.89501953125
+  ],
+  "256": [
+   0.954345703125
+  ],
+  "4096": [
+   0.990966796875
+  ]
+ },
+ "test_corpus_acc_unquantised_z": 0.9794769287109375,
+ "test_corpus_acc_by_level": [
+  0.7942657470703125
+ ],
+ "test_corpus_codes_used_by_level": [
+  3581
+ ],
+ "test_corpus_recall_at_K_by_level": {
+  "1": [
+   0.7942657470703125
+  ],
+  "16": [
+   0.89410400390625
+  ],
+  "256": [
+   0.951751708984375
+  ],
+  "4096": [
+   0.988067626953125
+  ]
+ }
+}

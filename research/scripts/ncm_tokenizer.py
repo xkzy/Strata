@@ -24,6 +24,8 @@ LOAD = next((a[5:] for a in sys.argv if a.startswith('load=')), None)   # load=C
 RANK = next((float(a[5:]) for a in sys.argv if a.startswith('rank=')), None)   # rank=LAMBDA (big mode): level 5 is trained every step and CE is joined by LAMBDA * log2(1 + soft rank of the true token); rank=0 is the matched control
 CORP = sys.argv[7] if len(sys.argv) > 7 else None    # optional .npy of [N, 32] teacher-tokenizer windows (build_corpus.py)
 L, LV, BETA, DECAY, RES = 32, [1, 2, 4, 8, 16, 32], 0.25, 0.99, 8192
+LVA = next((a[7:] for a in sys.argv if a.startswith('levels=')), None)    # levels=32,32: positions per level; flat ablation = full-resolution levels only (e.g. 32 or 32,32) instead of 1,2,4,8,16,32
+if LVA: LV = [int(x) for x in LVA.split(',')]
 if FLEVELS: C = int(np.prod(FLEVELS))
 torch.manual_seed(0); np.random.seed(0)
 
@@ -186,7 +188,8 @@ for step in range(STEPS):
         tok = W['train'][torch.randint(0, len(W['train']), (BQ,), device=dev)]
         z, cum, commit, _ = m.encode(tok); opt.zero_grad()      # the EMA codebooks see all BQ windows
         loss_tot = commit.item(); commit.backward(retain_graph=True)
-        pick = [(cum[-1], 1.0)] + [(cum[k], 2.5) for k in np.random.choice(len(LV) - 1, 2, replace=False)]   # expected weight = 6 levels
+        nc = len(LV) - 1; kc = min(2, nc)                         # coarse levels sampled per step; weight nc/kc keeps each level's expected weight at 1 (2.5 for 6 levels)
+        pick = [(cum[-1], 1.0)] + ([(cum[k], nc / kc) for k in np.random.choice(nc, kc, replace=False)] if nc else [])
         if RANK is not None: pick = [(cum[-1], 1.0), (cum[4], 1.0), (cum[np.random.randint(4)], 4.0)]       # level 5 (the rank anchor) every step; same expected weights
         if step % 4 == 0: pick.append((z, 4.0))                  # clean-input reference, expected weight 1
         for zh, w in pick:

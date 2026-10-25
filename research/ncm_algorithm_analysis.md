@@ -24,6 +24,7 @@ Source: Kumbong et al., arXiv 2610.14162 (text kept untracked in `research/data/
 | Finite scalar quantisation instead of the VQ (v5) | 73.5% at equal bits (4,096 codes); 79.9% only with 64,000 codes at 31.4 bits/token; coarse levels still 6–27% |
 | Rank-coded finest level on the saved v6 model (v7) | code = rank of the true token in the level-5 decoder's logits: 89.1% / 88.0% exact (cap2 / new text) at the same 23.6 bits, against 78.8% / 80.6%; lossless variants cost ≥ 19.2 bits/token (raw id 17.92, unigram entropy 10.65) |
 | Direct ranking objective (v8, soft-rank loss λ = 1, matched λ = 0 control) | no effect: level-5 exact 42.9% vs 44.5%, lossless 19.42 vs 19.34 bits |
+| Hierarchical vs flat levels at matched bits (v9) | flat 1 level, 12 bits: 78.2%; hierarchical, 23.6 bits: 78.8%; flat 2 levels, 24 bits: 91.1% (cap2 test). The coarse codes add nothing to reconstruction; whether they help a generator is untested |
 | Heads-only multi-token prediction from the final state | 0.40 / 0.20 / 0.13 agreement at 1 / 2 / 3 tokens ahead |
 | Measured pass time vs window | 15.4 + 13.1 ms × T |
 Details: prototype_and_ablation_results.md.
