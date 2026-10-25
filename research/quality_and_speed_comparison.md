@@ -11,10 +11,13 @@ No NCM variant ran end to end, so there is **no measured tok/s for any NCM varia
 | NCM levels 1, 2, 4, 8, 16, 32, zero quality loss | ≤ 34.9 | – | – | [D] upper bound |
 | NCM two levels (4 then 32), zero quality loss | ≤ 63.7 | – | – | [D] upper bound; quality at this setting unmeasured [U] |
 | NCM tokenizer v4, finest level, C = 4096 | – | 78.4% (cap2 test) / 80.1% (new-text test) token reconstruction; 23.6 bits/token | defines a different distribution | [M] |
+| NCM tokenizer v5, FSQ 4,096 / 64,000 codes, finest level | – | 73.5% / 79.9% (cap2 test), 75.1% / 80.4% (new text); 23.6 / 31.4 bits/token | defines a different distribution | [M] |
+| NCM tokenizer v6/v7, finest level rank-coded from the level-5 decoder (K = 4,096, ranks ≥ K wrong) | – | 89.1% (cap2 test) / 88.0% (new text); 23.6 bits/token; lossless variants 19.2–25.6 bits/token | closer to the teacher's tokens, still not exact | [M] |
+| NCM tokenizer v8, same with a soft-rank training loss | – | no change against a matched control (level-5 exact 42.9% vs 44.5%) | – | [M] |
 
 ## Distribution statement
 - Verified drafts (heads checked by the same trunk): **preserves** the teacher's greedy output.
-- Standalone NCM (codes decoded without verification): **approximates or redefines** it; the measured tokenizer reconstructs 78–80% of held-out tokens at its finest level (62% at C = 256), so it does not preserve it.
+- Standalone NCM (codes decoded without verification): **approximates or redefines** it; the measured tokenizer reconstructs 78–80% of held-out tokens at its finest level (62% at C = 256; 88–89% with rank coding at the same 23.6 bits, 98% only at 35.6 bits), so it does not preserve it.
 
 ## Other measured costs
 - Extra memory for the tokenizer prototype: 32.0 M trainable parameters (~128 MB fp32, of which 31.8 M is the embedding table) plus the frozen 31.8 M table. No engine memory measured.
@@ -22,4 +25,4 @@ No NCM variant ran end to end, so there is **no measured tok/s for any NCM varia
 - Long-context scaling and sustained GPU stability of any NCM variant: not measured.
 
 ## Reading
-Every speed figure for NCM above is an upper bound that assumes zero quality loss at each level. The measured quality (heads-only 0.40/0.20/0.13 agreement; tokenizer 78–80%) is far from that, so none of the bounds applies as a prediction.
+Every speed figure for NCM above is an upper bound that assumes zero quality loss at each level. The measured quality (heads-only 0.40/0.20/0.13 agreement; tokenizer 78–80%, 88–89% with rank coding) is far from that, so none of the bounds applies as a prediction.

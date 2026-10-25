@@ -21,9 +21,12 @@ Source: Kumbong et al., arXiv 2610.14162 (text kept untracked in `research/data/
 | Piece | Result |
 |---|---|
 | Tokenizer on teacher tokens, teacher-PCA initialised (this repo) | 78–80% held-out reconstruction at 32 codes (C = 4096; 62% at C = 256) after fixing quantiser collapse, 20× text and a longer big-batch run; coarse levels 8–16%; d = 256 no better |
+| Finite scalar quantisation instead of the VQ (v5) | 73.5% at equal bits (4,096 codes); 79.9% only with 64,000 codes at 31.4 bits/token; coarse levels still 6–27% |
+| Rank-coded finest level on the saved v6 model (v7) | code = rank of the true token in the level-5 decoder's logits: 89.1% / 88.0% exact (cap2 / new text) at the same 23.6 bits, against 78.8% / 80.6%; lossless variants cost ≥ 19.2 bits/token (raw id 17.92, unigram entropy 10.65) |
+| Direct ranking objective (v8, soft-rank loss λ = 1, matched λ = 0 control) | no effect: level-5 exact 42.9% vs 44.5%, lossless 19.42 vs 19.34 bits |
 | Heads-only multi-token prediction from the final state | 0.40 / 0.20 / 0.13 agreement at 1 / 2 / 3 tokens ahead |
 | Measured pass time vs window | 15.4 + 13.1 ms × T |
 Details: prototype_and_ablation_results.md.
 
 ## 4. Open
-**[U]** whether a different quantiser or larger codebook and dimension (the fix, 20× text and a longer big-batch run plateaued near 0.79) reaches the paper's reconstruction on a 248K vocabulary. **[U]** whether an NCM generator can sit on a recurrent trunk.
+**[U]** whether anything reaches the paper's reconstruction on a 248K vocabulary. FSQ, a 64,000-code grid, rank coding and a ranking loss all landed at or below 0.80 at ≤ 23.6 bits (0.89 with rank coding at 23.6 bits; 0.98 only at 35.6 bits); the coarse codes narrow the candidates little (median true-token rank 31–106 at levels 1–3), which is what limits the scheme. Single seeds, a small English-chat corpus. **[U]** whether an NCM generator can sit on a recurrent trunk.
