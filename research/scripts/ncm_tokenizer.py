@@ -18,6 +18,7 @@ cap, outp, C = sys.argv[1], sys.argv[2], int(sys.argv[3])
 STEPS = int(sys.argv[4]) if len(sys.argv) > 4 else 3000
 dev = sys.argv[5] if len(sys.argv) > 5 else 'cuda:1'
 D = int(sys.argv[6]) if len(sys.argv) > 6 else 128
+BIG = len(sys.argv) > 8 and sys.argv[8] == 'big'         # big-batch mode: 128 windows for the codebooks, CE on 32 (chunks of 8), finest + 2 sampled levels per step
 CORP = sys.argv[7] if len(sys.argv) > 7 else None      # optional .npy of [N, 32] teacher-tokenizer windows (build_corpus.py)
 L, LV, BETA, DECAY, RES = 32, [1, 2, 4, 8, 16, 32], 0.25, 0.99, 8192
 torch.manual_seed(0); np.random.seed(0)
@@ -119,19 +120,32 @@ B = 8
 with torch.no_grad():                            # seed every level's codebook from 16k windows (sequentially: level k sees level k-1's residual)
     m.eval(); m.encode(W['train'][torch.randperm(len(W['train']), device=dev)[:16384 if D <= 128 else 6144]], init=True)
 for step in range(STEPS):
-    m.train(); tok = W['train'][torch.randint(0, len(W['train']), (B,), device=dev)]
-    z, cum, commit, _ = m.encode(tok); opt.zero_grad()
-    loss_tot = commit.item()
-    (commit).backward(retain_graph=True)
-    for zh in [z] + cum:
-        l = F.cross_entropy(m.decode(zh).reshape(-1, V).float(), tok.reshape(-1)); l.backward(retain_graph=True); loss_tot += l.item()
+    m.train()
+    if BIG:
+        BQ, BC, CH = 128, 32, 8
+        tok = W['train'][torch.randint(0, len(W['train']), (BQ,), device=dev)]
+        z, cum, commit, _ = m.encode(tok); opt.zero_grad()      # the EMA codebooks see all BQ windows
+        loss_tot = commit.item(); commit.backward(retain_graph=True)
+        pick = [(cum[-1], 1.0)] + [(cum[k], 2.5) for k in np.random.choice(len(LV) - 1, 2, replace=False)]   # expected weight = 6 levels
+        if step % 4 == 0: pick.append((z, 4.0))                  # clean-input reference, expected weight 1
+        for zh, w in pick:
+            for i in range(0, BC, CH):                            # chunked CE: peak memory stays at the 8-window level
+                l = w * F.cross_entropy(m.decode(zh[i:i + CH]).reshape(-1, V).float(), tok[i:i + CH].reshape(-1)) * CH / BC
+                l.backward(retain_graph=True); loss_tot += l.item()
+    else:
+        tok = W['train'][torch.randint(0, len(W['train']), (B,), device=dev)]
+        z, cum, commit, _ = m.encode(tok); opt.zero_grad()
+        loss_tot = commit.item()
+        (commit).backward(retain_graph=True)
+        for zh in [z] + cum:
+            l = F.cross_entropy(m.decode(zh).reshape(-1, V).float(), tok.reshape(-1)); l.backward(retain_graph=True); loss_tot += l.item()
     opt.step(); sched.step()
     if step % 100 == 99: print('step', step + 1, 'loss', round(loss_tot, 3), flush=True)
     if step % 2500 == 2499: print('  cap2-test acc by level', [round(x, 3) for x in evaluate('test')[0][1:]], flush=True)
     if step % 500 == 499:
         with torch.no_grad(): print('  restarted (zero hits in last 500 steps):', [m.q[k].restart() for k in range(len(LV))], flush=True)
 
-res = {'C': C, 'L': L, 'D': D, 'levels': LV, 'steps': STEPS, 'windows': {k: len(v) for k, v in W.items()}, 'learned_params_total': learned,
+res = {'C': C, 'L': L, 'D': D, 'levels': LV, 'steps': STEPS, 'windows': {k: len(v) for k, v in W.items()}, 'learned_params_total': learned, 'big_batch': BIG,
        'pca_energy_kept': {'token_embd': ve, 'output': vo}, 'copied_or_transformed': copied,
        'bits_per_token_cum': [sum(l * math.log2(C) for l in LV[:k + 1]) / L for k in range(len(LV))]}
 for sp in [k for k in ('train', 'test', 'test_corpus') if k in W]:

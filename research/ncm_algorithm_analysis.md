@@ -20,10 +20,10 @@ Source: Kumbong et al., arXiv 2610.14162 (text kept untracked in `research/data/
 ## 3. What I tested
 | Piece | Result |
 |---|---|
-| Tokenizer on teacher tokens, teacher-PCA initialised (this repo) | 72–75% held-out reconstruction at 32 codes (C = 4096; 62% at C = 256) after fixing quantiser collapse; coarse levels 7–22%; d = 256 and 20× more text no better |
+| Tokenizer on teacher tokens, teacher-PCA initialised (this repo) | 78–80% held-out reconstruction at 32 codes (C = 4096; 62% at C = 256) after fixing quantiser collapse, 20× text and a longer big-batch run; coarse levels 8–16%; d = 256 no better |
 | Heads-only multi-token prediction from the final state | 0.40 / 0.20 / 0.13 agreement at 1 / 2 / 3 tokens ahead |
 | Measured pass time vs window | 15.4 + 13.1 ms × T |
 Details: prototype_and_ablation_results.md.
 
 ## 4. Open
-**[U]** whether a much longer or larger-batch tokenizer run (the quantiser fix, d = 256 and 20× more text did not close the gap) reaches the paper's reconstruction on a 248K vocabulary. **[U]** whether an NCM generator can sit on a recurrent trunk.
+**[U]** whether a different quantiser or larger codebook and dimension (the fix, 20× text and a longer big-batch run plateaued near 0.79) reaches the paper's reconstruction on a 248K vocabulary. **[U]** whether an NCM generator can sit on a recurrent trunk.

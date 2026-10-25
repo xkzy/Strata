@@ -46,6 +46,20 @@ Accepted prefix over 8: A 0.82, B 0.80 → 1.82 / 1.80 tokens per pass; fully co
 | unquantised z | 0.976 | 0.969 |
 Train accuracy at level 6 (cap2 train windows) is 0.671, so the train–test gap closed (v2 0.94 vs 0.75) and the memorisation is gone. The unquantised decoder now reaches 97–98% (v2: 0.896), so the embedding transform and decoder generalise; what holds the result at 0.72–0.75 is the quantised path, which is under-trained (≈ 0.19 epoch, loss flat near 35) and, at level 1, sees only 8 vectors per step for 4,096 codes (≈ 3,000 codes re-seeded at every restart). **Result vs v2 on the same cap2 test: 0.721 vs 0.753, no gain from 20× the text at this training budget** [M]; whether a longer or larger-batch run helps is untested [U].
 
+**v4 (longer, bigger batch).** Same C = 4096, d = 128, same 626,943-window corpus; 12,000 steps; codebooks see 128 windows per step, CE on 32 windows (chunks of 8), finest + 2 sampled coarser levels per step (weights keep the expected loss at 6 levels) → ≈ 384k windows seen (0.6 epoch) against 120k in v3. Data: `ncm_tokenizer_v4_big_C4096_D128.json`.
+
+| Level (codes) | cap2 test | held-out corpus |
+|---|---|---|
+| 1 | 0.077 | 0.079 |
+| 2 | 0.096 | 0.103 |
+| 3 (4) | 0.138 | 0.156 |
+| 4 (8) | 0.243 | 0.297 |
+| 5 (16) | 0.496 | 0.545 |
+| 6 (32) | **0.784** | **0.801** |
+| unquantised z | 0.976 | 0.974 |
+| train acc, level 6 | 0.768 | – |
+Mid-run cap2 readings at the finest level: 0.776 (step 2,500), 0.783 (5,000), 0.785 (7,500), 0.785 (10,000): it plateaued by step 5,000 while level 5 kept creeping up (0.396 → 0.493). Versus v3 (0.721 / 0.751): +6.3 and +5.0 points at the finest level, with 3× the windows seen and a changed loss (sampled levels), so the gain is not attributable to batch size alone [M]. Still far below the paper's 98.8–99.99%; coarse levels (1–3 codes) stay at 8–16%; 23.6 bits per token at level 6 is above a raw token id (~17.9). First-level idle codes at restart stayed ~1,700 of 4,096, at the finest level ~0 [M].
+
 Observations [M]: the collapse is fixed (all codes used on train at every level); capacity now matters (C = 4096 beats 256 by 13.5 points); d = 256 does not help (0.746 vs 0.753), so the 128-d PCA is not the limit; coarse levels carry little (7–21% through level 4); the train–test gap (0.94–0.97 vs 0.75) and 23.6 bits per token (a raw token id is ~17.9) say the finest level memorises a small corpus. **Still far from the paper's 98.8–99.99%; the paper's data, vocabulary and ~100M-parameter scale differ, so this is not evidence against NCM.** Whether more data closes the gap is untested [U]. The hierarchical-vs-flat ablation was **not run**: coarse levels are too weak to compare.
 
 ## 4. Weight-structure nulls
