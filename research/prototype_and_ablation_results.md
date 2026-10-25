@@ -95,6 +95,16 @@ At equal bits (23.6) FSQ is 4.9 points below VQ (0.735 vs 0.784, 8k vs 12k steps
 
 At the same 23.6 bits, swapping the learned last level for its rank code lifts exact reconstruction by +10.3 points (cap2) and +7.4 points (new text) [M]. Every lossless variant costs more than a plain token id (19.2 bits at best against 17.92) and far more than an entropy-coded token stream (10.65) [M]. Median rank at level 5 is 1 (rank 0: 44–49%); at levels 1–3 it is 31–106, i.e. the coarse codes narrow the candidates very little. **Limits:** one model trained for its own learned codes, not for ranking [U]; 256 + 2,048 test windows, single seed; "lossless" means the round trip, not a better compressor.
 
+**v8 (ranking objective, matched control).** Same VQ-4096 big-batch setup, 5,000 steps, seed 0; level 5 trained every step (weights as before in expectation); loss per decoded level = CE + λ·log2(1 + soft rank), soft rank = Σ_v sigmoid(logit_v − logit_true) − 0.5, τ = 1. λ = 1 (5060 Ti) against λ = 0 with the same level sampling (4060). Data: `ncm_tokenizer_v8_rank{0,1}.json` and `…_rankcode.json`. Level 5 (the rank anchor), cap2 test / new text:
+
+| | exact (rank 0) | within 16 | within 4,096 | Elias-gamma total bits |
+|---|---|---|---|---|
+| v6 (CE, old sampling) | 0.438 / 0.490 | 0.703 / 0.721 | 0.891 / 0.880 | 19.40 / 19.19 |
+| λ = 0 control | 0.445 / 0.496 | 0.707 / 0.722 | 0.886 / 0.880 | 19.34 / 19.16 |
+| **λ = 1** | 0.429 / 0.481 | 0.704 / 0.720 | 0.888 / 0.880 | 19.42 / 19.23 |
+
+**No effect** [M]: against the matched control the rank loss is 0.3–1.6 points worse at rank 0, equal within ±0.4 points at ranks 16 and 4,096, and +0.07 bits worse in lossless cost; finest-level exact accuracy 0.782 / 0.806 against 0.791 / 0.807. All differences are inside the ±0.01 run-to-run spread seen between v4 and v6. Cross-entropy already ranks the true token as well as a direct rank loss does at this scale and budget; the loss was also 2× larger in value and ~2× slower per step. Single seed, one λ and one τ tried [U]. Not tried: a rank loss with a different τ, ranking under a larger decoder, or any change to what the lower levels transmit — the coarse codes (median rank 31–106 at levels 1–3) are what limit rank coding, not the decoder's objective.
+
 Observations [M]: the collapse is fixed (all codes used on train at every level); capacity now matters (C = 4096 beats 256 by 13.5 points); d = 256 does not help (0.746 vs 0.753), so the 128-d PCA is not the limit; coarse levels carry little (7–21% through level 4); the train–test gap (0.94–0.97 vs 0.75) and 23.6 bits per token (a raw token id is ~17.9) say the finest level memorises a small corpus. **Still far from the paper's 98.8–99.99%; the paper's data, vocabulary and ~100M-parameter scale differ, so this is not evidence against NCM.** Whether more data closes the gap is untested [U]. The hierarchical-vs-flat ablation was **not run**: coarse levels are too weak to compare.
 
 ## 4. Weight-structure nulls

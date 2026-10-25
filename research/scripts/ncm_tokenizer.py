@@ -21,7 +21,8 @@ D = int(sys.argv[6]) if len(sys.argv) > 6 else 128
 BIG = len(sys.argv) > 8 and sys.argv[8] == 'big'         # big-batch mode: 128 windows for the codebooks, CE on 32 (chunks of 8), finest + 2 sampled levels per step
 FLEVELS = [int(x) for x in sys.argv[9].split('=')[1].split(',')] if len(sys.argv) > 9 and sys.argv[9].startswith('fsq=') else None   # finite scalar quantisation instead of the VQ
 LOAD = next((a[5:] for a in sys.argv if a.startswith('load=')), None)   # load=CKPT.pt: skip training, run the rank-coding test on a saved model
-CORP = sys.argv[7] if len(sys.argv) > 7 else None     # optional .npy of [N, 32] teacher-tokenizer windows (build_corpus.py)
+RANK = next((float(a[5:]) for a in sys.argv if a.startswith('rank=')), None)   # rank=LAMBDA (big mode): level 5 is trained every step and CE is joined by LAMBDA * log2(1 + soft rank of the true token); rank=0 is the matched control
+CORP = sys.argv[7] if len(sys.argv) > 7 else None    # optional .npy of [N, 32] teacher-tokenizer windows (build_corpus.py)
 L, LV, BETA, DECAY, RES = 32, [1, 2, 4, 8, 16, 32], 0.25, 0.99, 8192
 if FLEVELS: C = int(np.prod(FLEVELS))
 torch.manual_seed(0); np.random.seed(0)
@@ -145,7 +146,7 @@ def evaluate(split):
         n += tok.numel()
     return ok / n, [len(u) for u in used], rec / n
 @torch.no_grad()
-def rankcode():
+def rankcode(path):
     """Rank-coded level j: the encoder sends the rank of the true token in the level-j decoder's logits instead of a learned code; the decoder
     returns the token at that rank (stable sort, so ties cannot break the round trip). Costs are per token on top of the codes of levels <= j:
     gamma = Elias-gamma code of the rank (lossless, no escape); fixedK = ceil-free log2(K+1) bits with rank K reserved as 'escape + raw id' (lossless)."""
@@ -172,10 +173,10 @@ def rankcode():
                 d['total_bits_fixed%d_lossy_exact' % K] = [bc[j] + math.log2(K), f]            # [bits, share of positions exact]
             res_sp.append(d)
         out[sp] = res_sp
-    print(json.dumps(out, indent=1)); json.dump(out, open(outp, 'w'), indent=1)
+    print(json.dumps(out, indent=1)); json.dump(out, open(path, 'w'), indent=1)
 
 B = 8
-if LOAD: m.load_state_dict(torch.load(LOAD, map_location=dev, weights_only=True)); rankcode(); sys.exit(0)
+if LOAD: m.load_state_dict(torch.load(LOAD, map_location=dev, weights_only=True)); rankcode(outp); sys.exit(0)
 with torch.no_grad():                            # seed every level's codebook from 16k windows (sequentially: level k sees level k-1's residual)
     m.eval(); m.encode(W['train'][torch.randperm(len(W['train']), device=dev)[:16384 if D <= 128 else 6144]], init=True)
 for step in range(STEPS):
@@ -186,10 +187,14 @@ for step in range(STEPS):
         z, cum, commit, _ = m.encode(tok); opt.zero_grad()      # the EMA codebooks see all BQ windows
         loss_tot = commit.item(); commit.backward(retain_graph=True)
         pick = [(cum[-1], 1.0)] + [(cum[k], 2.5) for k in np.random.choice(len(LV) - 1, 2, replace=False)]   # expected weight = 6 levels
+        if RANK is not None: pick = [(cum[-1], 1.0), (cum[4], 1.0), (cum[np.random.randint(4)], 4.0)]       # level 5 (the rank anchor) every step; same expected weights
         if step % 4 == 0: pick.append((z, 4.0))                  # clean-input reference, expected weight 1
         for zh, w in pick:
             for i in range(0, BC, CH):                            # chunked CE: peak memory stays at the 8-window level
-                l = w * F.cross_entropy(m.decode(zh[i:i + CH]).reshape(-1, V).float(), tok[i:i + CH].reshape(-1)) * CH / BC
+                lg = m.decode(zh[i:i + CH]).float(); t = tok[i:i + CH]
+                l = F.cross_entropy(lg.reshape(-1, V), t.reshape(-1))
+                if RANK: l = l + RANK * torch.log2(1 + torch.sigmoid(lg - lg.gather(-1, t[..., None])).sum(-1) - 0.5).mean()   # soft rank: the true token counts 0.5 of itself
+                l = w * l * CH / BC
                 l.backward(retain_graph=True); loss_tot += l.item()
     else:
         tok = W['train'][torch.randint(0, len(W['train']), (B,), device=dev)]
@@ -213,3 +218,4 @@ for sp in [k for k in ('train', 'test', 'test_corpus') if k in W]:
 print(json.dumps(res, indent=1))
 json.dump(res, open(outp, 'w'), indent=1)
 torch.save(m.state_dict(), '/home/khing/Downloads/Strata-data/ncm/ckpt_' + os.path.basename(outp)[:-5] + '.pt')   # kept outside the repo
+if RANK is not None: rankcode(outp[:-5] + '_rankcode.json')
