@@ -1,0 +1,16 @@
+GPU fault during the stage-2 generator runs (v10), 2026-10-25. Diagnostics preserved; nothing was retried.
+
+Kernel log (journalctl -k), first entries:
+  Oct 25 11:15:39 khing-pc-li kernel: NVRM: Xid (PCI:0000:01:00): 79, GPU has fallen off the bus.
+  Oct 25 11:15:39 khing-pc-li kernel: NVRM: Xid (PCI:0000:01:00): 154, GPU recovery action changed from 0x0 (None) to 0x2 (Node Reboot Required)
+  Oct 25 11:15:39 khing-pc-li kernel: NVRM: Xid (PCI:0000:05:00): 154, GPU recovery action changed from 0x0 (None) to 0x2 (Node Reboot Required)
+Afterwards (11:24, still running when captured): "NVRM: _issueRpcAndWait: rpcSendMessage failed with status 0x0000000f for fn 76 sequence N", several per second, sequence ~281,681 -> 281,720+.
+
+State at 11:24:29: nvidia-smi: "Unable to determine the device handle for GPU0: 0000:01:00.0: Unknown Error"; only the RTX 4060 (05:00.0) listed, 30 MiB used, idle. Driver 595.112.07, CUDA 13.2.
+
+Devices: 01:00.0 = RTX 5060 Ti 16 GB (torch cuda:0 with CUDA_DEVICE_ORDER=PCI_BUS_ID), 05:00.0 = RTX 4060 8 GB (cuda:1).
+Workload: gen_stage2.py via ncm_tokenizer.py (load=CKPT gen=...), bf16 autocast, 4000 steps, batch 128, started 11:13:15.
+ - cuda:0 (5060 Ti), hierarchical generator: step 400 logged at 89 s, then "torch.AcceleratorError: CUDA error: unspecified launch failure" (consistent with the 11:15:39 Xid 79).
+ - cuda:1 (4060), flat-2 generator: trained all 4000 steps (638 s, ended ~11:24) with no error, then failed in the first evaluation decode with "CUDA error: unknown error". The 4060 had also been flagged "Node Reboot Required" (Xid 154) at 11:15:39.
+ - The flat-1 and direct runs queued behind them never started usefully (no result files). No generator weights were saved: the flat-2 training was lost with the crash.
+Earlier faults on this machine: 2026-10-23, 2026-10-24 19:26 (Xid 79 on the 5060 Ti). Several earlier sustained runs on the 5060 Ti this session ran without a fault.

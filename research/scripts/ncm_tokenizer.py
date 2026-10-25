@@ -178,7 +178,12 @@ def rankcode(path):
     print(json.dumps(out, indent=1)); json.dump(out, open(path, 'w'), indent=1)
 
 B = 8
-if LOAD: m.load_state_dict(torch.load(LOAD, map_location=dev, weights_only=True)); rankcode(outp); sys.exit(0)
+GEN = next((a[4:] for a in sys.argv if a.startswith('gen=')), None)      # gen=gen_stage2.py: with load=, train/score a stage-2 generator on the frozen tokenizer instead of the rank-coding test
+if LOAD:
+    m.load_state_dict(torch.load(LOAD, map_location=dev, weights_only=True))
+    if GEN: exec(open(GEN).read())
+    else: rankcode(outp)
+    sys.exit(0)
 with torch.no_grad():                            # seed every level's codebook from 16k windows (sequentially: level k sees level k-1's residual)
     m.eval(); m.encode(W['train'][torch.randperm(len(W['train']), device=dev)[:16384 if D <= 128 else 6144]], init=True)
 for step in range(STEPS):
