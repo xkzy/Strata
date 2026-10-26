@@ -225,6 +225,130 @@ __global__ void quant_x(const float* x, int cols, int n, int8_t* xq, float* xd, 
     if (lane == 0) xd[wid] = d, xs[wid] = sum;
 }
 
+// Small batches (1 to 3 inputs, i.e. decode): one block per weight row, int8 inputs with dp4a.
+template <bool FIVE>
+__device__ void mmq_k45(const uint8_t* row, const int8_t* xq, const float* xd, int cols, int nin, int tid, int nt,
+                        float* acc) {
+    const int bytes = FIVE ? 176 : 144, nb = cols / 256, nb32 = cols / 32;
+    for (int it = tid; it < nb * 16; it += nt) {
+        const int b = it >> 4, j = (it >> 2) & 3, k = it & 3;
+        const uint8_t* blk = row + (size_t) b * bytes;
+        const float d = h2f(blk), dmin = h2f(blk + 2);
+        int s1, m1, s2, m2;
+        scale_min(2 * j, blk + 4, &s1, &m1);
+        scale_min(2 * j + 1, blk + 4, &s2, &m2);
+        const uint2 qv = *(const uint2*) (blk + (FIVE ? 48 : 16) + j * 32 + k * 8);
+        uint32_t a0 = qv.x & 0x0F0F0F0Fu, a1 = qv.y & 0x0F0F0F0Fu; // low nibbles: sub-block 2j
+        uint32_t c0 = (qv.x >> 4) & 0x0F0F0F0Fu, c1 = (qv.y >> 4) & 0x0F0F0F0Fu; // high nibbles: sub-block 2j+1
+        if (FIVE) {
+            const uint2 hv = *(const uint2*) (blk + 16 + k * 8);
+            a0 |= ((hv.x >> (2 * j)) & 0x01010101u) << 4;
+            a1 |= ((hv.y >> (2 * j)) & 0x01010101u) << 4;
+            c0 |= ((hv.x >> (2 * j + 1)) & 0x01010101u) << 4;
+            c1 |= ((hv.y >> (2 * j + 1)) & 0x01010101u) << 4;
+        }
+        const int eA = b * 256 + j * 64 + k * 8, bA = b * 8 + 2 * j;
+#pragma unroll
+        for (int ii = 0; ii < 8; ii++) {
+            if (ii >= nin) break;
+            const int8_t* xa = xq + (size_t) ii * cols + eA;
+            const int xa0 = *(const int*) xa, xa1 = *(const int*) (xa + 4);
+            const int xb0 = *(const int*) (xa + 32), xb1 = *(const int*) (xa + 36);
+            const int p1 = __dp4a((int) a0, xa0, __dp4a((int) a1, xa1, 0));
+            const int p2 = __dp4a((int) c0, xb0, __dp4a((int) c1, xb1, 0));
+            const int q1 = __dp4a(0x01010101, xa0, __dp4a(0x01010101, xa1, 0));
+            const int q2 = __dp4a(0x01010101, xb0, __dp4a(0x01010101, xb1, 0));
+            const float dA = xd[(size_t) ii * nb32 + bA], dB = xd[(size_t) ii * nb32 + bA + 1];
+            acc[ii] += d * ((float) s1 * dA * (float) p1 + (float) s2 * dB * (float) p2) -
+                       dmin * ((float) m1 * dA * (float) q1 + (float) m2 * dB * (float) q2);
+        }
+    }
+}
+
+__device__ void mmq_q6k(const uint8_t* row, const int8_t* xq, const float* xd, int cols, int nin, int tid, int nt,
+                        float* acc) {
+    const int nb = cols / 256, nb32 = cols / 32;
+    for (int it = tid; it < nb * 8; it += nt) {
+        const int b = it >> 3, n = (it >> 2) & 1, g = it & 3;
+        const uint8_t* blk = row + (size_t) b * 210;
+        const uint8_t* ql = blk + n * 64 + g * 8;
+        const uint8_t* qh = blk + 128 + n * 32 + g * 8;
+        const int8_t* sc = (const int8_t*) (blk + 192 + n * 8);
+        const int is = g >> 1;
+        int w[4][2];
+#pragma unroll
+        for (int h = 0; h < 2; h++) {
+            const uint32_t l0 = ld32(ql + 4 * h), l1 = ld32(ql + 32 + 4 * h), hh = ld32(qh + 4 * h);
+            w[0][h] = __vsubss4((int) ((l0 & 0x0F0F0F0Fu) | (((hh >> 0) & 0x03030303u) << 4)), 0x20202020);
+            w[1][h] = __vsubss4((int) ((l1 & 0x0F0F0F0Fu) | (((hh >> 2) & 0x03030303u) << 4)), 0x20202020);
+            w[2][h] = __vsubss4((int) (((l0 >> 4) & 0x0F0F0F0Fu) | (((hh >> 4) & 0x03030303u) << 4)), 0x20202020);
+            w[3][h] = __vsubss4((int) (((l1 >> 4) & 0x0F0F0F0Fu) | (((hh >> 6) & 0x03030303u) << 4)), 0x20202020);
+        }
+        const float d = h2f(blk + 208);
+        const int off = b * 256 + n * 128 + g * 8, b0 = b * 8 + n * 4;
+#pragma unroll
+        for (int ii = 0; ii < 8; ii++) {
+            if (ii >= nin) break;
+            const int8_t* xn = xq + (size_t) ii * cols + off;
+            float t = 0.f;
+#pragma unroll
+            for (int m = 0; m < 4; m++) {
+                const int p = __dp4a(w[m][0], *(const int*) (xn + 32 * m), __dp4a(w[m][1], *(const int*) (xn + 32 * m + 4), 0));
+                t += (float) sc[is + 2 * m] * xd[(size_t) ii * nb32 + b0 + m] * (float) p;
+            }
+            acc[ii] += d * t;
+        }
+    }
+}
+
+__device__ void mmq_q8(const uint8_t* row, const int8_t* xq, const float* xd, int cols, int nin, int tid, int nt,
+                       float* acc) {
+    const int nb32 = cols / 32;
+    for (int it = tid; it < cols / 8; it += nt) {
+        const int b = it >> 2, q = it & 3;
+        const uint8_t* blk = row + (size_t) b * 34;
+        const int w0 = (int) ld32(blk + 2 + q * 8), w1 = (int) ld32(blk + 6 + q * 8);
+        const float d = h2f(blk);
+#pragma unroll
+        for (int ii = 0; ii < 8; ii++) {
+            if (ii >= nin) break;
+            const int8_t* xb = xq + (size_t) ii * cols + b * 32 + q * 8;
+            const int p = __dp4a(w0, *(const int*) xb, __dp4a(w1, *(const int*) (xb + 4), 0));
+            acc[ii] += d * xd[(size_t) ii * nb32 + b] * (float) p;
+        }
+    }
+}
+
+template <int TYPE>
+__global__ void mmq(const uint8_t* w, size_t row_bytes, int rows, int cols, int n, const int8_t* xq, const float* xd,
+                    float* y) {
+    const int r = blockIdx.x, i0 = blockIdx.y * NB;
+    const int nin = min((int) NB, n - i0);
+    const uint8_t* row = w + (size_t) r * row_bytes;
+    const int8_t* xqi = xq + (size_t) i0 * cols;
+    const float* xdi = xd + (size_t) i0 * (cols / 32);
+    float acc[NB];
+#pragma unroll
+    for (int k = 0; k < NB; k++) acc[k] = 0.f;
+    if (TYPE == T_Q4_K) mmq_k45<false>(row, xqi, xdi, cols, nin, threadIdx.x, blockDim.x, acc);
+    else if (TYPE == T_Q5_K) mmq_k45<true>(row, xqi, xdi, cols, nin, threadIdx.x, blockDim.x, acc);
+    else if (TYPE == T_Q6_K) mmq_q6k(row, xqi, xdi, cols, nin, threadIdx.x, blockDim.x, acc);
+    else mmq_q8(row, xqi, xdi, cols, nin, threadIdx.x, blockDim.x, acc);
+    __shared__ float part[NB][32];
+#pragma unroll
+    for (int k = 0; k < NB; k++) {
+        float s = acc[k];
+        for (int o = 16; o > 0; o >>= 1) s += __shfl_down_sync(0xffffffffu, s, o);
+        if ((threadIdx.x & 31) == 0) part[k][threadIdx.x >> 5] = s;
+    }
+    __syncthreads();
+    if (threadIdx.x < nin) {
+        float t = 0.f;
+        for (int k = 0; k < (int) (blockDim.x >> 5); k++) t += part[threadIdx.x][k];
+        y[(size_t) (i0 + threadIdx.x) * rows + r] = t;
+    }
+}
+
 // Tensor-core matrix product for batches of inputs. A block computes 64 weight rows x 32 inputs, walking the columns in
 // chunks of 256 (one k-quant super-block). Per chunk the weights are decoded once into int8 in shared memory next to the
 // quantized inputs, and each warp runs int8 mma.sync over groups of G columns (32; 16 for Q6_K, whose scales are per 16):
@@ -425,7 +549,7 @@ static int matvec_core(Scratch& s, int type, const void* w, size_t row_bytes, in
                        float* dy) {
     const dim3 grid(rows, (n + NB - 1) / NB), block(128);
     const uint8_t* wp = (const uint8_t*) w;
-    if (n >= 4 && cols % 256 == 0 && (type == T_Q4_K || type == T_Q5_K || type == T_Q6_K || type == T_Q8_0)) {
+    if (cols % 256 == 0 && (type == T_Q4_K || type == T_Q5_K || type == T_Q6_K || type == T_Q8_0)) {
         const size_t qb = (size_t) n * cols, db = (size_t) n * (cols / 32) * sizeof(float);
         if (qb + 2 * db > s.qcap) {
             cudaFree(s.xq);
@@ -440,6 +564,15 @@ static int matvec_core(Scratch& s, int type, const void* w, size_t row_bytes, in
         }
         const int warps = n * (cols / 32);
         quant_x<<<(warps + 7) / 8, 256>>>(dx, cols, n, s.xq, s.xd, s.xs);
+        if (n < 4) {
+            switch (type) {
+            case T_Q4_K: mmq<T_Q4_K><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, dy); break;
+            case T_Q5_K: mmq<T_Q5_K><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, dy); break;
+            case T_Q6_K: mmq<T_Q6_K><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, dy); break;
+            default: mmq<T_Q8_0><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, dy); break;
+            }
+            return cudaGetLastError() == cudaSuccess ? 0 : 106;
+        }
         const dim3 mg((rows + BM - 1) / BM, (n + BN - 1) / BN);
         switch (type) {
         case T_Q4_K: mma_gemm<T_Q4_K><<<mg, 128>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, s.xs, dy); break;

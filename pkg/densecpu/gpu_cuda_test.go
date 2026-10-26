@@ -28,7 +28,7 @@ func TestCUDAKernelsMatchCPU(t *testing.T) {
 					w[b*2+1] &= 0x3f
 				}
 			}
-			for _, n := range []int{1, 5, 8, 19} {
+			for _, n := range []int{1, 2, 3, 5, 8, 19} {
 				X := make([][]float32, n)
 				for i := range X {
 					X[i] = make([]float32, cols)
@@ -43,8 +43,8 @@ func TestCUDAKernelsMatchCPU(t *testing.T) {
 				rowBytes := cols / elems * bytes
 				for i := range X {
 					x := X[i]
-					if n >= 4 && c.typ != tBF16 {
-						x = quantRef(x) // batches of 4 or more run the int8 kernels on quantized inputs
+					if c.typ != tBF16 {
+						x = quantRef(x) // every batch size runs the int8 kernels on quantized inputs (cols is a multiple of 256)
 					}
 					xs := sums32(x)
 					for r := 0; r < rows; r++ {
