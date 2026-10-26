@@ -51,6 +51,7 @@ func TestDecodeSteps(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := q.NewState()
+	defer st.Free()
 	for done := 0; done < 2048; done += 512 {
 		ids := make([]int, 512)
 		for i := range ids {

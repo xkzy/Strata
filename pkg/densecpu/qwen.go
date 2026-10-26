@@ -204,7 +204,7 @@ func (m *Qwen) attn(p string, xn [][]float32, posOff int, c *kvCache) [][]float3
 	}
 	done := false
 	if m.gpu != nil {
-		if r, ok := m.gpu.attn(p, Q, c, base, 0, nHead, nKV, hd, scale); ok {
+		if r, ok := m.gpu.attn(p, Q, c, 0, base, 0, nHead, nKV, hd, scale); ok {
 			ctx, done = r, true
 		}
 	}
@@ -242,7 +242,11 @@ func (m *Qwen) attn(p string, xn [][]float32, posOff int, c *kvCache) [][]float3
 	return m.matmul(p+"attn_output.weight", ctx)
 }
 
-func (m *Qwen) hidden(tokens []int) [][]float32 { return m.hiddenAt(m.NewState(), tokens) }
+func (m *Qwen) hidden(tokens []int) [][]float32 {
+	st := m.NewState()
+	defer st.Free()
+	return m.hiddenAt(st, tokens)
+}
 
 // hiddenAt runs the new tokens on top of the session st and returns their post-final-norm hidden states.
 func (m *Qwen) hiddenAt(st *QwenState, tokens []int) [][]float32 {
@@ -301,7 +305,11 @@ func (m *Qwen) hiddenAt(st *QwenState, tokens []int) [][]float32 {
 }
 
 // Forward runs the token sequence and returns the logits of the last position.
-func (m *Qwen) Forward(tokens []int) []float32 { return m.Step(m.NewState(), tokens) }
+func (m *Qwen) Forward(tokens []int) []float32 {
+	st := m.NewState()
+	defer st.Free()
+	return m.Step(st, tokens)
+}
 
 // Step feeds only the new tokens to the session and returns the logits of the last one.
 func (m *Qwen) Step(st *QwenState, tokens []int) []float32 {

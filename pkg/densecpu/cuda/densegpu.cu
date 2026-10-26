@@ -9,6 +9,7 @@
 #include "densegpu.h"
 
 #include <chrono>
+#include <cstdio>
 // Per entry point (0 matvec, 1 attn, 2 gdn): host-to-device, kernel, device-to-host seconds and bytes moved.
 static double g_t[3][3];
 static double g_b[3][2];
@@ -533,6 +534,14 @@ static int finish_matvec(float* y, const float* dy, size_t yb, double t0, double
     return 0;
 }
 
+// Reports a failed launch on stderr (the Go side only sees the code).
+static int launch_ok(const char* what) {
+    const cudaError_t e = cudaGetLastError();
+    if (e == cudaSuccess) return 0;
+    fprintf(stderr, "densegpu: %s: %s\n", what, cudaGetErrorString(e));
+    return 106;
+}
+
 // Grows a device buffer to at least `bytes` (contents are not kept).
 static bool grow(void** p, size_t* cap, size_t bytes) {
     if (bytes <= *cap) return true;
@@ -571,7 +580,7 @@ static int matvec_core(Scratch& s, int type, const void* w, size_t row_bytes, in
             case T_Q6_K: mmq<T_Q6_K><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, dy); break;
             default: mmq<T_Q8_0><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, dy); break;
             }
-            return cudaGetLastError() == cudaSuccess ? 0 : 106;
+            return launch_ok("matvec_core");
         }
         const dim3 mg((rows + BM - 1) / BM, (n + BN - 1) / BN);
         switch (type) {
@@ -580,7 +589,7 @@ static int matvec_core(Scratch& s, int type, const void* w, size_t row_bytes, in
         case T_Q6_K: mma_gemm<T_Q6_K><<<mg, 128>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, s.xs, dy); break;
         default: mma_gemm<T_Q8_0><<<mg, 128>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, s.xs, dy); break;
         }
-        return cudaGetLastError() == cudaSuccess ? 0 : 106;
+        return launch_ok("matvec_core");
     }
     switch (type) {
     case T_Q4_K: matvec<T_Q4_K><<<grid, block>>>(wp, row_bytes, rows, cols, n, dx, dy); break;
@@ -590,7 +599,7 @@ static int matvec_core(Scratch& s, int type, const void* w, size_t row_bytes, in
     case T_BF16: matvec<T_BF16><<<grid, block>>>(wp, row_bytes, rows, cols, n, dx, dy); break;
     default: return 105;
     }
-    return cudaGetLastError() == cudaSuccess ? 0 : 106;
+    return launch_ok("matvec_core");
 }
 
 extern "C" int dg_matvec(int dev, int type, const void* w, size_t row_bytes, int rows, int cols, const float* x,
@@ -644,7 +653,8 @@ extern "C" int dg_ffn(int dev, int act, int tg, const void* wg, size_t rbg, int 
 // Attention, one block per (token, head): each of the 8 warps walks every 8th position with an online softmax
 // (lane l owns dims l, l+32, ...), then the warps are merged through shared memory.
 __global__ void attn_kernel(const float* __restrict__ Q, const __half* __restrict__ K, const __half* __restrict__ V,
-                            int first, int window, int nHead, int nKV, int hd, float scale, float* __restrict__ out) {
+                            int first, int window, int b0, int cap, int nHead, int nKV, int hd, float scale,
+                            float* __restrict__ out) {
     __shared__ float sm[8], sl[8], sacc[8][512];
     const int i = blockIdx.x, h = blockIdx.y, kv = h / (nHead / nKV), lane = threadIdx.x & 31, w = threadIdx.x >> 5;
     const int per = hd / 32, last = first + i, lo = window > 0 ? max(0, last - window + 1) : 0;
@@ -653,13 +663,14 @@ __global__ void attn_kernel(const float* __restrict__ Q, const __half* __restric
     for (int k = 0; k < per; k++) q[k] = qh[lane + 32 * k], acc[k] = 0.f;
     float m = -INFINITY, l = 0.f;
     for (int j = lo + w; j <= last; j += 8) {
-        const __half* kp = K + ((size_t) j * nKV + kv) * hd;
+        const int slot = cap ? (b0 + j) % cap : j; // ring buffer: row j is position b0+j, kept in slot position % cap
+        const __half* kp = K + ((size_t) slot * nKV + kv) * hd;
         float s = 0.f;
         for (int k = 0; k < per; k++) s += q[k] * __half2float(kp[lane + 32 * k]);
         for (int o = 16; o; o >>= 1) s += __shfl_xor_sync(0xffffffffu, s, o);
         s *= scale;
         const float mn = fmaxf(m, s), c = __expf(m - mn), p = __expf(s - mn);
-        const __half* vp = V + ((size_t) j * nKV + kv) * hd;
+        const __half* vp = V + ((size_t) slot * nKV + kv) * hd;
         l = l * c + p;
         for (int k = 0; k < per; k++) acc[k] = acc[k] * c + p * __half2float(vp[lane + 32 * k]);
         m = mn;
@@ -678,15 +689,15 @@ __global__ void attn_kernel(const float* __restrict__ Q, const __half* __restric
     }
 }
 
-extern "C" int dg_attn_dev(int dev, int n, int first, int window, int nHead, int nKV, int hd, float scale, const float* q,
+extern "C" int dg_attn_dev(int dev, int n, int first, int window, int b0, int cap, int nHead, int nKV, int hd, float scale, const float* q,
                            const void* dk, const void* dv, float* out) {
-    if (dev < 0 || dev >= 16 || n <= 0 || first < 0 || window < 0 || nKV <= 0 || nHead % nKV || hd % 32 || hd > 512 || n > 1 << 30) return 100;
+    if (dev < 0 || dev >= 16 || n <= 0 || first < 0 || window < 0 || b0 < 0 || cap < 0 || nKV <= 0 || nHead % nKV || hd % 32 || hd > 512 || n > 1 << 30) return 100;
     if (cudaSetDevice(dev) != cudaSuccess) return 101;
     Scratch& s = g_scratch[dev];
     const size_t qb = (size_t) n * nHead * hd * sizeof(float);
     if (!grow((void**) &s.x, &s.xcap, qb) || !grow((void**) &s.y, &s.ycap, qb)) return 102;
     if (cudaMemcpy(s.x, q, qb, cudaMemcpyHostToDevice) != cudaSuccess) return 104;
-    attn_kernel<<<dim3(n, nHead), 256>>>(s.x, (const __half*) dk, (const __half*) dv, first, window, nHead, nKV, hd, scale, s.y);
+    attn_kernel<<<dim3(n, nHead), 256>>>(s.x, (const __half*) dk, (const __half*) dv, first, window, b0, cap, nHead, nKV, hd, scale, s.y);
     if (cudaGetLastError() != cudaSuccess) return 106;
     return cudaMemcpy(out, s.y, qb, cudaMemcpyDeviceToHost) == cudaSuccess ? 0 : 107;
 }

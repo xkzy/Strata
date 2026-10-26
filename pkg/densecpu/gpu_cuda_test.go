@@ -96,7 +96,7 @@ func TestCUDAAttnMatchesCPU(t *testing.T) {
 		Q, K, V := rnd(c.n, c.nHead*c.hd), rnd(ctx, c.nKV*c.hd), rnd(ctx, c.nKV*c.hd)
 		kc := &kvCache{K: packHalf(K), V: packHalf(V)}
 		scale := float32(1 / math.Sqrt(float64(c.hd)))
-		got, ok := testGPU().attn("", Q, kc, c.base, c.window, c.nHead, c.nKV, c.hd, scale)
+		got, ok := testGPU().attn("", Q, kc, 0, c.base, c.window, c.nHead, c.nKV, c.hd, scale)
 		if !ok {
 			t.Skip("no CUDA device")
 		}
@@ -163,12 +163,12 @@ func TestCUDAAttnResidentGrows(t *testing.T) {
 				Q[i][j] = rng.Float32()*2 - 1
 			}
 		}
-		got, ok := testGPU().attn("", Q, kc, pos, 0, nHead, nKV, hd, 0.125)
+		got, ok := testGPU().attn("", Q, kc, 0, pos, 0, nHead, nKV, hd, 0.125)
 		if !ok {
 			t.Skip("no CUDA device")
 		}
 		fresh := &kvCache{K: kc.K, V: kc.V}
-		want, ok2 := testGPU().attn("", Q, fresh, pos, 0, nHead, nKV, hd, 0.125)
+		want, ok2 := testGPU().attn("", Q, fresh, 0, pos, 0, nHead, nKV, hd, 0.125)
 		if !ok2 {
 			t.Fatalf("fresh cache of %d rows (n=%d, first=%d): attn declined", len(fresh.K), n, pos)
 		}
@@ -180,5 +180,67 @@ func TestCUDAAttnResidentGrows(t *testing.T) {
 			}
 		}
 		pos += n
+	}
+}
+
+// TestCUDAAttnRing runs a sliding-window cache the way Gemma does (host rows trimmed to the window after every call)
+// through enough single tokens and batches that the ring wraps several times, against a CPU reference over all rows.
+func TestCUDAAttnRing(t *testing.T) {
+	rng := rand.New(rand.NewSource(9))
+	const nHead, nKV, hd, window, total = 8, 2, 64, 100, 2500
+	rnd := func(w int) []float32 {
+		r := make([]float32, w)
+		for i := range r {
+			r[i] = rng.Float32()*2 - 1
+		}
+		return r
+	}
+	allK, allV := make([][]uint16, total), make([][]uint16, total)
+	for i := range allK {
+		allK[i], allV[i] = packHalf([][]float32{rnd(nKV * hd)})[0], packHalf([][]float32{rnd(nKV * hd)})[0]
+	}
+	kc, b0, pos := &kvCache{}, 0, 0
+	for _, n := range []int{300, 1, 1, 1, 5, 1, 400, 1, 1, 7, 512, 1, 600, 1} {
+		kc.K, kc.V = append(kc.K, allK[pos:pos+n]...), append(kc.V, allV[pos:pos+n]...)
+		Q := make([][]float32, n)
+		for i := range Q {
+			Q[i] = rnd(nHead * hd)
+		}
+		got, ok := testGPU().attn("", Q, kc, b0, pos-b0, window, nHead, nKV, hd, 0.125)
+		if !ok {
+			t.Skip("no CUDA device")
+		}
+		for i := 0; i < n; i++ {
+			last := pos + i
+			lo := max(0, last-window+1)
+			for h := 0; h < nHead; h++ {
+				kv := h / (nHead / nKV)
+				sc := make([]float64, last-lo+1)
+				mx := math.Inf(-1)
+				for j := range sc {
+					sc[j] = float64(dotHalf(Q[i][h*hd:(h+1)*hd], allK[lo+j][kv*hd:(kv+1)*hd]) * 0.125)
+					mx = math.Max(mx, sc[j])
+				}
+				var sum float64
+				for j := range sc {
+					sc[j] = math.Exp(sc[j] - mx)
+					sum += sc[j]
+				}
+				want := make([]float32, hd)
+				for j := range sc {
+					axpyHalf(want, float32(sc[j]/sum), allV[lo+j][kv*hd:(kv+1)*hd])
+				}
+				for d, w := range want {
+					if g := got[i][h*hd+d]; math.Abs(float64(g-w)) > 2e-4 {
+						t.Fatalf("batch ending at %d, token %d head %d dim %d: gpu %v cpu %v", pos+n, i, h, d, g, w)
+					}
+				}
+			}
+		}
+		pos += n
+		if drop := len(kc.K) - window; drop > 0 { // Gemma's trim
+			kc.K, kc.V = append([][]uint16(nil), kc.K[drop:]...), append([][]uint16(nil), kc.V[drop:]...)
+			b0 += drop
+		}
 	}
 }

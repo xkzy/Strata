@@ -11,9 +11,10 @@ void dg_free(int dev, void* p);
 // y[i*rows + r] = row r of the quantized matrix w (ggml type `type`) dot x[i*cols .. ]; 0 on success.
 int dg_matvec(int dev, int type, const void* w, size_t row_bytes, int rows, int cols, const float* x, int n, float* y);
 // Causal attention for n new tokens over a half-precision cache of first+n rows already on card `dev` (dk, dv); new
-// token i is row first+i and sees rows max(0, first+i-window+1)..first+i (window 0: all earlier rows).
+// token i is row first+i and sees rows max(0, first+i-window+1)..first+i (window 0: all earlier rows). cap 0: row j is
+// at slot j; otherwise a ring buffer of cap slots where row j (position b0+j) is at slot (b0+j) % cap.
 // q, out: [n][nHead*hd] floats on the host; hd is a multiple of 32, at most 512. 0 on success.
-int dg_attn_dev(int dev, int n, int first, int window, int nHead, int nKV, int hd, float scale, const float* q, const void* dk,
+int dg_attn_dev(int dev, int n, int first, int window, int b0, int cap, int nHead, int nKV, int hd, float scale, const float* q, const void* dk,
                 const void* dv, float* out);
 // Device memory for the resident KV cache and delta-net state. dg_alloc returns NULL on failure; the copies return 0.
 void* dg_alloc(int dev, size_t bytes);

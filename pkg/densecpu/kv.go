@@ -100,6 +100,23 @@ type QwenState struct {
 	kv  []*kvCache
 }
 
+// Free releases the session's card memory (the cache and delta-net state kept in VRAM); the garbage collector cannot
+// see VRAM. The session must not be used afterwards.
+func (s *QwenState) Free() {
+	for _, c := range s.kv {
+		if c != nil {
+			c.dev.release()
+			c.dev = nil
+		}
+	}
+	for _, g := range s.gdn {
+		if g != nil {
+			g.dev.release()
+			g.dev = nil
+		}
+	}
+}
+
 // NewState starts an empty session.
 func (m *Qwen) NewState() *QwenState {
 	return &QwenState{gdn: make([]*gdnState, m.nLayer), kv: make([]*kvCache, m.nLayer)}
@@ -113,6 +130,14 @@ type GemmaState struct {
 	pos  int
 	kv   []*kvCache
 	base []int // position of kv[l].K[0]
+}
+
+// Free releases the session's card memory, as QwenState.Free does.
+func (s *GemmaState) Free() {
+	for _, c := range s.kv {
+		c.dev.release()
+		c.dev = nil
+	}
 }
 
 // NewState starts an empty session.

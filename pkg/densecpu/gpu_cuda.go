@@ -287,18 +287,51 @@ func flatHalf(rows [][]uint16) []uint16 {
 	return f
 }
 
+// ringSlack is how many rows beyond the window a ring buffer holds, i.e. the largest batch it serves.
+const ringSlack = 512
+
 // resident brings the device copy of cache c up to date and returns it, or nil when the card has no room (the caller
-// then uploads the cache for this call only, or uses the CPU).
-func (g *gpuMatmul) resident(c *kvCache, dev, rowElems int) *devKV {
-	rowBytes, need := rowElems*2, len(c.K)
+// then uploads the cache for this call only, or uses the CPU). Host row r is position b0+r. A windowed cache lives in a
+// ring of window+ringSlack slots (position p in slot p % cap), an unwindowed one (b0 = 0) in a buffer that doubles.
+func (g *gpuMatmul) resident(c *kvCache, dev, rowElems, b0, window int) *devKV {
+	rowBytes, end := rowElems*2, b0+len(c.K)
 	d := c.dev
 	if d == nil {
 		d = &devKV{dev: dev}
-		runtime.SetFinalizer(d, func(d *devKV) { C.dg_free(C.int(d.dev), d.k); C.dg_free(C.int(d.dev), d.v) })
+		runtime.SetFinalizer(d, (*devKV).release)
 		c.dev = d
 	}
-	if need > d.capRows {
-		nc := max(2*need, 1024)
+	from := max(d.rows, b0) // first position not yet on the card
+	if window > 0 {
+		cp := window + ringSlack
+		if end-from > ringSlack {
+			return nil // a bigger batch than the ring has room for
+		}
+		if d.capRows == 0 {
+			d.k, d.v = C.dg_alloc(C.int(dev), C.size_t(cp*rowBytes)), C.dg_alloc(C.int(dev), C.size_t(cp*rowBytes))
+			if d.k == nil || d.v == nil {
+				C.dg_free(C.int(dev), d.k)
+				C.dg_free(C.int(dev), d.v)
+				d.k, d.v = nil, nil
+				return nil
+			}
+			d.capRows = cp
+		}
+		for p := from; p < end; {
+			slot := p % cp
+			run := min(end-p, cp-slot)
+			hk, hv := flatHalf(c.K[p-b0:p-b0+run]), flatHalf(c.V[p-b0:p-b0+run])
+			if C.dg_h2d(C.int(dev), d.k, C.size_t(slot*rowBytes), unsafe.Pointer(&hk[0]), C.size_t(run*rowBytes)) != 0 ||
+				C.dg_h2d(C.int(dev), d.v, C.size_t(slot*rowBytes), unsafe.Pointer(&hv[0]), C.size_t(run*rowBytes)) != 0 {
+				return nil
+			}
+			p += run
+		}
+		d.rows = end
+		return d
+	}
+	if end > d.capRows {
+		nc := max(2*end, 1024)
 		k, v := C.dg_alloc(C.int(dev), C.size_t(nc*rowBytes)), C.dg_alloc(C.int(dev), C.size_t(nc*rowBytes))
 		if k == nil || v == nil {
 			C.dg_free(C.int(dev), k)
@@ -313,26 +346,28 @@ func (g *gpuMatmul) resident(c *kvCache, dev, rowElems int) *devKV {
 		C.dg_free(C.int(dev), d.v)
 		d.k, d.v, d.capRows = k, v, nc
 	}
-	if need > d.rows {
-		hk, hv := flatHalf(c.K[d.rows:need]), flatHalf(c.V[d.rows:need])
-		off, n := C.size_t(d.rows*rowBytes), C.size_t((need-d.rows)*rowBytes)
+	if end > d.rows {
+		hk, hv := flatHalf(c.K[d.rows:end]), flatHalf(c.V[d.rows:end])
+		off, n := C.size_t(d.rows*rowBytes), C.size_t((end-d.rows)*rowBytes)
 		if C.dg_h2d(C.int(dev), d.k, off, unsafe.Pointer(&hk[0]), n) != 0 || C.dg_h2d(C.int(dev), d.v, off, unsafe.Pointer(&hv[0]), n) != 0 {
 			return nil
 		}
-		d.rows = need
+		d.rows = end
 	}
 	return d
 }
 
-// attn runs causal attention for the n rows of Q (cache rows first..; window > 0 limits each token to the last window
-// rows) on the card holding layer p's weights. Caches without a window stay resident on the card; a windowed cache is
-// uploaded for the call (so only for batches of 4 or more). False means the caller must use the CPU path.
-func (g *gpuMatmul) attn(p string, Q [][]float32, c *kvCache, first, window, nHead, nKV, hd int, scale float32) ([][]float32, bool) {
+// attn runs causal attention for the n rows of Q (cache rows first.., host row r being position b0+r; window > 0 limits
+// each token to the last window rows) on the card holding layer p's weights. Every cache stays resident (windowed ones in
+// a ring); one that does not fit is uploaded for the call (batches of 4 or more only). False means use the CPU path.
+func (g *gpuMatmul) attn(p string, Q [][]float32, c *kvCache, b0, first, window, nHead, nKV, hd int, scale float32) ([][]float32, bool) {
 	n, dev, rowElems := len(Q), g.res[p+"attn_q.weight"].dev, nKV*hd
 	var dk, dv unsafe.Pointer
-	if d := (*devKV)(nil); window == 0 {
-		if d = g.resident(c, dev, rowElems); d != nil {
-			dk, dv = d.k, d.v
+	ringCap, ringB0 := 0, 0
+	if d := g.resident(c, dev, rowElems, b0, window); d != nil {
+		dk, dv = d.k, d.v
+		if window > 0 {
+			ringCap, ringB0 = d.capRows, b0
 		}
 	}
 	if dk == nil {
@@ -354,7 +389,7 @@ func (g *gpuMatmul) attn(p string, Q [][]float32, c *kvCache, first, window, nHe
 	}
 	out := make([]float32, n*nHead*hd)
 	defer func(t0 time.Time) { GPUCallNanos.Add(int64(time.Since(t0))); GPUCalls.Add(1) }(time.Now())
-	if C.dg_attn_dev(C.int(dev), C.int(n), C.int(first), C.int(window), C.int(nHead), C.int(nKV), C.int(hd), C.float(scale),
+	if C.dg_attn_dev(C.int(dev), C.int(n), C.int(first), C.int(window), C.int(ringB0), C.int(ringCap), C.int(nHead), C.int(nKV), C.int(hd), C.float(scale),
 		(*C.float)(&q[0]), dk, dv, (*C.float)(&out[0])) != 0 {
 		return nil, false
 	}
@@ -385,7 +420,7 @@ func (g *gpuMatmul) gdn(p string, st *gdnState, conv, decay, beta [][]float32, n
 			return nil, false
 		}
 		st.dev = &devS{dev: dev, ptr: ptr}
-		runtime.SetFinalizer(st.dev, func(d *devS) { C.dg_free(C.int(d.dev), d.ptr) })
+		runtime.SetFinalizer(st.dev, (*devS).release)
 	}
 	flatten := func(rows [][]float32) []float32 {
 		f := make([]float32, 0, len(rows)*len(rows[0]))
@@ -425,4 +460,23 @@ func (s *gdnState) fetch() {
 	C.dg_free(C.int(d.dev), d.ptr)
 	d.ptr = nil
 	s.dev = nil
+}
+
+// release frees the card memory now; the garbage collector cannot see VRAM, so sessions call this instead of waiting
+// for the finalizer. Safe on nil and to call twice.
+func (d *devKV) release() {
+	if d == nil {
+		return
+	}
+	C.dg_free(C.int(d.dev), d.k)
+	C.dg_free(C.int(d.dev), d.v)
+	d.k, d.v, d.capRows, d.rows = nil, nil, 0, 0
+}
+
+func (d *devS) release() {
+	if d == nil {
+		return
+	}
+	C.dg_free(C.int(d.dev), d.ptr)
+	d.ptr = nil
 }

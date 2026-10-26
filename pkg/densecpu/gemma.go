@@ -45,7 +45,11 @@ func OpenGemma(path string) (*Gemma, error) {
 }
 
 // Forward runs the whole token sequence and returns the logits of the last position.
-func (m *Gemma) Forward(tokens []int) []float32 { return m.Step(m.NewState(), tokens) }
+func (m *Gemma) Forward(tokens []int) []float32 {
+	st := m.NewState()
+	defer st.Free()
+	return m.Step(st, tokens)
+}
 
 // Step feeds only the new tokens to the session and returns the logits of the last one.
 func (m *Gemma) Step(st *GemmaState, tokens []int) []float32 {
@@ -124,7 +128,7 @@ func (m *Gemma) Step(st *GemmaState, tokens []int) []float32 {
 		}
 		done := false
 		if m.gpu != nil {
-			if r, ok := m.gpu.attn(p, Q, c, pos0-b0, window, nHead, nKV, hd, 1); ok {
+			if r, ok := m.gpu.attn(p, Q, c, b0, pos0-b0, window, nHead, nKV, hd, 1); ok {
 				ctx, done = r, true
 			}
 		}

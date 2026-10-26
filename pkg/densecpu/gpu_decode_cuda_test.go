@@ -41,6 +41,7 @@ func TestPrefill512(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := q.NewState()
+	defer st.Free()
 	decodeAt(t, "qwen", 512, func(ids []int) { q.Step(st, ids) }, func() { q.Step(st, []int{760}) })
 }
 
@@ -54,6 +55,7 @@ func TestPrefill512Gemma(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := g.NewState()
+	defer st.Free()
 	decodeAt(t, "gemma", 512, func(ids []int) { g.Step(st, ids) }, func() { g.Step(st, []int{760}) })
 }
 
@@ -72,6 +74,7 @@ func TestDecodeVsContext(t *testing.T) {
 	for _, n := range []int{512, 2048, 4096} {
 		st := q.NewState()
 		decodeAt(t, "qwen", n, func(ids []int) { q.Step(st, ids) }, func() { q.Step(st, []int{760}) })
+		st.Free()
 	}
 	q.Close()
 	g, err := OpenGemma(modelPath(t, "gemma-4-31B-it-UD-Q4_K_XL.gguf"))
@@ -85,5 +88,6 @@ func TestDecodeVsContext(t *testing.T) {
 	for _, n := range []int{512, 2048, 4096} {
 		st := g.NewState()
 		decodeAt(t, "gemma", n, func(ids []int) { g.Step(st, ids) }, func() { g.Step(st, []int{760}) })
+		st.Free()
 	}
 }
