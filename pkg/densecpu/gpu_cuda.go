@@ -11,6 +11,7 @@ import "C"
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -177,60 +178,6 @@ func (g *gpuMatmul) matmul(name string, t *gguf.TensorInfo, X [][]float32) ([][]
 	return Y, true
 }
 
-// attn runs causal attention for the n rows of Q (cache rows first.. of c; window > 0 limits each token to the last
-// window rows) on device 0; false means the caller must use the CPU path. K and V are copied to the card on every call.
-func (g *gpuMatmul) attn(Q [][]float32, c *kvCache, first, window, nHead, nKV, hd int, scale float32) ([][]float32, bool) {
-	n := len(Q)
-	q := make([]float32, 0, n*nHead*hd)
-	for _, r := range Q {
-		q = append(q, r...)
-	}
-	k, v := make([]uint16, 0, len(c.K)*nKV*hd), make([]uint16, 0, len(c.V)*nKV*hd)
-	for j := range c.K {
-		k, v = append(k, c.K[j]...), append(v, c.V[j]...)
-	}
-	out := make([]float32, n*nHead*hd)
-	defer func(t0 time.Time) { GPUCallNanos.Add(int64(time.Since(t0))); GPUCalls.Add(1) }(time.Now())
-	if C.dg_attn(0, C.int(n), C.int(first), C.int(window), C.int(nHead), C.int(nKV), C.int(hd), C.float(scale), (*C.float)(&q[0]),
-		(*C.ushort)(&k[0]), (*C.ushort)(&v[0]), (*C.float)(&out[0])) != 0 {
-		return nil, false
-	}
-	R := make([][]float32, n)
-	for i := range R {
-		R[i] = out[i*nHead*hd : (i+1)*nHead*hd]
-	}
-	return R, true
-}
-
-// gdn runs the delta-net recurrence for all n tokens on the GPU. conv holds the normalised q/k/v rows, decay and
-// beta are [n][numV]; the state S (one slice per value head) is advanced in place and the output is [n][numV*hv].
-// False means the caller must use the CPU loop (S is untouched).
-func (g *gpuMatmul) gdn(conv, decay, beta [][]float32, S [][]float32, numK, hk, hv int, qs float32) ([][]float32, bool) {
-	n, numV := len(conv), len(S)
-	flat := func(rows [][]float32) []float32 {
-		f := make([]float32, 0, len(rows)*len(rows[0]))
-		for _, r := range rows {
-			f = append(f, r...)
-		}
-		return f
-	}
-	s, out := flat(S), make([]float32, n*numV*hv)
-	c, d, b := flat(conv), flat(decay), flat(beta)
-	defer func(t0 time.Time) { GPUCallNanos.Add(int64(time.Since(t0))); GPUCalls.Add(1) }(time.Now())
-	if C.dg_gdn(0, C.int(n), C.int(numK), C.int(numV), C.int(hk), C.int(hv), C.float(qs), (*C.float)(&c[0]),
-		(*C.float)(&d[0]), (*C.float)(&b[0]), (*C.float)(&s[0]), (*C.float)(&out[0])) != 0 {
-		return nil, false
-	}
-	for h := range S {
-		copy(S[h], s[h*hk*hv:(h+1)*hk*hv])
-	}
-	R := make([][]float32, n)
-	for t := range R {
-		R[t] = out[t*numV*hv : (t+1)*numV*hv]
-	}
-	return R, true
-}
-
 // MatvecStats reports where dg_matvec spent its time since the last reset: seconds copying activations in, running the
 // kernels and copying results out, plus bytes moved each way and the number of calls.
 func MatvecStats(reset bool) (in, kern, out, bytesIn, bytesOut float64, calls int64) {
@@ -315,4 +262,167 @@ func (g *gpuMatmul) multi(names []string, X [][]float32) ([][][]float32, bool) {
 		off += n * r
 	}
 	return out, true
+}
+
+// devKV is the device copy of one attention layer's K and V (half bits, one row per position, rows laid out as on the
+// host). It only ever grows by appended rows, so each call uploads just the new ones.
+type devKV struct {
+	dev     int
+	k, v    unsafe.Pointer
+	capRows int
+	rows    int // rows already on the card
+}
+
+// devS is the device copy of one delta-net block's recurrent state; while it exists, the host copy is stale.
+type devS struct {
+	dev int
+	ptr unsafe.Pointer
+}
+
+func flatHalf(rows [][]uint16) []uint16 {
+	f := make([]uint16, 0, len(rows)*len(rows[0]))
+	for _, r := range rows {
+		f = append(f, r...)
+	}
+	return f
+}
+
+// resident brings the device copy of cache c up to date and returns it, or nil when the card has no room (the caller
+// then uploads the cache for this call only, or uses the CPU).
+func (g *gpuMatmul) resident(c *kvCache, dev, rowElems int) *devKV {
+	rowBytes, need := rowElems*2, len(c.K)
+	d := c.dev
+	if d == nil {
+		d = &devKV{dev: dev}
+		runtime.SetFinalizer(d, func(d *devKV) { C.dg_free(C.int(d.dev), d.k); C.dg_free(C.int(d.dev), d.v) })
+		c.dev = d
+	}
+	if need > d.capRows {
+		nc := max(2*need, 1024)
+		k, v := C.dg_alloc(C.int(dev), C.size_t(nc*rowBytes)), C.dg_alloc(C.int(dev), C.size_t(nc*rowBytes))
+		if k == nil || v == nil {
+			C.dg_free(C.int(dev), k)
+			C.dg_free(C.int(dev), v)
+			return nil
+		}
+		if d.rows > 0 {
+			C.dg_d2d(C.int(dev), k, d.k, C.size_t(d.rows*rowBytes))
+			C.dg_d2d(C.int(dev), v, d.v, C.size_t(d.rows*rowBytes))
+		}
+		C.dg_free(C.int(dev), d.k)
+		C.dg_free(C.int(dev), d.v)
+		d.k, d.v, d.capRows = k, v, nc
+	}
+	if need > d.rows {
+		hk, hv := flatHalf(c.K[d.rows:need]), flatHalf(c.V[d.rows:need])
+		off, n := C.size_t(d.rows*rowBytes), C.size_t((need-d.rows)*rowBytes)
+		if C.dg_h2d(C.int(dev), d.k, off, unsafe.Pointer(&hk[0]), n) != 0 || C.dg_h2d(C.int(dev), d.v, off, unsafe.Pointer(&hv[0]), n) != 0 {
+			return nil
+		}
+		d.rows = need
+	}
+	return d
+}
+
+// attn runs causal attention for the n rows of Q (cache rows first..; window > 0 limits each token to the last window
+// rows) on the card holding layer p's weights. Caches without a window stay resident on the card; a windowed cache is
+// uploaded for the call (so only for batches of 4 or more). False means the caller must use the CPU path.
+func (g *gpuMatmul) attn(p string, Q [][]float32, c *kvCache, first, window, nHead, nKV, hd int, scale float32) ([][]float32, bool) {
+	n, dev, rowElems := len(Q), g.res[p+"attn_q.weight"].dev, nKV*hd
+	var dk, dv unsafe.Pointer
+	if d := (*devKV)(nil); window == 0 {
+		if d = g.resident(c, dev, rowElems); d != nil {
+			dk, dv = d.k, d.v
+		}
+	}
+	if dk == nil {
+		if n < 4 {
+			return nil, false
+		}
+		hk, hv := flatHalf(c.K), flatHalf(c.V)
+		dk, dv = C.dg_alloc(C.int(dev), C.size_t(len(hk)*2)), C.dg_alloc(C.int(dev), C.size_t(len(hv)*2))
+		defer C.dg_free(C.int(dev), dk)
+		defer C.dg_free(C.int(dev), dv)
+		if dk == nil || dv == nil || C.dg_h2d(C.int(dev), dk, 0, unsafe.Pointer(&hk[0]), C.size_t(len(hk)*2)) != 0 ||
+			C.dg_h2d(C.int(dev), dv, 0, unsafe.Pointer(&hv[0]), C.size_t(len(hv)*2)) != 0 {
+			return nil, false
+		}
+	}
+	q := make([]float32, 0, n*nHead*hd)
+	for _, r := range Q {
+		q = append(q, r...)
+	}
+	out := make([]float32, n*nHead*hd)
+	defer func(t0 time.Time) { GPUCallNanos.Add(int64(time.Since(t0))); GPUCalls.Add(1) }(time.Now())
+	if C.dg_attn_dev(C.int(dev), C.int(n), C.int(first), C.int(window), C.int(nHead), C.int(nKV), C.int(hd), C.float(scale),
+		(*C.float)(&q[0]), dk, dv, (*C.float)(&out[0])) != 0 {
+		return nil, false
+	}
+	R := make([][]float32, n)
+	for i := range R {
+		R[i] = out[i*nHead*hd : (i+1)*nHead*hd]
+	}
+	return R, true
+}
+
+// gdn runs the delta-net recurrence for all n tokens on the card holding layer p's weights. conv holds the normalised
+// q/k/v rows, decay and beta are [n][numV]; the state stays on the card between calls (st.dev) and the output is
+// [n][numV*hv]. False means the caller must use the CPU loop (after st.fetch).
+func (g *gpuMatmul) gdn(p string, st *gdnState, conv, decay, beta [][]float32, numK, hk, hv int, qs float32) ([][]float32, bool) {
+	n, numV, dev := len(conv), len(st.S), g.res[p+"attn_qkv.weight"].dev
+	if st.dev == nil {
+		bytes := numV * hk * hv * 4
+		ptr := C.dg_alloc(C.int(dev), C.size_t(bytes))
+		if ptr == nil {
+			return nil, false
+		}
+		flat := make([]float32, 0, numV*hk*hv)
+		for _, s := range st.S {
+			flat = append(flat, s...)
+		}
+		if C.dg_h2d(C.int(dev), ptr, 0, unsafe.Pointer(&flat[0]), C.size_t(bytes)) != 0 {
+			C.dg_free(C.int(dev), ptr)
+			return nil, false
+		}
+		st.dev = &devS{dev: dev, ptr: ptr}
+		runtime.SetFinalizer(st.dev, func(d *devS) { C.dg_free(C.int(d.dev), d.ptr) })
+	}
+	flatten := func(rows [][]float32) []float32 {
+		f := make([]float32, 0, len(rows)*len(rows[0]))
+		for _, r := range rows {
+			f = append(f, r...)
+		}
+		return f
+	}
+	out := make([]float32, n*numV*hv)
+	c, d, b := flatten(conv), flatten(decay), flatten(beta)
+	defer func(t0 time.Time) { GPUCallNanos.Add(int64(time.Since(t0))); GPUCalls.Add(1) }(time.Now())
+	if C.dg_gdn_dev(C.int(dev), C.int(n), C.int(numK), C.int(numV), C.int(hk), C.int(hv), C.float(qs), (*C.float)(&c[0]),
+		(*C.float)(&d[0]), (*C.float)(&b[0]), (*C.float)(st.dev.ptr), (*C.float)(&out[0])) != 0 {
+		return nil, false
+	}
+	R := make([][]float32, n)
+	for t := range R {
+		R[t] = out[t*numV*hv : (t+1)*numV*hv]
+	}
+	return R, true
+}
+
+// fetch makes the host copy of the state current again and drops the device copy, so the CPU loop can continue it.
+func (s *gdnState) fetch() {
+	d := s.dev
+	if d == nil {
+		return
+	}
+	hk := len(s.S[0])
+	flat := make([]float32, len(s.S)*hk)
+	if C.dg_d2h(C.int(d.dev), unsafe.Pointer(&flat[0]), d.ptr, C.size_t(len(flat)*4)) != 0 {
+		panic("densecpu: cannot read the delta-net state back from the card")
+	}
+	for h := range s.S {
+		copy(s.S[h], flat[h*hk:(h+1)*hk])
+	}
+	C.dg_free(C.int(d.dev), d.ptr)
+	d.ptr = nil
+	s.dev = nil
 }

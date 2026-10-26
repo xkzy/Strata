@@ -123,8 +123,8 @@ func (m *Gemma) Step(st *GemmaState, tokens []int) []float32 {
 			window = m.window
 		}
 		done := false
-		if m.gpu != nil && n >= 4 { // prefill batches: the GPU kernel; decode steps stay on the CPU
-			if r, ok := m.gpu.attn(Q, c, pos0-b0, window, nHead, nKV, hd, 1); ok {
+		if m.gpu != nil {
+			if r, ok := m.gpu.attn(p, Q, c, pos0-b0, window, nHead, nKV, hd, 1); ok {
 				ctx, done = r, true
 			}
 		}

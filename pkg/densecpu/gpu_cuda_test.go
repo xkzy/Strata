@@ -96,7 +96,7 @@ func TestCUDAAttnMatchesCPU(t *testing.T) {
 		Q, K, V := rnd(c.n, c.nHead*c.hd), rnd(ctx, c.nKV*c.hd), rnd(ctx, c.nKV*c.hd)
 		kc := &kvCache{K: packHalf(K), V: packHalf(V)}
 		scale := float32(1 / math.Sqrt(float64(c.hd)))
-		got, ok := (&gpuMatmul{}).attn(Q, kc, c.base, c.window, c.nHead, c.nKV, c.hd, scale)
+		got, ok := testGPU().attn("", Q, kc, c.base, c.window, c.nHead, c.nKV, c.hd, scale)
 		if !ok {
 			t.Skip("no CUDA device")
 		}
@@ -129,5 +129,56 @@ func TestCUDAAttnMatchesCPU(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// testGPU is a gpuMatmul that only knows layer "" lives on card 0.
+func testGPU() *gpuMatmul {
+	return &gpuMatmul{res: map[string]gpuTensor{"attn_q.weight": {}}}
+}
+
+// TestCUDAAttnResidentGrows feeds one cache to the kernel in steps (so the resident copy is extended, and regrown past
+// its first capacity) and checks each answer is identical to one computed from a fresh cache of the same rows.
+func TestCUDAAttnResidentGrows(t *testing.T) {
+	rng := rand.New(rand.NewSource(5))
+	const nHead, nKV, hd, total = 8, 2, 64, 3000
+	row := func() []float32 {
+		r := make([]float32, nKV*hd)
+		for i := range r {
+			r[i] = rng.Float32()*2 - 1
+		}
+		return r
+	}
+	K, V := make([][]float32, total), make([][]float32, total)
+	for i := range K {
+		K[i], V[i] = row(), row()
+	}
+	kc, pos := &kvCache{}, 0
+	for _, n := range []int{700, 1, 1, 3, 600, 1, 1000, 1, 693} {
+		kc.K, kc.V = append(kc.K, packHalf(K[pos:pos+n])...), append(kc.V, packHalf(V[pos:pos+n])...)
+		Q := make([][]float32, n)
+		for i := range Q {
+			Q[i] = make([]float32, nHead*hd)
+			for j := range Q[i] {
+				Q[i][j] = rng.Float32()*2 - 1
+			}
+		}
+		got, ok := testGPU().attn("", Q, kc, pos, 0, nHead, nKV, hd, 0.125)
+		if !ok {
+			t.Skip("no CUDA device")
+		}
+		fresh := &kvCache{K: kc.K, V: kc.V}
+		want, ok2 := testGPU().attn("", Q, fresh, pos, 0, nHead, nKV, hd, 0.125)
+		if !ok2 {
+			t.Fatalf("fresh cache of %d rows (n=%d, first=%d): attn declined", len(fresh.K), n, pos)
+		}
+		for i := range got {
+			for j := range got[i] {
+				if got[i][j] != want[i][j] {
+					t.Fatalf("after %d rows, token %d dim %d: resident %v, fresh %v", pos+n, i, j, got[i][j], want[i][j])
+				}
+			}
+		}
+		pos += n
 	}
 }

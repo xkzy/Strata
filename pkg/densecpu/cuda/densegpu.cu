@@ -678,25 +678,32 @@ __global__ void attn_kernel(const float* __restrict__ Q, const __half* __restric
     }
 }
 
-extern "C" int dg_attn(int dev, int n, int first, int window, int nHead, int nKV, int hd, float scale, const float* q,
-                       const unsigned short* k, const unsigned short* v, float* out) {
+extern "C" int dg_attn_dev(int dev, int n, int first, int window, int nHead, int nKV, int hd, float scale, const float* q,
+                           const void* dk, const void* dv, float* out) {
     if (dev < 0 || dev >= 16 || n <= 0 || first < 0 || window < 0 || nKV <= 0 || nHead % nKV || hd % 32 || hd > 512 || n > 1 << 30) return 100;
     if (cudaSetDevice(dev) != cudaSuccess) return 101;
-    const size_t ctx = (size_t) first + n, qb = (size_t) n * nHead * hd * sizeof(float), kb = ctx * nKV * hd * 2;
-    float *dq = nullptr, *dout = nullptr;
-    void *dk = nullptr, *dv = nullptr;
-    int rc = 0;
-    if (cudaMalloc(&dq, qb) || cudaMalloc(&dout, qb) || cudaMalloc(&dk, kb) || cudaMalloc(&dv, kb)) rc = 102;
-    if (!rc && (cudaMemcpy(dq, q, qb, cudaMemcpyHostToDevice) || cudaMemcpy(dk, k, kb, cudaMemcpyHostToDevice) ||
-                cudaMemcpy(dv, v, kb, cudaMemcpyHostToDevice)))
-        rc = 104;
-    if (!rc) {
-        attn_kernel<<<dim3(n, nHead), 256>>>(dq, (const __half*) dk, (const __half*) dv, first, window, nHead, nKV, hd, scale, dout);
-        if (cudaGetLastError() != cudaSuccess) rc = 106;
-        else if (cudaMemcpy(out, dout, qb, cudaMemcpyDeviceToHost) != cudaSuccess) rc = 107;
-    }
-    cudaFree(dq); cudaFree(dout); cudaFree(dk); cudaFree(dv);
-    return rc;
+    Scratch& s = g_scratch[dev];
+    const size_t qb = (size_t) n * nHead * hd * sizeof(float);
+    if (!grow((void**) &s.x, &s.xcap, qb) || !grow((void**) &s.y, &s.ycap, qb)) return 102;
+    if (cudaMemcpy(s.x, q, qb, cudaMemcpyHostToDevice) != cudaSuccess) return 104;
+    attn_kernel<<<dim3(n, nHead), 256>>>(s.x, (const __half*) dk, (const __half*) dv, first, window, nHead, nKV, hd, scale, s.y);
+    if (cudaGetLastError() != cudaSuccess) return 106;
+    return cudaMemcpy(out, s.y, qb, cudaMemcpyDeviceToHost) == cudaSuccess ? 0 : 107;
+}
+
+// Device memory helpers for the resident KV cache and delta-net state.
+extern "C" void* dg_alloc(int dev, size_t bytes) {
+    void* p = nullptr;
+    return cudaSetDevice(dev) == cudaSuccess && cudaMalloc(&p, bytes) == cudaSuccess ? p : nullptr;
+}
+extern "C" int dg_h2d(int dev, void* dst, size_t off, const void* src, size_t bytes) {
+    return cudaSetDevice(dev) == cudaSuccess && cudaMemcpy((char*) dst + off, src, bytes, cudaMemcpyHostToDevice) == cudaSuccess ? 0 : 1;
+}
+extern "C" int dg_d2h(int dev, void* dst, const void* src, size_t bytes) {
+    return cudaSetDevice(dev) == cudaSuccess && cudaMemcpy(dst, src, bytes, cudaMemcpyDeviceToHost) == cudaSuccess ? 0 : 1;
+}
+extern "C" int dg_d2d(int dev, void* dst, const void* src, size_t bytes) {
+    return cudaSetDevice(dev) == cudaSuccess && cudaMemcpy(dst, src, bytes, cudaMemcpyDeviceToDevice) == cudaSuccess ? 0 : 1;
 }
 
 // Delta-net: one block per value head, one thread per value column j; the thread keeps column j of the state in
@@ -731,26 +738,23 @@ __global__ void gdn_kernel(const float* __restrict__ conv, const float* __restri
     for (int i = 0; i < hk; i++) Sh[(size_t) i * hv + j] = col[i];
 }
 
-extern "C" int dg_gdn(int dev, int n, int numK, int numV, int hk, int hv, float qscale, const float* conv,
-                      const float* decay, const float* beta, float* s, float* out) {
+// ds: the [numV][hk*hv] state, resident on the card and advanced in place.
+extern "C" int dg_gdn_dev(int dev, int n, int numK, int numV, int hk, int hv, float qscale, const float* conv,
+                          const float* decay, const float* beta, float* ds, float* out) {
     if (dev < 0 || dev >= 16 || n <= 0 || numK <= 0 || numV <= 0 || numV % numK || hk <= 0 || hk > 128 || hv < hk || hv > 1024)
         return 100;
     if (cudaSetDevice(dev) != cudaSuccess) return 101;
-    const size_t ch = (size_t) 2 * numK * hk + (size_t) numV * hv, cb = n * ch * 4, sb = (size_t) numV * hk * hv * 4,
-                 ob = (size_t) n * numV * hv * 4, ab = (size_t) n * numV * 4;
-    float *dc = nullptr, *dd = nullptr, *db = nullptr, *ds = nullptr, *dout = nullptr;
-    int rc = 0;
-    if (cudaMalloc(&dc, cb) || cudaMalloc(&dd, ab) || cudaMalloc(&db, ab) || cudaMalloc(&ds, sb) || cudaMalloc(&dout, ob)) rc = 102;
-    if (!rc && (cudaMemcpy(dc, conv, cb, cudaMemcpyHostToDevice) || cudaMemcpy(dd, decay, ab, cudaMemcpyHostToDevice) ||
-                cudaMemcpy(db, beta, ab, cudaMemcpyHostToDevice) || cudaMemcpy(ds, s, sb, cudaMemcpyHostToDevice)))
-        rc = 104;
-    if (!rc) {
-        gdn_kernel<<<numV, hv>>>(dc, dd, db, ds, dout, n, numK, numV, hk, hv, qscale);
-        if (cudaGetLastError() != cudaSuccess) rc = 106;
-        else if (cudaMemcpy(out, dout, ob, cudaMemcpyDeviceToHost) || cudaMemcpy(s, ds, sb, cudaMemcpyDeviceToHost)) rc = 107;
-    }
-    cudaFree(dc); cudaFree(dd); cudaFree(db); cudaFree(ds); cudaFree(dout);
-    return rc;
+    Scratch& s = g_scratch[dev];
+    const size_t ch = (size_t) 2 * numK * hk + (size_t) numV * hv, cb = n * ch * 4, ob = (size_t) n * numV * hv * 4, ab = (size_t) n * numV * 4;
+    if (!grow((void**) &s.x, &s.xcap, cb) || !grow((void**) &s.y, &s.ycap, ob) || !grow((void**) &s.g, &s.gcap, ab) ||
+        !grow((void**) &s.u, &s.ucap, ab))
+        return 102;
+    if (cudaMemcpy(s.x, conv, cb, cudaMemcpyHostToDevice) || cudaMemcpy(s.g, decay, ab, cudaMemcpyHostToDevice) ||
+        cudaMemcpy(s.u, beta, ab, cudaMemcpyHostToDevice))
+        return 104;
+    gdn_kernel<<<numV, hv>>>(s.x, s.g, s.u, ds, s.y, n, numK, numV, hk, hv, qscale);
+    if (cudaGetLastError() != cudaSuccess) return 106;
+    return cudaMemcpy(out, s.y, ob, cudaMemcpyDeviceToHost) == cudaSuccess ? 0 : 107;
 }
 
 // Several matrices applied to the same n inputs: x goes up once, the results come back in one buffer laid out as

@@ -115,11 +115,12 @@ func (m *Qwen) gdn(st *gdnState, p string, xn [][]float32) [][]float32 {
 		}
 	}
 	var out [][]float32
-	if m.gpu != nil && n >= 4 { // prefill batches: the whole recurrence on the GPU; decode steps stay on the CPU
-		out, _ = m.gpu.gdn(conv, decayT, betaT, state, m.numK, hk, hv, qs)
+	if m.gpu != nil {
+		out, _ = m.gpu.gdn(p, st, conv, decayT, betaT, m.numK, hk, hv, qs)
 	}
 	onGPU := out != nil
 	if !onGPU {
+		st.fetch()
 		out = make([][]float32, n)
 	}
 	for t := 0; t < n && !onGPU; t++ {
@@ -202,8 +203,8 @@ func (m *Qwen) attn(p string, xn [][]float32, posOff int, c *kvCache) [][]float3
 		ctx[i] = make([]float32, nHead*hd)
 	}
 	done := false
-	if m.gpu != nil && n >= 4 { // prefill batches: the GPU kernel; decode steps stay on the CPU
-		if r, ok := m.gpu.attn(Q, c, base, 0, nHead, nKV, hd, scale); ok {
+	if m.gpu != nil {
+		if r, ok := m.gpu.attn(p, Q, c, base, 0, nHead, nKV, hd, scale); ok {
 			ctx, done = r, true
 		}
 	}

@@ -8,7 +8,10 @@ import (
 
 // kvCache holds the post-rope keys and the values of one attention layer, one row per position, as IEEE half floats
 // (half the memory of float32; the rounding error is about 0.05% per value).
-type kvCache struct{ K, V [][]uint16 }
+type kvCache struct {
+	K, V [][]uint16
+	dev  *devKV // the same rows on the card (cuda build); only unwindowed caches
+}
 
 var halfTab = func() (t [65536]float32) {
 	for i := range t {
@@ -87,6 +90,7 @@ func parFor(n int, fn func(i int)) {
 type gdnState struct {
 	tail [][]float32
 	S    [][]float32
+	dev  *devS // the state on the card (cuda build); while set, S is stale until fetch
 }
 
 // QwenState is a running Qwen session: pass it to Step with only the new tokens.

@@ -29,13 +29,19 @@ func (*gpuMatmul) matmul(string, *gguf.TensorInfo, [][]float32) ([][]float32, bo
 	return nil, false
 }
 
-func (*gpuMatmul) attn([][]float32, *kvCache, int, int, int, int, int, float32) ([][]float32, bool) {
+func (*gpuMatmul) attn(string, [][]float32, *kvCache, int, int, int, int, int, float32) ([][]float32, bool) {
 	return nil, false
 }
 
-func (*gpuMatmul) gdn([][]float32, [][]float32, [][]float32, [][]float32, int, int, int, float32) ([][]float32, bool) {
+func (*gpuMatmul) gdn(string, *gdnState, [][]float32, [][]float32, [][]float32, int, int, int, float32) ([][]float32, bool) {
 	return nil, false
 }
+
+// devKV and devS are the CUDA backend's resident cache and state; without the tag there are none.
+type devKV struct{}
+type devS struct{}
+
+func (*gdnState) fetch() {}
 
 func (*gpuMatmul) ffn(string, [][]float32, bool) ([][]float32, bool) { return nil, false }
 
