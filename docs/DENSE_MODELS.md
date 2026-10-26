@@ -78,7 +78,7 @@ Decode-time-versus-context numbers are not measured yet (`TestDecodeVsContext`, 
 The int8 path quantizes each input in groups of 32 (scale max|x|/127), so batched results differ slightly from the
 float path; `TestCUDAKernelsMatchCPU` compares the GPU against the CPU kernels run on the same quantized inputs. Single
 tokens (decode) still use the exact float kernels. One decode step with 512 tokens of context: 0.167 s; with 2048 tokens
-of context 0.191 s (measured before the prefill changes). Not measured: 4096 tokens and Gemma (the run was cut short).
+of context 0.191 s (measured before the prefill changes). Gemma 4 31B, same 512-token prefill after the int8 changes (`TestPrefill512Gemma`): 47.8 s (11 tokens/s), 11.3 s of it in GPU calls, one decode step afterwards 0.273 s. Not measured: 4096 tokens.
 The remaining 13.8 s of the prefill is Go code on the CPU: the attention loops and the delta-net recurrence, which only
 GPU kernels will speed up.
 

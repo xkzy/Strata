@@ -40,6 +40,19 @@ func TestPrefill512(t *testing.T) {
 	decodeAt(t, "qwen", 512, func(ids []int) { q.Step(st, ids) }, func() { q.Step(st, []int{760}) })
 }
 
+func TestPrefill512Gemma(t *testing.T) {
+	g, err := OpenGemma(modelPath(t, "gemma-4-31B-it-UD-Q4_K_XL.gguf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	if _, err := g.EnableGPU(); err != nil {
+		t.Fatal(err)
+	}
+	st := g.NewState()
+	decodeAt(t, "gemma", 512, func(ids []int) { g.Step(st, ids) }, func() { g.Step(st, []int{760}) })
+}
+
 func TestDecodeVsContext(t *testing.T) {
 	if testing.Short() {
 		t.Skip("slow")
