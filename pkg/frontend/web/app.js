@@ -2072,6 +2072,28 @@ function filterAndRenderModels(recommended) {
   }
 }
 
+// Marks the largest context the chosen model supports in the Context Window list (adds the choice if it is missing).
+function setupCtxMax(n) {
+  const sel = $("setup-ctx");
+  if (!sel) return;
+  for (const o of Array.from(sel.options)) {
+    if (o.dataset.extra) o.remove();
+    else if (o.dataset.orig) o.textContent = o.dataset.orig;
+  }
+  if (!(n > 0)) return;
+  let o = Array.from(sel.options).find((x) => +x.value === n);
+  if (o) {
+    o.dataset.orig = o.textContent;
+    o.textContent += " - model max";
+  } else {
+    o = document.createElement("option");
+    o.value = String(n);
+    o.dataset.extra = "1";
+    o.textContent = `${n.toLocaleString()} (${ctxfmt(n)} - model max)`;
+    sel.appendChild(o);
+  }
+}
+
 function selectSetupModel(m) {
   selectedModelOpt = m;
   for (const el of document.querySelectorAll(".model-card-item")) {
@@ -2089,6 +2111,8 @@ function selectSetupModel(m) {
       $("setup-dest-path").value = `${baseDir}/${m.filename || (m.name.toLowerCase() + ".gguf")}`;
     }
   }
+
+  setupCtxMax(m.context_length);
 
   // Show or hide delete button based on local/installed status
   const deleteBtn = $("setup-delete-btn");

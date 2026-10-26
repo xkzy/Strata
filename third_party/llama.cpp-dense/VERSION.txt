@@ -1,0 +1,1 @@
+llama.cpp 9125a2ebe8e5a38f0f4232170c134a29ed730b66 (MIT). Reference graph definitions for gemma4 and qwen35; the Strata dense path is ported from these.
