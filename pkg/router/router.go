@@ -36,7 +36,7 @@ type Router struct {
 	recent [][32]byte // hashes of the last replies: a repeat means the agent is stuck
 }
 
-const escalateHeader = "X-Strata-Escalate" // a client that knows the task failed (tests red) sets this to 1
+const escalateHeader = "X-Strata-Escalate" // a client that knows the task failed (tests red) sets this to 1, or to 0 to go back to the fast engine
 
 func (r *Router) switchTo(b *Backend) error {
 	if r.cur == b {
@@ -106,6 +106,13 @@ func (r *Router) Chat(w http.ResponseWriter, req *http.Request) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.cur == nil || (r.cur == r.Dense && r.left <= 0) {
+		if err := r.switchTo(r.Fast); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+	}
+	if req.Header.Get(escalateHeader) == "0" && r.cur == r.Dense { // the client says the hard part is done
+		r.left = 0
 		if err := r.switchTo(r.Fast); err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return

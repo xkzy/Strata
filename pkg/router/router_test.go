@@ -54,3 +54,13 @@ func TestClientEscalate(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+func TestClientBackToFast(t *testing.T) {
+	fast, _ := fake("a")
+	dense, _ := fake("b")
+	r := &Router{Fast: fast, Dense: dense, DenseRequests: 10, Wait: func(*Backend) error { return nil }}
+	ask(r, "1")
+	if got := ask(r, "0"); !strings.Contains(got, `"a"`) {
+		t.Fatalf("got %s", got)
+	}
+}
