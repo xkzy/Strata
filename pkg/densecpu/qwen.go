@@ -69,10 +69,8 @@ func l2(v []float32, eps float32) {
 func (m *Qwen) gdn(st *gdnState, p string, xn [][]float32) [][]float32 {
 	n := len(xn)
 	hv, hk := m.dInner/m.numV, m.headK
-	qkv := m.matmul(p+"attn_qkv.weight", xn)
-	z := m.matmul(p+"attn_gate.weight", xn)
-	beta := m.matmul(p+"ssm_beta.weight", xn)
-	alpha := m.matmul(p+"ssm_alpha.weight", xn)
+	pr := m.matmulMulti([]string{p + "attn_qkv.weight", p + "attn_gate.weight", p + "ssm_beta.weight", p + "ssm_alpha.weight"}, xn)
+	qkv, z, beta, alpha := pr[0], pr[1], pr[2], pr[3]
 	dt, a := m.vec(p+"ssm_dt.bias"), m.vec(p+"ssm_a")
 	cw := m.vec(p + "ssm_conv1d.weight") // [convK, channels]: channel c's taps are cw[c*convK : (c+1)*convK]
 	ch := len(qkv[0])
@@ -103,20 +101,34 @@ func (m *Qwen) gdn(st *gdnState, p string, xn [][]float32) [][]float32 {
 			conv[t][c] = silu(s)
 		}
 	})
-	out := make([][]float32, n)
 	qs := float32(1 / math.Sqrt(float64(hk)))
+	decayT, betaT := make([][]float32, n), make([][]float32, n)
 	for t := 0; t < n; t++ {
-		qa, ka, va := conv[t][:m.numK*hk], conv[t][m.numK*hk:2*m.numK*hk], conv[t][2*m.numK*hk:]
 		for h := 0; h < m.numK; h++ {
-			l2(qa[h*hk:(h+1)*hk], m.eps)
-			l2(ka[h*hk:(h+1)*hk], m.eps)
+			l2(conv[t][h*hk:(h+1)*hk], m.eps)
+			l2(conv[t][m.numK*hk+h*hk:m.numK*hk+(h+1)*hk], m.eps)
 		}
+		decayT[t], betaT[t] = make([]float32, m.numV), make([]float32, m.numV)
+		for h := 0; h < m.numV; h++ {
+			decayT[t][h] = float32(math.Exp(float64(softplus(alpha[t][h]+dt[h]) * a[h])))
+			betaT[t][h] = sigmoid(beta[t][h])
+		}
+	}
+	var out [][]float32
+	if m.gpu != nil && n >= 4 { // prefill batches: the whole recurrence on the GPU; decode steps stay on the CPU
+		out, _ = m.gpu.gdn(conv, decayT, betaT, state, m.numK, hk, hv, qs)
+	}
+	onGPU := out != nil
+	if !onGPU {
+		out = make([][]float32, n)
+	}
+	for t := 0; t < n && !onGPU; t++ {
+		qa, ka, va := conv[t][:m.numK*hk], conv[t][m.numK*hk:2*m.numK*hk], conv[t][2*m.numK*hk:]
 		o := make([]float32, m.dInner)
 		parFor(m.numV, func(h int) {
 			kh := h % m.numK // the key heads are tiled across the value heads
 			q, k, v := qa[kh*hk:(kh+1)*hk], ka[kh*hk:(kh+1)*hk], va[h*hv:(h+1)*hv]
-			decay := float32(math.Exp(float64(softplus(alpha[t][h]+dt[h]) * a[h])))
-			b := sigmoid(beta[t][h])
+			decay, b := decayT[t][h], betaT[t][h]
 			S := state[h]
 			// Row-major passes (j contiguous); each sk[j] and o[j] still sums over i in order, as the column loops did.
 			d := make([]float32, hv)
@@ -161,7 +173,8 @@ func (m *Qwen) attn(p string, xn [][]float32, posOff int, c *kvCache) [][]float3
 	qt, _ := m.raw(p + "attn_q.weight")
 	kt, _ := m.raw(p + "attn_k.weight")
 	nHead, nKV := int(qt.Dims[1])/(2*hd), int(kt.Dims[1])/hd // attn_q carries the query and its gate, interleaved per head
-	qf, K, V := m.matmul(p+"attn_q.weight", xn), m.matmul(p+"attn_k.weight", xn), m.matmul(p+"attn_v.weight", xn)
+	pr := m.matmulMulti([]string{p + "attn_q.weight", p + "attn_k.weight", p + "attn_v.weight"}, xn)
+	qf, K, V := pr[0], pr[1], pr[2]
 	if c == nil {
 		c = &kvCache{}
 	}
@@ -188,30 +201,38 @@ func (m *Qwen) attn(p string, xn [][]float32, posOff int, c *kvCache) [][]float3
 	for i := range ctx {
 		ctx[i] = make([]float32, nHead*hd)
 	}
-	parFor(nHead, func(h int) {
-		kv := h / (nHead / nKV)
-		sc := make([]float32, base+n)
-		for i := 0; i < n; i++ {
-			last := base + i // attends to positions 0..last
-			qh := Q[i][h*hd : (h+1)*hd]
-			mx := float32(math.Inf(-1))
-			for j := 0; j <= last; j++ {
-				sc[j] = dotHalf(qh, c.K[j][kv*hd:(kv+1)*hd]) * scale
-				if sc[j] > mx {
-					mx = sc[j]
+	done := false
+	if m.gpu != nil && n >= 4 { // prefill batches: the GPU kernel; decode steps stay on the CPU
+		if r, ok := m.gpu.attn(Q, c, base, 0, nHead, nKV, hd, scale); ok {
+			ctx, done = r, true
+		}
+	}
+	if !done {
+		parFor(nHead, func(h int) {
+			kv := h / (nHead / nKV)
+			sc := make([]float32, base+n)
+			for i := 0; i < n; i++ {
+				last := base + i // attends to positions 0..last
+				qh := Q[i][h*hd : (h+1)*hd]
+				mx := float32(math.Inf(-1))
+				for j := 0; j <= last; j++ {
+					sc[j] = dotHalf(qh, c.K[j][kv*hd:(kv+1)*hd]) * scale
+					if sc[j] > mx {
+						mx = sc[j]
+					}
+				}
+				var sum float32
+				for j := 0; j <= last; j++ {
+					sc[j] = float32(math.Exp(float64(sc[j] - mx)))
+					sum += sc[j]
+				}
+				oh := ctx[i][h*hd : (h+1)*hd]
+				for j := 0; j <= last; j++ {
+					axpyHalf(oh, sc[j]/sum, c.V[j][kv*hd:(kv+1)*hd])
 				}
 			}
-			var sum float32
-			for j := 0; j <= last; j++ {
-				sc[j] = float32(math.Exp(float64(sc[j] - mx)))
-				sum += sc[j]
-			}
-			oh := ctx[i][h*hd : (h+1)*hd]
-			for j := 0; j <= last; j++ {
-				axpyHalf(oh, sc[j]/sum, c.V[j][kv*hd:(kv+1)*hd])
-			}
-		}
-	})
+		})
+	}
 	for i := range ctx {
 		for j := range ctx[i] {
 			ctx[i][j] *= sigmoid(gate[i][j])
@@ -263,13 +284,7 @@ func (m *Qwen) hiddenAt(st *QwenState, tokens []int) [][]float32 {
 			}
 			fx[i] = rms(h[i], pn, m.eps)
 		}
-		g, u := m.matmul(p+"ffn_gate.weight", fx), m.matmul(p+"ffn_up.weight", fx)
-		for i := range g {
-			for j := range g[i] {
-				g[i][j] = silu(g[i][j]) * u[i][j]
-			}
-		}
-		d := m.matmul(p+"ffn_down.weight", g)
+		d := m.ffn(p, fx, false)
 		for i := range h {
 			for j := range h[i] {
 				h[i][j] += d[i][j]
@@ -326,13 +341,7 @@ func (m *Qwen) MTP(tokens []int, hs [][]float32, posOff int) [][]float32 {
 		}
 		fx[i] = rms(x[i], pn, m.eps)
 	}
-	g, u := m.matmul(p+"ffn_gate.weight", fx), m.matmul(p+"ffn_up.weight", fx)
-	for i := range g {
-		for j := range g[i] {
-			g[i][j] = silu(g[i][j]) * u[i][j]
-		}
-	}
-	d := m.matmul(p+"ffn_down.weight", g)
+	d := m.ffn(p, fx, false)
 	hn := m.vec(p + "nextn.shared_head_norm.weight")
 	for i := range x {
 		for j := range x[i] {

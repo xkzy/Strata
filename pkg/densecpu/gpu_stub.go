@@ -28,3 +28,15 @@ func (*gpuMatmul) free() {}
 func (*gpuMatmul) matmul(string, *gguf.TensorInfo, [][]float32) ([][]float32, bool) {
 	return nil, false
 }
+
+func (*gpuMatmul) attn([][]float32, *kvCache, int, int, int, int, int, float32) ([][]float32, bool) {
+	return nil, false
+}
+
+func (*gpuMatmul) gdn([][]float32, [][]float32, [][]float32, [][]float32, int, int, int, float32) ([][]float32, bool) {
+	return nil, false
+}
+
+func (*gpuMatmul) ffn(string, [][]float32, bool) ([][]float32, bool) { return nil, false }
+
+func (*gpuMatmul) multi([]string, [][]float32) ([][][]float32, bool) { return nil, false }

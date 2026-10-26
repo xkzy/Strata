@@ -21,9 +21,13 @@ func decodeAt(t *testing.T, name string, n int, feed func(ids []int), step func(
 	}
 	pre := time.Since(t0)
 	gpu := float64(GPUCallNanos.Load()) / 1e9
+	in, kern, out, bi, bo, calls := MatvecStats(true)
+	t.Logf("matvec over the prefill: %d calls, copy in %.2fs (%.0f MB), kernel %.2fs, copy out %.2fs (%.0f MB)", calls, in, bi/1e6, kern, out, bo/1e6)
 	t0 = time.Now()
 	step()
 	t.Logf("%s: context %d, prefill %.1fs (%.1fs in GPU calls), one decode step %.3fs", name, n, pre.Seconds(), gpu, time.Since(t0).Seconds())
+	in, kern, out, bi, bo, calls = MatvecStats(true)
+	t.Logf("matvec over the decode step: %d calls, copy in %.3fs (%.1f MB), kernel %.3fs, copy out %.3fs (%.1f MB)", calls, in, bi/1e6, kern, out, bo/1e6)
 }
 
 // TestPrefill512 is the short run to profile: go test -tags cuda -run Prefill512 -cpuprofile cpu.out

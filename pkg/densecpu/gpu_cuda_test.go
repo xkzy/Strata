@@ -77,3 +77,57 @@ func quantRef(x []float32) []float32 {
 	}
 	return out
 }
+
+// TestCUDAAttnMatchesCPU checks the attention kernel against the CPU loops in Qwen.attn on random half caches.
+func TestCUDAAttnMatchesCPU(t *testing.T) {
+	rng := rand.New(rand.NewSource(3))
+	for _, c := range []struct{ n, base, window, nHead, nKV, hd int }{{5, 0, 0, 8, 2, 64}, {7, 300, 0, 24, 4, 256}, {4, 1000, 0, 32, 4, 512}, {6, 900, 128, 32, 16, 256}, {5, 40, 128, 32, 4, 512}} {
+		ctx := c.base + c.n
+		rnd := func(rows, w int) [][]float32 {
+			r := make([][]float32, rows)
+			for i := range r {
+				r[i] = make([]float32, w)
+				for j := range r[i] {
+					r[i][j] = rng.Float32()*2 - 1
+				}
+			}
+			return r
+		}
+		Q, K, V := rnd(c.n, c.nHead*c.hd), rnd(ctx, c.nKV*c.hd), rnd(ctx, c.nKV*c.hd)
+		kc := &kvCache{K: packHalf(K), V: packHalf(V)}
+		scale := float32(1 / math.Sqrt(float64(c.hd)))
+		got, ok := (&gpuMatmul{}).attn(Q, kc, c.base, c.window, c.nHead, c.nKV, c.hd, scale)
+		if !ok {
+			t.Skip("no CUDA device")
+		}
+		for i := 0; i < c.n; i++ {
+			for h := 0; h < c.nHead; h++ {
+				kv := h / (c.nHead / c.nKV)
+				lo := 0
+				if c.window > 0 && c.base+i-c.window+1 > 0 {
+					lo = c.base + i - c.window + 1
+				}
+				sc := make([]float64, c.base+i+1-lo)
+				mx := math.Inf(-1)
+				for j := range sc {
+					sc[j] = float64(dotHalf(Q[i][h*c.hd:(h+1)*c.hd], kc.K[lo+j][kv*c.hd:(kv+1)*c.hd]) * scale)
+					mx = math.Max(mx, sc[j])
+				}
+				var sum float64
+				for j := range sc {
+					sc[j] = math.Exp(sc[j] - mx)
+					sum += sc[j]
+				}
+				want := make([]float32, c.hd)
+				for j := range sc {
+					axpyHalf(want, float32(sc[j]/sum), kc.V[lo+j][kv*c.hd:(kv+1)*c.hd])
+				}
+				for d, w := range want {
+					if g := got[i][h*c.hd+d]; math.Abs(float64(g-w)) > 2e-4 {
+						t.Fatalf("case %+v token %d head %d dim %d: gpu %v cpu %v", c, i, h, d, g, w)
+					}
+				}
+			}
+		}
+	}
+}

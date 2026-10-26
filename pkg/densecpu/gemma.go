@@ -82,10 +82,17 @@ func (m *Gemma) Step(st *GemmaState, tokens []int) []float32 {
 		for i := range h {
 			xn[i] = rms(h[i], an, m.eps)
 		}
-		Q, K := m.matmul(p+"attn_q.weight", xn), m.matmul(p+"attn_k.weight", xn)
-		var V [][]float32
+		names := []string{p + "attn_q.weight", p + "attn_k.weight"}
+		hasV := false
 		if t, _ := m.raw(p + "attn_v.weight"); t != nil {
-			V = m.matmul(p+"attn_v.weight", xn)
+			hasV = true
+			names = append(names, p+"attn_v.weight")
+		}
+		pr := m.matmulMulti(names, xn)
+		Q, K := pr[0], pr[1]
+		var V [][]float32
+		if hasV {
+			V = pr[2]
 		} else {
 			V = make([][]float32, n) // global layers: V is the raw K projection
 			for i := range K {
@@ -111,7 +118,20 @@ func (m *Gemma) Step(st *GemmaState, tokens []int) []float32 {
 		for i := range ctx {
 			ctx[i] = make([]float32, nHead*hd)
 		}
+		window := 0
+		if m.swa[l] {
+			window = m.window
+		}
+		done := false
+		if m.gpu != nil && n >= 4 { // prefill batches: the GPU kernel; decode steps stay on the CPU
+			if r, ok := m.gpu.attn(Q, c, pos0-b0, window, nHead, nKV, hd, 1); ok {
+				ctx, done = r, true
+			}
+		}
 		parFor(nHead, func(hh int) {
+			if done {
+				return
+			}
 			kv := hh / (nHead / nKV)
 			sc := make([]float32, pos0+n-b0)
 			for i := 0; i < n; i++ {
@@ -160,13 +180,7 @@ func (m *Gemma) Step(st *GemmaState, tokens []int) []float32 {
 		for i := range a {
 			fx[i] = rms(a[i], fnw, m.eps)
 		}
-		g, u := m.matmul(p+"ffn_gate.weight", fx), m.matmul(p+"ffn_up.weight", fx)
-		for i := range g {
-			for j := range g[i] {
-				g[i][j] = geluTanh(g[i][j]) * u[i][j]
-			}
-		}
-		d := m.matmul(p+"ffn_down.weight", g)
+		d := m.ffn(p, fx, true)
 		pfw, ls := m.vec(p+"post_ffw_norm.weight"), m.vec(p + "layer_output_scale.weight")[0]
 		for i := range d {
 			d[i] = rms(d[i], pfw, m.eps)

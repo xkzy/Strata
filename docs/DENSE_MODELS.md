@@ -73,14 +73,23 @@ Decode-time-versus-context numbers are not measured yet (`TestDecodeVsContext`, 
 | float kernel, one input per weight read | 59.9 s | 44.3 s |
 | 8 inputs per weight read (still float) | 60.0 s | not split |
 | int8 inputs + `dp4a` for batches of 4 or more | 25.5 s | 10.0 s |
-| row-major delta-net state update, 4-accumulator attention over the half cache | **23.8 s** (21 tokens/s) | 10.0 s |
+| row-major delta-net state update, 4-accumulator attention over the half cache | 23.8 s (21 tokens/s) | 10.0 s |
+| attention for batches of 4 or more on the GPU (`dg_attn`, online softmax, cache copied to the card per call) | 20.4 s | 10.3 s |
+| delta-net recurrence on the GPU (`dg_gdn`, one block per value head, state column in registers) | 18.4 s (28 tokens/s) | 11.2 s |
+| each layer's weights on one card (placement was tensor by tensor, 42 of 64 FFN blocks were split) and the feed-forward block run on the card (`dg_ffn`: x up once, gate/up/hidden stay there, one result back) | 16.9 s, then 13.2 s after the placement fix | 9.8 s |
+| q/k/v and qkv/gate/beta/alpha share one upload of their input (`dg_multi`) | 12.9 s | 9.5 s |
+| int8 tensor-core matmul (`mma.sync m16n8k32`, 64 rows x 32 inputs per block, weights decoded once per tile into shared memory) | **7.4 s** (69 tokens/s) | 4.1 s |
+
+Data crossing the bus in that run (`MatvecStats`): 15 GB (7 GB up, 8 GB down) at the start, 5.6 GB at the end. Matmul kernel time: 7.4 s, then 1.9 s. Gemma 4 31B, same test: 19.3 s (27 tokens/s), of which only 4.8 s was in GPU calls; the profile showed 10.9 s in `ropeNeox`, which recomputed `Pow` and `Sincos` for every head of every token. Computing the angles once per position (`ropeAngles`, same arithmetic, same logits) brought it to **8.6 s (60 tokens/s)**, 4.7 s of it in GPU calls, and Gemma's decode step to 0.226 s. A decode step is unchanged by all of this (Qwen 0.148 s, Gemma 0.267 s): 0.097 s of Qwen's is the float matvec kernels reading the weights, which only a bandwidth-bound kernel (not this tensor-core one, used for 4 or more inputs) can shorten.
 
 The int8 path quantizes each input in groups of 32 (scale max|x|/127), so batched results differ slightly from the
 float path; `TestCUDAKernelsMatchCPU` compares the GPU against the CPU kernels run on the same quantized inputs. Single
 tokens (decode) still use the exact float kernels. One decode step with 512 tokens of context: 0.167 s; with 2048 tokens
-of context 0.191 s (measured before the prefill changes). Gemma 4 31B, same 512-token prefill after the int8 changes (`TestPrefill512Gemma`): 47.8 s (11 tokens/s), 11.3 s of it in GPU calls, one decode step afterwards 0.273 s. Not measured: 4096 tokens.
-The remaining 13.8 s of the prefill is Go code on the CPU: the attention loops and the delta-net recurrence, which only
-GPU kernels will speed up.
+of context 0.191 s (measured before the prefill changes). Gemma 4 31B, same 512-token prefill (`TestPrefill512Gemma`): 47.8 s (11 tokens/s) after the int8 changes, 34.4 s (15 tokens/s, 13.0 s in GPU calls) with attention on the GPU too; one decode step afterwards 0.277 s. Not measured: 4096 tokens.
+The two GPU kernels (the delta-net one is Qwen only; the attention one also serves Gemma, with its sliding window and attention scale 1) agree with the CPU loops: `TestCUDAAttnMatchesCPU`
+(2e-4, including window cases) and, for the recurrence, the model-level checks (`TestQwenOnGPU`: Paris logit 16.323 against 16.356 on the CPU;
+`TestQwenStepMatchesForward`). What is left outside GPU calls is about 7 s, mostly `silu`/`sigmoid` of the causal conv and
+the per-call copies of the activations, the state (3 MiB per layer) and the K/V cache.
 
 ## What is in the repo
 
