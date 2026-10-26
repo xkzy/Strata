@@ -59,9 +59,13 @@ func TestDecodeSteps(t *testing.T) {
 		}
 		q.Step(st, ids)
 	}
+	GPUCallNanos.Store(0)
+	MatvecStats(true)
 	t0 := time.Now()
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 200; i++ {
 		q.Step(st, []int{760 + i})
 	}
-	t.Logf("context 2048: %.1f ms per decode step", time.Since(t0).Seconds()/30*1000)
+	in, kern, out, _, _, calls := MatvecStats(false)
+	t.Logf("per step: %d matvec calls, in %.1f kernel %.1f out %.1f ms", calls/200, in*1000/200, kern*1000/200, out*1000/200)
+	t.Logf("context 2048: %.1f ms per decode step, %.1f ms of it in GPU calls", time.Since(t0).Seconds()/200*1000, float64(GPUCallNanos.Load())/200e6)
 }

@@ -3,6 +3,8 @@
 package densecpu
 
 import (
+	"os"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -89,5 +91,55 @@ func TestDecodeVsContext(t *testing.T) {
 		st := g.NewState()
 		decodeAt(t, "gemma", n, func(ids []int) { g.Step(st, ids) }, func() { g.Step(st, []int{760}) })
 		st.Free()
+	}
+}
+
+// TestMaxContext fills a session toward STRATA_CTX tokens (model: STRATA_CTX_MODEL=qwen|gemma) and times a decode step
+// each time the context doubles. Skipped unless STRATA_CTX is set.
+func TestMaxContext(t *testing.T) {
+	target, _ := strconv.Atoi(os.Getenv("STRATA_CTX"))
+	if target == 0 {
+		t.Skip("set STRATA_CTX")
+	}
+	var step func(ids []int)
+	if os.Getenv("STRATA_CTX_MODEL") == "gemma" {
+		g, err := OpenGemma(modelPath(t, "gemma-4-31B-it-UD-Q4_K_XL.gguf"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer g.Close()
+		if _, err := g.EnableGPU(); err != nil {
+			t.Fatal(err)
+		}
+		st := g.NewState()
+		defer st.Free()
+		step = func(ids []int) { g.Step(st, ids) }
+	} else {
+		q, err := OpenQwen(modelPath(t, "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q4_K_M.gguf"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer q.Close()
+		if _, err := q.EnableGPU(); err != nil {
+			t.Fatal(err)
+		}
+		st := q.NewState()
+		defer st.Free()
+		step = func(ids []int) { q.Step(st, ids) }
+	}
+	t0, next := time.Now(), 4096
+	for done := 0; done < target; done += 512 {
+		ids := make([]int, 512)
+		for i := range ids {
+			ids[i] = 760 + (done+i)%50
+		}
+		step(ids)
+		if done+512 >= next || done+512 >= target {
+			t1 := time.Now()
+			step([]int{760})
+			done++ // the probe token is part of the context
+			t.Logf("context %d: %.0fs elapsed, decode step %.3fs", done+512, t1.Sub(t0).Seconds(), time.Since(t1).Seconds())
+			next *= 2
+		}
 	}
 }
