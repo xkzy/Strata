@@ -1271,6 +1271,11 @@ func (s *StrataServer) handleSetupModels(w http.ResponseWriter, r *http.Request)
 	models := installer.GetAvailableModels()
 	rec := installer.RecommendModel(specs)
 	for i := range models {
+		if models[i].Source == installer.SourceLocal && strings.HasSuffix(strings.ToLower(models[i].Filename), ".gguf") {
+			if n := ggufContext(models[i].Filename); n > 0 { // what the file supports, not the 32K placeholder
+				models[i].ContextLength = n
+			}
+		}
 		if models[i].Name == rec.Name {
 			models[i].Recommended = true
 		}

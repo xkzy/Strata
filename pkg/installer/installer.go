@@ -971,7 +971,7 @@ func extractQuant(s string) string {
 
 func extractParamSize(s string) string {
 	upper := strings.ToUpper(s)
-	for _, p := range []string{"1.5B", "3B", "7B", "8B", "9B", "14B", "16B", "27B", "30B", "32B", "70B"} {
+	for _, p := range []string{"1.5B", "3B", "7B", "8B", "9B", "14B", "16B", "27B", "30B", "31B", "32B", "70B"} {
 		if strings.Contains(upper, p) {
 			return p
 		}
