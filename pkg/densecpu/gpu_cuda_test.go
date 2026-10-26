@@ -28,7 +28,7 @@ func TestCUDAKernelsMatchCPU(t *testing.T) {
 					w[b*2+1] &= 0x3f
 				}
 			}
-			for _, n := range []int{1, 5} {
+			for _, n := range []int{1, 5, 8, 19} {
 				X := make([][]float32, n)
 				for i := range X {
 					X[i] = make([]float32, cols)
@@ -42,9 +42,13 @@ func TestCUDAKernelsMatchCPU(t *testing.T) {
 				}
 				rowBytes := cols / elems * bytes
 				for i := range X {
-					xs := sums32(X[i])
+					x := X[i]
+					if n >= 4 && c.typ != tBF16 {
+						x = quantRef(x) // batches of 4 or more run the int8 kernels on quantized inputs
+					}
+					xs := sums32(x)
 					for r := 0; r < rows; r++ {
-						want := float64(fusedDot(c.typ)(w[r*rowBytes:(r+1)*rowBytes], X[i], xs))
+						want := float64(fusedDot(c.typ)(w[r*rowBytes:(r+1)*rowBytes], x, xs))
 						if math.Abs(float64(Y[i][r])-want) > 1e-3*(1+math.Abs(want)) {
 							t.Fatalf("dev %d type %d n=%d row %d: gpu %v cpu %v", dev, c.typ, n, r, Y[i][r], want)
 						}
@@ -53,4 +57,23 @@ func TestCUDAKernelsMatchCPU(t *testing.T) {
 			}
 		}
 	}
+}
+
+// quantRef applies the kernel's input quantization: per 32 values, scale max|x|/127, round to nearest even.
+func quantRef(x []float32) []float32 {
+	out := make([]float32, len(x))
+	for b := 0; b < len(x); b += 32 {
+		var amax float32
+		for _, v := range x[b : b+32] {
+			amax = float32(math.Max(float64(amax), math.Abs(float64(v))))
+		}
+		d := amax / 127
+		if d == 0 {
+			continue
+		}
+		for i := b; i < b+32; i++ {
+			out[i] = float32(math.RoundToEven(float64(x[i]/d))) * d
+		}
+	}
+	return out
 }

@@ -66,6 +66,22 @@ so on this PC (24 GB of VRAM in total) the maximum context still does not fit on
 RAM (60 GB), which fits. An 8-bit cache would halve it again (not done).
 Decode-time-versus-context numbers are not measured yet (`TestDecodeVsContext`, build tag `cuda`).
 
+### Prefill (measured: Qwen3.8-27B, 512 filler tokens in one session, both GPUs, 32 CPU threads)
+
+| change | prefill, 512 tokens | of that, in GPU calls |
+|---|---|---|
+| float kernel, one input per weight read | 59.9 s | 44.3 s |
+| 8 inputs per weight read (still float) | 60.0 s | not split |
+| int8 inputs + `dp4a` for batches of 4 or more | 25.5 s | 10.0 s |
+| row-major delta-net state update, 4-accumulator attention over the half cache | **23.8 s** (21 tokens/s) | 10.0 s |
+
+The int8 path quantizes each input in groups of 32 (scale max|x|/127), so batched results differ slightly from the
+float path; `TestCUDAKernelsMatchCPU` compares the GPU against the CPU kernels run on the same quantized inputs. Single
+tokens (decode) still use the exact float kernels. One decode step with 512 tokens of context: 0.167 s; with 2048 tokens
+of context 0.191 s (measured before the prefill changes). Not measured: 4096 tokens and Gemma (the run was cut short).
+The remaining 13.8 s of the prefill is Go code on the CPU: the attention loops and the delta-net recurrence, which only
+GPU kernels will speed up.
+
 ## What is in the repo
 
 - `pkg/modelschema/dense_gguf.go` - `ReadDensePlan(path)` reads a `qwen35` or `gemma4` GGUF and returns the

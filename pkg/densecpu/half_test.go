@@ -12,6 +12,9 @@ func TestHalfRoundTrip(t *testing.T) {
 		if v != v { // nan
 			continue
 		}
+		if i&0x7fff < 0x7c00 && h2f32(uint16(i)) != v {
+			t.Fatalf("h2f32(%#04x) = %v, table says %v", i, h2f32(uint16(i)), v)
+		}
 		if got := toHalf(v); got != uint16(i) {
 			t.Fatalf("half %#04x -> %v -> %#04x", i, v, got)
 		}

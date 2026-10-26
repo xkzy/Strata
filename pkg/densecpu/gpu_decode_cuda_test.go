@@ -9,6 +9,7 @@ import (
 
 // decodeAt fills a session with n filler tokens (in chunks of 512), then times one more decode step.
 func decodeAt(t *testing.T, name string, n int, feed func(ids []int), step func()) {
+	GPUCallNanos.Store(0)
 	t0 := time.Now()
 	for done := 0; done < n; done += 512 {
 		c := min(512, n-done)
@@ -19,9 +20,24 @@ func decodeAt(t *testing.T, name string, n int, feed func(ids []int), step func(
 		feed(ids)
 	}
 	pre := time.Since(t0)
+	gpu := float64(GPUCallNanos.Load()) / 1e9
 	t0 = time.Now()
 	step()
-	t.Logf("%s: context %d, prefill %.1fs, one decode step %.3fs", name, n, pre.Seconds(), time.Since(t0).Seconds())
+	t.Logf("%s: context %d, prefill %.1fs (%.1fs in GPU calls), one decode step %.3fs", name, n, pre.Seconds(), gpu, time.Since(t0).Seconds())
+}
+
+// TestPrefill512 is the short run to profile: go test -tags cuda -run Prefill512 -cpuprofile cpu.out
+func TestPrefill512(t *testing.T) {
+	q, err := OpenQwen(modelPath(t, "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q4_K_M.gguf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	if _, err := q.EnableGPU(); err != nil {
+		t.Fatal(err)
+	}
+	st := q.NewState()
+	decodeAt(t, "qwen", 512, func(ids []int) { q.Step(st, ids) }, func() { q.Step(st, []int{760}) })
 }
 
 func TestDecodeVsContext(t *testing.T) {

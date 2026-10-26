@@ -118,28 +118,25 @@ func (m *Qwen) gdn(st *gdnState, p string, xn [][]float32) [][]float32 {
 			decay := float32(math.Exp(float64(softplus(alpha[t][h]+dt[h]) * a[h])))
 			b := sigmoid(beta[t][h])
 			S := state[h]
-			for i := range S {
-				S[i] *= decay
-			}
+			// Row-major passes (j contiguous); each sk[j] and o[j] still sums over i in order, as the column loops did.
 			d := make([]float32, hv)
-			for j := 0; j < hv; j++ {
-				var sk float32
-				for i := 0; i < hk; i++ {
-					sk += S[i*hv+j] * k[i]
-				}
-				d[j] = (v[j] - sk) * b
-			}
 			for i := 0; i < hk; i++ {
-				for j := 0; j < hv; j++ {
-					S[i*hv+j] += k[i] * d[j]
+				Si, ki := S[i*hv:(i+1)*hv], k[i]
+				for j := range Si {
+					Si[j] *= decay
+					d[j] += Si[j] * ki
 				}
 			}
-			for j := 0; j < hv; j++ {
-				var s float32
-				for i := 0; i < hk; i++ {
-					s += S[i*hv+j] * q[i] * qs
+			for j := range d {
+				d[j] = (v[j] - d[j]) * b
+			}
+			oh := o[h*hv : (h+1)*hv]
+			for i := 0; i < hk; i++ {
+				Si, ki, qi := S[i*hv:(i+1)*hv], k[i], q[i]
+				for j := range Si {
+					Si[j] += ki * d[j]
+					oh[j] += Si[j] * qi * qs
 				}
-				o[h*hv+j] = s
 			}
 		})
 		out[t] = o
@@ -188,35 +185,34 @@ func (m *Qwen) attn(p string, xn [][]float32, posOff int, c *kvCache) [][]float3
 	c.K, c.V = append(c.K, packHalf(K)...), append(c.V, packHalf(V)...)
 	scale := float32(1 / math.Sqrt(float64(hd)))
 	ctx := make([][]float32, n)
-	for i := 0; i < n; i++ {
+	for i := range ctx {
 		ctx[i] = make([]float32, nHead*hd)
-		last := base + i // attends to positions 0..last
-		parFor(nHead, func(h int) {
-			kv := h / (nHead / nKV)
-			sc := make([]float32, last+1)
+	}
+	parFor(nHead, func(h int) {
+		kv := h / (nHead / nKV)
+		sc := make([]float32, base+n)
+		for i := 0; i < n; i++ {
+			last := base + i // attends to positions 0..last
+			qh := Q[i][h*hd : (h+1)*hd]
 			mx := float32(math.Inf(-1))
 			for j := 0; j <= last; j++ {
-				var s float32
-				for d := 0; d < hd; d++ {
-					s += Q[i][h*hd+d] * halfTab[c.K[j][kv*hd+d]]
-				}
-				sc[j] = s * scale
+				sc[j] = dotHalf(qh, c.K[j][kv*hd:(kv+1)*hd]) * scale
 				if sc[j] > mx {
 					mx = sc[j]
 				}
 			}
 			var sum float32
-			for j := range sc {
+			for j := 0; j <= last; j++ {
 				sc[j] = float32(math.Exp(float64(sc[j] - mx)))
 				sum += sc[j]
 			}
+			oh := ctx[i][h*hd : (h+1)*hd]
 			for j := 0; j <= last; j++ {
-				w := sc[j] / sum
-				for d := 0; d < hd; d++ {
-					ctx[i][h*hd+d] += w * halfTab[c.V[j][kv*hd+d]]
-				}
+				axpyHalf(oh, sc[j]/sum, c.V[j][kv*hd:(kv+1)*hd])
 			}
-		})
+		}
+	})
+	for i := range ctx {
 		for j := range ctx[i] {
 			ctx[i][j] *= sigmoid(gate[i][j])
 		}

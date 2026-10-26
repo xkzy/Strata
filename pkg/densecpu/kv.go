@@ -122,3 +122,33 @@ func (m *Gemma) NewState() *GemmaState {
 
 // Pos is the number of tokens the session has consumed.
 func (s *GemmaState) Pos() int { return s.pos }
+
+// h2f32 converts a half float without the lookup table (no inf/nan: cached keys and values are finite).
+func h2f32(h uint16) float32 {
+	v := math.Float32frombits(uint32(h&0x7fff)<<13) * 0x1p112
+	if h&0x8000 != 0 {
+		return -v
+	}
+	return v
+}
+
+// dotHalf is q . k with four accumulators (len(q) is a multiple of 4).
+func dotHalf(q []float32, k []uint16) float32 {
+	var a, b, c, d float32
+	k = k[:len(q)]
+	for i := 0; i+3 < len(q); i += 4 {
+		a += q[i] * h2f32(k[i])
+		b += q[i+1] * h2f32(k[i+1])
+		c += q[i+2] * h2f32(k[i+2])
+		d += q[i+3] * h2f32(k[i+3])
+	}
+	return (a + b) + (c + d)
+}
+
+// axpyHalf adds w*v to o.
+func axpyHalf(o []float32, w float32, v []uint16) {
+	v = v[:len(o)]
+	for i := range o {
+		o[i] += w * h2f32(v[i])
+	}
+}

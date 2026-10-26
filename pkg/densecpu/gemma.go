@@ -108,42 +108,38 @@ func (m *Gemma) Step(st *GemmaState, tokens []int) []float32 {
 		c, b0 := st.kv[l], st.base[l] // c.K[r] is position b0+r
 		c.K, c.V = append(c.K, packHalf(K)...), append(c.V, packHalf(V)...)
 		ctx := make([][]float32, n)
-		for i := 0; i < n; i++ {
+		for i := range ctx {
 			ctx[i] = make([]float32, nHead*hd)
-			last := pos0 + i
-			lo := b0
-			if m.swa[l] && last-m.window+1 > lo {
-				lo = last - m.window + 1
-			}
-			parFor(nHead, func(hh int) {
-				kv := hh / (nHead / nKV)
-				sc := make([]float32, last-lo+1)
+		}
+		parFor(nHead, func(hh int) {
+			kv := hh / (nHead / nKV)
+			sc := make([]float32, pos0+n-b0)
+			for i := 0; i < n; i++ {
+				last := pos0 + i
+				lo := b0
+				if m.swa[l] && last-m.window+1 > lo {
+					lo = last - m.window + 1
+				}
+				qh := Q[i][hh*hd : (hh+1)*hd]
 				mx := float32(math.Inf(-1))
 				for j := lo; j <= last; j++ {
-					kr := c.K[j-b0]
-					var s float32
-					for d := 0; d < hd; d++ {
-						s += Q[i][hh*hd+d] * halfTab[kr[kv*hd+d]]
-					}
-					sc[j-lo] = s // attention scale is 1.0
+					s := dotHalf(qh, c.K[j-b0][kv*hd:(kv+1)*hd]) // attention scale is 1.0
+					sc[j-lo] = s
 					if s > mx {
 						mx = s
 					}
 				}
 				var sum float32
-				for j := range sc {
-					sc[j] = float32(math.Exp(float64(sc[j] - mx)))
-					sum += sc[j]
-				}
 				for j := lo; j <= last; j++ {
-					w := sc[j-lo] / sum
-					vr := c.V[j-b0]
-					for d := 0; d < hd; d++ {
-						ctx[i][hh*hd+d] += w * halfTab[vr[kv*hd+d]]
-					}
+					sc[j-lo] = float32(math.Exp(float64(sc[j-lo] - mx)))
+					sum += sc[j-lo]
 				}
-			})
-		}
+				oh := ctx[i][hh*hd : (hh+1)*hd]
+				for j := lo; j <= last; j++ {
+					axpyHalf(oh, sc[j-lo]/sum, c.V[j-b0][kv*hd:(kv+1)*hd])
+				}
+			}
+		})
 		if m.swa[l] && len(c.K) > m.window { // nothing older than the window is ever read again
 			drop := len(c.K) - m.window
 			c.K, c.V = append([][]uint16(nil), c.K[drop:]...), append([][]uint16(nil), c.V[drop:]...)
