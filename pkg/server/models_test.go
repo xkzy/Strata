@@ -1,13 +1,50 @@
-// pkg/server/models_test.go - Unit Tests for Multi-Model Endpoints and Registry Integration
 package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+// A pinned request keeps swaps out until it is over; a name no config knows is served by the loaded model.
+func TestPinModelHoldsOffSwap(t *testing.T) {
+	s := &StrataServer{}
+	unpin, err := s.pinModel(nil, "no-such-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modelMu.TryLock() {
+		t.Fatal("a swap could start while a request was pinned")
+	}
+	unpin()
+	if !modelMu.TryLock() {
+		t.Fatal("the lock was not released")
+	}
+	modelMu.Unlock()
+}
+
+func TestAutoFailed(t *testing.T) {
+	ok := []genEvent{{parsedEvent: parsedEvent{Kind: "content", Text: "hi"}}, {End: true, Finish: "stop"}}
+	cut := []genEvent{{parsedEvent: parsedEvent{Kind: "content", Text: "hi"}}, {End: true, Finish: "length"}}
+	for _, c := range []struct {
+		err  error
+		evs  []genEvent
+		fail bool
+	}{
+		{nil, ok, false},
+		{nil, cut, true},
+		{nil, []genEvent{{End: true, Finish: "stop"}}, true},
+		{nil, []genEvent{{Err: errors.New("boom")}}, true},
+		{errors.New("no engine"), nil, true},
+	} {
+		if got := autoFailed(c.err, c.evs) != ""; got != c.fail {
+			t.Errorf("autoFailed(%v, %v) failed=%v, want %v", c.err, c.evs, got, c.fail)
+		}
+	}
+}
 
 func TestModelsEndpoint_ListAndDetail(t *testing.T) {
 	srv := NewStrataServer(ServerConfig{

@@ -244,8 +244,8 @@ func (s *StrataServer) guardStart(ctx context.Context, spec genSpec) (<-chan gen
 	return s.startChatUnguarded(ctx, spec)
 }
 
-// startChat picks the path for a request (see startChatUnguarded) and puts the reply guard around it.
-func (s *StrataServer) startChat(ctx context.Context, spec genSpec) (<-chan genEvent, int, error) {
+// startChatOne picks the path for a request (see startChatUnguarded) and puts the reply guard around it.
+func (s *StrataServer) startChatOne(ctx context.Context, spec genSpec) (<-chan genEvent, int, error) {
 	policy := s.guardPolicy(spec)
 	if policy == guardOff {
 		return s.guardStart(ctx, spec)

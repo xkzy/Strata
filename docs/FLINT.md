@@ -35,6 +35,10 @@ by what q8_1 rounding of the activations alone does to the reference (`src/kerne
 
 Every `strata-*.json` engine config in the working directory is a model, named by its `model_name`. A request whose
 `model` names another config's model stops the running engine and starts that one (the tokenizer and chat template
-switch with it); a name no config knows goes to the loaded model. The swap is refused while a request is running.
+switch with it); a name no config knows goes to the loaded model. A swap waits for the running requests to finish and holds back new ones until the new model is ready.
+
+Model `"auto"` answers on `flint-preview` first; if the reply failed (an error, nothing in it, or cut off at `max_tokens`) it
+is redone on `qwen3.8-flash-next-coder-iq1_m`, and the dense `qwen3.8-27b-dense` is the last resort. Models without a
+config are skipped. A streamed request stays on the first model, since the client has already seen its start.
 Measured: `flint-preview` to `qwen3.8-27b-dense` and back, 10 s for the first request after the swap to the dense model
 (warm file cache).

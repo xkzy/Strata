@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -89,9 +88,8 @@ func blocksText(bs []anBlock) (string, error) {
 
 func (r *anRequest) toSpec(s *StrataServer) (genSpec, error) {
 	var spec genSpec
-	if err := s.useModel(context.Background(), r.Model); err != nil { // before the template format is read
-		return spec, err
-	}
+	spec.Model = r.Model
+	spec.Stream = r.Stream
 	if len(r.System) > 0 && string(r.System) != "null" {
 		bs, err := anBlocks(r.System)
 		if err != nil {
@@ -168,7 +166,6 @@ func (r *anRequest) toSpec(s *StrataServer) (genSpec, error) {
 		spec.Tools = append(spec.Tools, b)
 	}
 	spec.Opt = chattemplate.Options{Tools: spec.Tools, AddGenerationPrompt: true}
-	spec.Opt.Format = s.templateFormat()
 	if r.Thinking != nil {
 		switch r.Thinking.Type {
 		case "disabled":

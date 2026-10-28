@@ -20,6 +20,8 @@ import (
 
 // genSpec is one generation request after the API layer has normalised it.
 type genSpec struct {
+	Model               string // the "model" the request names; picks the engine (see pinModel), "auto" = see startChat
+	Stream              bool   // the reply is streamed, so it cannot be redone on another model
 	Messages            []chattemplate.Message
 	Tools               []json.RawMessage
 	Opt                 chattemplate.Options
@@ -276,6 +278,14 @@ func endFinish(reason string) string {
 	return reason
 }
 
+// factLine renders a verified result for the prompt. A Lean verdict is not a value: "<claim> = refuted" would read as an equation.
+func factLine(backend, observation, expr, val string) string {
+	if strings.HasPrefix(backend, "Lean4") && observation != "" {
+		return "Verified fact for this answer: " + observation
+	}
+	return fmt.Sprintf("Verified fact for this answer: %s = %s", expr, val)
+}
+
 func (s *StrataServer) interceptMathIntent(spec *genSpec) {
 	if spec.mathDone {
 		return
@@ -300,7 +310,7 @@ func (s *StrataServer) interceptMathIntent(spec *genSpec) {
 					if val == "" {
 						val = casRes.NumericResult
 					}
-					fact := fmt.Sprintf("Verified fact for this answer: %s = %s", casRes.CanonicalExpression, val)
+					fact := factLine(casRes.BackendName, casRes.CompactObservation, casRes.CanonicalExpression, val)
 					if !seenFacts[fact] {
 						seenFacts[fact] = true
 						mathFacts = append(mathFacts, fact)
@@ -310,7 +320,7 @@ func (s *StrataServer) interceptMathIntent(spec *genSpec) {
 					if val == "" {
 						val = res.NumericResult
 					}
-					fact := fmt.Sprintf("Verified fact for this answer: %s = %s", res.CanonicalExpression, val)
+					fact := factLine(res.BackendName, res.CompactObservation, res.CanonicalExpression, val)
 					if !seenFacts[fact] {
 						seenFacts[fact] = true
 						mathFacts = append(mathFacts, fact)
