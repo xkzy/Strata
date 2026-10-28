@@ -393,10 +393,16 @@ func (s *StrataServer) startChatUnguarded(ctx context.Context, spec genSpec) (<-
 	go func() { // the engine stays pinned until the reply is over
 		defer unpin()
 		defer close(out)
+		stalled := false // a client that stops reading must not hold the pin (and so every model swap) for long
 		for ev := range ch {
+			if stalled {
+				continue
+			}
 			select {
 			case out <- ev:
 			case <-ctx.Done():
+			case <-time.After(30 * time.Second):
+				stalled = true
 			}
 		}
 	}()

@@ -53,6 +53,7 @@ func (s *StrataServer) pinModel(ctx context.Context, requested string) (func(), 
 		}
 		modelMu.RUnlock()
 		modelMu.Lock()
+		ctx := context.WithoutCancel(ctx) // a client that hangs up must not leave the engine half-started
 		if s.wantsSwap(requested) != "" { // another request may have swapped while this one waited
 			_ = s.EngineIPC.Stop()
 			s.Config.ConfigFile = file
