@@ -113,17 +113,56 @@ func (m *weights) matmul(name string, X [][]float32) [][]float32 {
 		panic("densecpu: missing or non-2D tensor " + name)
 	}
 	cols, rows := int(t.Dims[0]), int(t.Dims[1])
-	elems, bytes, err := blockInfo(t.Type)
-	if err != nil {
+	if _, _, err := blockInfo(t.Type); err != nil {
 		panic(err)
 	}
-	rowBytes := cols / elems * bytes
 	if m.gpu != nil {
 		if Y, ok := m.gpu.matmul(name, t, X); ok {
 			return Y
 		}
 	}
-	fused := fusedDot(t.Type)
+	return cpuMatmul(t.Type, b, cols, rows, X)
+}
+
+// quantActs rounds every activation vector to q8_1 (blocks of 32, a scale of max|x|/127) before the quantized matmuls, the
+// way the GPU kernels see them. Tests only: it measures how much of a GPU-vs-CPU difference that rounding alone explains.
+var quantActs bool
+
+func q8Round(X [][]float32) [][]float32 {
+	Y := make([][]float32, len(X))
+	for i, x := range X {
+		y := make([]float32, len(x))
+		for b := 0; b+32 <= len(x); b += 32 {
+			var amax float32
+			for _, v := range x[b : b+32] {
+				if a := float32(math.Abs(float64(v))); a > amax {
+					amax = a
+				}
+			}
+			if amax == 0 {
+				continue
+			}
+			d := amax / 127
+			for j := 0; j < 32; j++ {
+				y[b+j] = float32(math.Round(float64(x[b+j]/d))) * d
+			}
+		}
+		Y[i] = y
+	}
+	return Y
+}
+
+// cpuMatmul is matmul on the CPU for rows quantized rows of cols elements starting at b[0].
+func cpuMatmul(typ uint32, b []byte, cols, rows int, X [][]float32) [][]float32 {
+	elems, bytes, err := blockInfo(typ)
+	if err != nil {
+		panic(err)
+	}
+	rowBytes := cols / elems * bytes
+	if quantActs && typ != tBF16 && typ != tQ6_K {
+		X = q8Round(X)
+	}
+	fused := fusedDot(typ)
 	var xs [][]float32
 	if fused != nil {
 		for _, x := range X {
@@ -151,7 +190,7 @@ func (m *weights) matmul(name string, X [][]float32) [][]float32 {
 						}
 						continue
 					}
-					if err := DequantRow(t.Type, b[r*rowBytes:], cols, buf); err != nil {
+					if err := DequantRow(typ, b[r*rowBytes:], cols, buf); err != nil {
 						panic(err)
 					}
 					for i, x := range X {

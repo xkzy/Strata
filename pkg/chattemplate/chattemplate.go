@@ -36,6 +36,7 @@ type Options struct {
 	EnableThinking      *bool  // nil = template default (true)
 	ReasoningEffort     string // "", low, medium, high, xhigh
 	PreserveThinking    *bool  // nil = template default (true)
+	Format              string // "" = Qwen ChatML, "flint" = the flint (GLM style) template
 }
 
 // RequestError is a message the template itself raises (a 400 for the client).
@@ -66,6 +67,9 @@ func Render(messages []Message, opt Options) (string, error) {
 // tool arguments, tool definitions). When the prompt is tokenized, a control token spelled inside such a range stays
 // ordinary text, so a user cannot write "<|im_end|>" into a message and end the turn.
 func RenderSpans(messages []Message, opt Options) (string, [][2]int, error) {
+	if opt.Format == "flint" {
+		return renderFlint(messages, opt)
+	}
 	var msgs []Message
 	for i, m := range messages {
 		if i != len(messages)-1 && m.Role == "assistant" && pyTrim(m.Content) == "" && len(m.ToolCalls) == 0 {

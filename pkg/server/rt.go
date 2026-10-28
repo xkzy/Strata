@@ -287,6 +287,7 @@ func (s *StrataServer) startRuntimeGeneration(ctx context.Context, spec genSpec)
 		}
 		msgs = append(msgs, rtclient.Message{Role: m.Role, Content: content})
 	}
+	// flint (Format != "") opens its own <think>: the prompt does not end inside one
 	thinking := spec.Opt.EnableThinking == nil || *spec.Opt.EnableThinking
 	sc, ephemeral := requestSession(spec.Scope)
 	maxTokens := spec.MaxTokens
@@ -299,7 +300,7 @@ func (s *StrataServer) startRuntimeGeneration(ctx context.Context, spec genSpec)
 		Sampling: rtclient.Sampling{Temperature: spec.Sampling.Temperature, TopP: spec.Sampling.TopP, TopK: spec.Sampling.TopK, MinP: spec.Sampling.MinP,
 			RepetitionPenalty: spec.Sampling.RepetitionPenalty, FrequencyPenalty: spec.Sampling.FrequencyPenalty, PresencePenalty: spec.Sampling.PresencePenalty,
 			Seed: spec.Sampling.Seed, Stop: spec.Stops},
-		MaxTokens: maxTokens, ReasoningPrefix: thinking && spec.Opt.AddGenerationPrompt, Debug: spec.Debug, Ephemeral: ephemeral,
+		MaxTokens: maxTokens, ReasoningPrefix: thinking && spec.Opt.AddGenerationPrompt && spec.Opt.Format == "", Debug: spec.Debug, Ephemeral: ephemeral,
 	}
 	be := &rtBackend{s: s, opt: spec.Opt, started: make(chan struct{}), ticket: ticket}
 	out := make(chan genEvent, 64)

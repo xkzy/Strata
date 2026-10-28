@@ -152,6 +152,9 @@ func keepAsText(text string) json.RawMessage {
 
 func (r *oaRequest) toSpec(s *StrataServer) (genSpec, error) {
 	var spec genSpec
+	if err := s.useModel(context.Background(), r.Model); err != nil { // before the template format is read
+		return spec, err
+	}
 	for _, m := range r.Messages {
 		text, err := contentText(m.Content)
 		if err != nil {
@@ -180,6 +183,7 @@ func (r *oaRequest) toSpec(s *StrataServer) (genSpec, error) {
 		spec.Tools = r.Tools
 	}
 	spec.Opt = chattemplate.Options{Tools: spec.Tools, AddGenerationPrompt: true, ReasoningEffort: r.ReasoningEffort, EnableThinking: r.EnableThinking}
+	spec.Opt.Format = s.templateFormat()
 	if v, ok := r.ChatTemplateKwargs["enable_thinking"].(bool); ok {
 		spec.Opt.EnableThinking = &v
 	}

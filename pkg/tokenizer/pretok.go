@@ -15,16 +15,19 @@ import "unicode"
 //
 // Alternatives are tried in that order at each position (leftmost, first alternative that matches), with the same
 // backtracking a regex engine would do. The result is checked against the Python `regex` implementation in the tests.
-func pretokenize(rs []rune) [][2]int {
+//
+// glm selects the flint/GLM4 variant: marks count as symbols (letters only in alternative 2) and numbers come in runs of
+// up to three (\p{N}{1,3}).
+func pretokenize(rs []rune, glm bool) [][2]int {
 	var out [][2]int
 	n := len(rs)
 	isL := func(r rune) bool { return unicode.IsLetter(r) }
-	isLM := func(r rune) bool { return unicode.IsLetter(r) || unicode.IsMark(r) }
+	isLM := func(r rune) bool { return unicode.IsLetter(r) || (!glm && unicode.IsMark(r)) }
 	isN := func(r rune) bool { return unicode.IsNumber(r) }
 	isNL := func(r rune) bool { return r == '\r' || r == '\n' }
 	// class of alternative 4's body: not whitespace, letter, mark or number
 	isPunct := func(r rune) bool {
-		return !unicode.IsSpace(r) && !unicode.IsLetter(r) && !unicode.IsMark(r) && !unicode.IsNumber(r)
+		return !unicode.IsSpace(r) && !isLM(r) && !unicode.IsNumber(r)
 	}
 
 	i := 0
@@ -67,10 +70,14 @@ func pretokenize(rs []rune) [][2]int {
 			i = j
 			continue
 		}
-		// 3. one number character
+		// 3. one number character (up to three for glm)
 		if isN(c) {
-			out = append(out, [2]int{i, i + 1})
-			i++
+			j := i + 1
+			for glm && j < n && j-i < 3 && isN(rs[j]) {
+				j++
+			}
+			out = append(out, [2]int{i, j})
+			i = j
 			continue
 		}
 		// 4. optional space, run of punctuation/symbols, trailing newlines

@@ -11,13 +11,15 @@ import (
 
 // GGML tensor type ids used by the two files.
 const (
-	tF32  = 0
-	tF16  = 1
-	tQ8_0 = 8
-	tQ4_K = 12
-	tQ5_K = 13
-	tQ6_K = 14
-	tBF16 = 30
+	tF32    = 0
+	tF16    = 1
+	tQ8_0   = 8
+	tQ4_K   = 12
+	tQ5_K   = 13
+	tQ6_K   = 14
+	tIQ3_S  = 21
+	tIQ4_XS = 23
+	tBF16   = 30
 )
 
 // blockInfo returns elements per block and bytes per block for a supported type.
@@ -35,6 +37,10 @@ func blockInfo(t uint32) (elems, bytes int, err error) {
 		return 256, 176, nil
 	case tQ6_K:
 		return 256, 210, nil
+	case tIQ3_S:
+		return 256, 110, nil
+	case tIQ4_XS:
+		return 256, 136, nil
 	}
 	return 0, 0, fmt.Errorf("densecpu: tensor type %d not supported", t)
 }
@@ -77,6 +83,10 @@ func dequantBlock(t uint32, src []byte, dst []float32) {
 		dst[0] = f16(src)
 	case tBF16:
 		dst[0] = math.Float32frombits(uint32(binary.LittleEndian.Uint16(src)) << 16)
+	case tIQ3_S:
+		dequantIQ3S(src, dst)
+	case tIQ4_XS:
+		dequantIQ4XS(src, dst)
 	case tQ8_0:
 		d := f16(src)
 		for j := 0; j < 32; j++ {

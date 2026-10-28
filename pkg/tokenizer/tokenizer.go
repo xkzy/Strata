@@ -62,6 +62,8 @@ type Tokenizer struct {
 	always     map[byte][]string
 	allSpecial map[byte][]string
 	EOS, BOS   int
+	StopIDs    []int // ids that end a reply besides EOS (tokenizer.json stop_ids)
+	GLM        bool  // flint/GLM4 pre-tokenizer
 
 	mu    sync.RWMutex
 	cache map[string][]int32
@@ -69,6 +71,8 @@ type Tokenizer struct {
 
 type packConfig struct {
 	SpecialIDs map[string]int `json:"special_ids"`
+	Pre        string         `json:"pre"`
+	StopIDs    []int          `json:"stop_ids"`
 }
 
 // Load reads vocab.json, merges.txt, token_type.json and tokenizer.json from a pack's tokenizer directory.
@@ -146,6 +150,7 @@ func Load(dir string) (*Tokenizer, error) {
 			if v, ok := pc.SpecialIDs["tokenizer.ggml.bos_token_id"]; ok {
 				t.BOS = v
 			}
+			t.GLM, t.StopIDs = pc.Pre == "flint", pc.StopIDs
 		}
 	}
 	t.tokenBytes = make([][]byte, len(t.tokens))
@@ -218,7 +223,7 @@ func (t *Tokenizer) encodePlain(text string, out []int) []int {
 	if !utf8.ValidString(text) {
 		return t.encodeBytesPiece([]byte(text), out)
 	}
-	for _, span := range pretokenize(rs) {
+	for _, span := range pretokenize(rs, t.GLM) {
 		out = t.encodeBytesPiece([]byte(string(rs[span[0]:span[1]])), out)
 	}
 	return out

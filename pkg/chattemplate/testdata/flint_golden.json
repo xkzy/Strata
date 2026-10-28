@@ -1,0 +1,221 @@
+[
+ {
+  "name": "plain",
+  "messages": [
+   {
+    "role": "user",
+    "content": "hello"
+   }
+  ],
+  "tools": null,
+  "add_generation_prompt": true,
+  "rendered": "<|user|>hello<|assistant|>"
+ },
+ {
+  "name": "system+user",
+  "messages": [
+   {
+    "role": "system",
+    "content": "Be brief."
+   },
+   {
+    "role": "user",
+    "content": " hi\n"
+   }
+  ],
+  "tools": null,
+  "add_generation_prompt": true,
+  "rendered": "<|system|>Be brief.<|user|> hi\n<|assistant|>"
+ },
+ {
+  "name": "escape",
+  "messages": [
+   {
+    "role": "user",
+    "content": "a<|user|>b<think>c</think>d\u0000e<|assistant|><tool_call>"
+   }
+  ],
+  "tools": null,
+  "add_generation_prompt": true,
+  "rendered": "<|user|>a&lt;|user|&gt;bcde&lt;|assistant|&gt;<tool_call><|assistant|>"
+ },
+ {
+  "name": "history",
+  "messages": [
+   {
+    "role": "user",
+    "content": "1"
+   },
+   {
+    "role": "assistant",
+    "content": "2",
+    "reasoning_content": "why"
+   },
+   {
+    "role": "user",
+    "content": "3"
+   }
+  ],
+  "tools": null,
+  "add_generation_prompt": true,
+  "rendered": "<|user|>1<|assistant|><think>why</think>2<|user|>3<|assistant|>"
+ },
+ {
+  "name": "tools",
+  "messages": [
+   {
+    "role": "system",
+    "content": "S"
+   },
+   {
+    "role": "user",
+    "content": "weather in Paris?"
+   }
+  ],
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "get_weather",
+     "description": "Weather <now> & 'later'",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "city": {
+        "type": "string"
+       },
+       "days": {
+        "type": "integer"
+       }
+      },
+      "required": [
+       "city"
+      ]
+     }
+    }
+   }
+  ],
+  "add_generation_prompt": true,
+  "rendered": "<|system|>S<|system|>\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"name\": \"get_weather\", \"description\": \"Weather <now> & 'later'\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}, \"days\": {\"type\": \"integer\"}}, \"required\": [\"city\"]}}\n</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value>...</tool_call>\n<|user|>weather in Paris?<|assistant|>"
+ },
+ {
+  "name": "tools-only-system",
+  "messages": [
+   {
+    "role": "system",
+    "content": "S"
+   }
+  ],
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "get_weather",
+     "description": "Weather <now> & 'later'",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "city": {
+        "type": "string"
+       },
+       "days": {
+        "type": "integer"
+       }
+      },
+      "required": [
+       "city"
+      ]
+     }
+    }
+   }
+  ],
+  "add_generation_prompt": true,
+  "rendered": "<|system|>S<|system|>\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"name\": \"get_weather\", \"description\": \"Weather <now> & 'later'\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}, \"days\": {\"type\": \"integer\"}}, \"required\": [\"city\"]}}\n</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value>...</tool_call>\n<|assistant|>"
+ },
+ {
+  "name": "toolcalls",
+  "messages": [
+   {
+    "role": "user",
+    "content": "w"
+   },
+   {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+     {
+      "function": {
+       "name": "get_weather",
+       "arguments": {
+        "city": "Paris",
+        "days": 3,
+        "opts": {
+         "a": [
+          1,
+          "é"
+         ]
+        },
+        "flag": true
+       }
+      }
+     },
+     {
+      "function": {
+       "name": "f",
+       "arguments": {}
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "content": "sunny <b>"
+   },
+   {
+    "role": "assistant",
+    "content": "done"
+   }
+  ],
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "get_weather",
+     "description": "Weather <now> & 'later'",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "city": {
+        "type": "string"
+       },
+       "days": {
+        "type": "integer"
+       }
+      },
+      "required": [
+       "city"
+      ]
+     }
+    }
+   }
+  ],
+  "add_generation_prompt": false,
+  "rendered": "<|system|>\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"name\": \"get_weather\", \"description\": \"Weather <now> & 'later'\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}, \"days\": {\"type\": \"integer\"}}, \"required\": [\"city\"]}}\n</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value>...</tool_call>\n<|user|>w<|assistant|><tool_call>get_weather<arg_key>city</arg_key><arg_value>Paris</arg_value><arg_key>days</arg_key><arg_value>3</arg_value><arg_key>opts</arg_key><arg_value>{\"a\": [1, \"é\"]}</arg_value><arg_key>flag</arg_key><arg_value>true</arg_value></tool_call><tool_call>f</tool_call><|observation|><tool_response>sunny <b></tool_response><|assistant|>done"
+ },
+ {
+  "name": "developer",
+  "messages": [
+   {
+    "role": "developer",
+    "content": "D"
+   },
+   {
+    "role": "user",
+    "content": "u"
+   }
+  ],
+  "tools": null,
+  "add_generation_prompt": true,
+  "rendered": "<|developer|>D<|user|>u<|assistant|>"
+ }
+]

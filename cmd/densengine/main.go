@@ -15,13 +15,16 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"strata/pkg/densecpu"
+	"strata/pkg/gguf"
 )
 
 type sampling struct {
@@ -154,8 +157,14 @@ func main() {
 		}
 	}
 	if model == "" {
-		fmt.Fprintln(os.Stderr, "densengine: --native <model.gguf> is required")
-		os.Exit(2)
+		execEngine("STRATA_MAIN_ENGINE", "engine/strata") // a pack launch
+	}
+	switch ggufArch(model) { // the dense Qwen and Gemma run here; everything else has an engine of its own
+	case "qwen35", "gemma4":
+	case "flint":
+		execEngine("STRATA_FLINT_ENGINE", "build/flint_engine")
+	default:
+		execEngine("STRATA_MAIN_ENGINE", "engine/strata")
 	}
 	q, err := densecpu.OpenQwen(model)
 	if err != nil {
@@ -249,4 +258,40 @@ func main() {
 		}
 		say("DONE %d %d %d %d %s", n, len(ids), prefill.Milliseconds(), time.Since(t0).Milliseconds()-prefill.Milliseconds(), reason)
 	}
+}
+
+func ggufArch(path string) string {
+	g, err := gguf.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer g.Close()
+	a, _ := g.Metadata["general.architecture"].(string)
+	return a
+}
+
+// execEngine replaces this process with another engine (same arguments, same line protocol) found at $env or one of
+// cands (relative paths: working directory first, then next to this binary's parent), so the server launches every model
+// through bin/densengine.
+func execEngine(env string, cands ...string) {
+	self, _ := os.Executable()
+	list := []string{os.Getenv(env)}
+	for _, c := range cands {
+		list = append(list, c, filepath.Join(filepath.Dir(self), "..", c))
+	}
+	for _, c := range list {
+		if c == "" {
+			continue
+		}
+		if p, err := filepath.Abs(c); err == nil {
+			if st, err := os.Stat(p); err == nil && !st.IsDir() {
+				fmt.Fprintln(os.Stderr, "densengine: running", p)
+				err = syscall.Exec(p, append([]string{p}, os.Args[1:]...), os.Environ())
+				fmt.Fprintln(os.Stderr, "densengine:", err)
+				os.Exit(1)
+			}
+		}
+	}
+	fmt.Fprintf(os.Stderr, "densengine: engine not found (set %s or build it): %v\n", env, cands)
+	os.Exit(1)
 }
