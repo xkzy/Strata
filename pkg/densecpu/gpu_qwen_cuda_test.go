@@ -227,3 +227,39 @@ func TestQwenBatchVsSingles(t *testing.T) {
 	t.Logf("%d tokens: batch vs cpu %.3f, singles vs cpu %.3f, batch vs singles %.3f; tops %q %q %q", len(ids), d(batch, ref), d(single, ref), d(batch, single),
 		m.Vocab[argmax(ref)], m.Vocab[argmax(batch)], m.Vocab[argmax(single)])
 }
+
+func TestQwenSpecDecode(t *testing.T) {
+	m, err := OpenQwen(modelPath(t, "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q4_K_M.gguf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	g, err := m.EnableResident(4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	if ok, err := g.EnableMTP(); !ok {
+		t.Fatalf("no MTP block: %v", err)
+	}
+	prompts := []string{
+		"The capital of France is Paris. The capital of Germany is Berlin. The capital of Italy is",
+		"Write a short story about a lighthouse keeper who finds a message in a bottle. The story begins:",
+		"Here is a Python function that returns the n-th Fibonacci number using recursion with memoization, followed by a short explanation of how it works:",
+	}
+	const N = 64
+	for _, pr := range prompts {
+		ids := m.GreedyEncode(pr)
+		t0 := time.Now()
+		plain, _ := g.Generate(ids, N, -1, false)
+		tp := time.Since(t0)
+		t0 = time.Now()
+		sp, st := g.Generate(ids, N, -1, true)
+		ts := time.Since(t0)
+		same := 0
+		for same < len(plain) && same < len(sp) && plain[same] == sp[same] {
+			same++
+		}
+		t.Logf("%.30q: plain %.1f tok/s, spec %.1f tok/s; accepted %d of %d drafts; first %d of %d tokens identical", pr, float64(N)/tp.Seconds(), float64(N)/ts.Seconds(), st.Accepted, st.Cycles, same, N)
+	}
+}

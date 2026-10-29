@@ -27,6 +27,7 @@ type QwenGPU struct {
 	devMem map[unsafe.Pointer]int // device pointer -> device, for freeing
 	state  []stateBuf
 	chunk  int
+	mtp    *mtpGPU
 }
 
 type qseg struct {
@@ -187,6 +188,8 @@ func (g *QwenGPU) layer(L *C.dg_layer, dev, i, maxCtx int) {
 		L.f[2], L.f[3] = g.up(dev, m.vec(p+"ssm_conv1d.weight")), g.up(dev, m.vec(p+"ssm_norm.weight"))
 		L.S = (*C.float)(g.zero(dev, m.numV*m.headK*(m.dInner/m.numV)*4))
 		L.tail = (*C.float)(g.zero(dev, (m.convK-1)*(2*m.numK*m.headK+m.dInner)*4))
+		L.S1 = (*C.float)(g.zero(dev, m.numV*m.headK*(m.dInner/m.numV)*4))
+		L.tail1 = (*C.float)(g.zero(dev, (m.convK-1)*(2*m.numK*m.headK+m.dInner)*4))
 		return
 	}
 	L.attn = 1
@@ -214,37 +217,77 @@ func (g *QwenGPU) Close() {
 	for _, s := range g.segs {
 		C.free(unsafe.Pointer(s.layers))
 	}
+	if g.mtp != nil {
+		C.free(unsafe.Pointer(g.mtp.seg.layers))
+	}
 	g.m.gpu.res = nil
 	g.m.gpu = nil
 }
 
-// Step feeds the tokens to the session and returns the logits of the last one.
-func (g *QwenGPU) Step(tokens []int) []float32 {
-	m := g.m
-	emb, eb := m.raw("token_embd.weight")
+func (g *QwenGPU) embed(tk int) []float32 {
+	emb, eb := g.m.raw("token_embd.weight")
 	ec := int(emb.Dims[0])
 	elems, bytes, _ := blockInfo(emb.Type)
-	rowBytes := ec / elems * bytes
-	var last []float32
+	h := make([]float32, ec)
+	if err := DequantRow(emb.Type, eb[tk*(ec/elems*bytes):], ec, h); err != nil {
+		panic(err)
+	}
+	return h
+}
+
+// forward runs the tokens through all layers and returns their hidden states before the final norm (one row each).
+// snap saves the delta-net state after the first token (see rollback); it is only meant for calls of a few tokens.
+func (g *QwenGPU) forward(tokens []int, snap bool) [][]float32 {
+	ec := int(g.cfg.n_embd)
+	var rows [][]float32
 	for lo := 0; lo < len(tokens); lo += g.chunk {
 		hi := min(lo+g.chunk, len(tokens))
 		n := hi - lo
 		h := make([]float32, n*ec)
 		for i, tk := range tokens[lo:hi] {
-			if err := DequantRow(emb.Type, eb[tk*rowBytes:], ec, h[i*ec:(i+1)*ec]); err != nil {
-				panic(err)
-			}
+			copy(h[i*ec:], g.embed(tk))
+		}
+		sn := C.int(0)
+		if snap {
+			sn = 1
 		}
 		for _, s := range g.segs {
-			if rc := C.dg_qwen_run(C.int(s.dev), &g.cfg, s.layers, C.int(s.n), (*C.float)(unsafe.Pointer(&h[0])), C.int(n), C.int(g.pos)); rc != 0 {
+			if rc := C.dg_qwen_run(C.int(s.dev), &g.cfg, s.layers, C.int(s.n), (*C.float)(unsafe.Pointer(&h[0])), C.int(n), C.int(g.pos), sn); rc != 0 {
 				panic(fmt.Sprintf("densecpu: dg_qwen_run on device %d failed with code %d", s.dev, rc))
 			}
 		}
 		g.pos += n
-		last = h[(n-1)*ec:]
+		for i := 0; i < n; i++ {
+			rows = append(rows, h[i*ec:(i+1)*ec])
+		}
 	}
-	x := rms(last, m.vec("output_norm.weight"), m.eps)
-	return m.matmul("output.weight", [][]float32{x})[0]
+	return rows
+}
+
+// rollback puts the delta-net state back to what it was after the first token of the last snapshotting forward call and sets the
+// position to pos (the attention caches need nothing: later calls overwrite the rows past pos).
+func (g *QwenGPU) rollback(pos int) {
+	for _, s := range g.segs {
+		if rc := C.dg_qwen_restore(C.int(s.dev), &g.cfg, s.layers, C.int(s.n)); rc != 0 {
+			panic(fmt.Sprintf("densecpu: dg_qwen_restore on device %d failed with code %d", s.dev, rc))
+		}
+	}
+	g.pos = pos
+}
+
+func (g *QwenGPU) normed(rows [][]float32) [][]float32 {
+	on := g.m.vec("output_norm.weight")
+	out := make([][]float32, len(rows))
+	for i, r := range rows {
+		out[i] = rms(r, on, g.m.eps)
+	}
+	return out
+}
+
+// Step feeds the tokens to the session and returns the logits of the last one.
+func (g *QwenGPU) Step(tokens []int) []float32 {
+	rows := g.forward(tokens, false)
+	return g.m.matmul("output.weight", g.normed(rows[len(rows)-1:]))[0]
 }
 
 // ProfDump prints (stderr) and clears the per-section GPU times collected when DG_PROF is set.

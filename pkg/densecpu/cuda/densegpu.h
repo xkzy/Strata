@@ -21,7 +21,7 @@ typedef struct {
   dg_mat ffn_gate, ffn_up, ffn_down;
   dg_mat m[5];
   const float* f[4];
-  float *S, *tail;
+  float *S, *tail, *S1, *tail1;   // S1/tail1: the state after the first token of a snapshotting call
   void *Kc, *Vc;
 } dg_layer;
 typedef struct { int n_embd, n_head, n_kv, hd, n_rot, hk, nk, nv, conv_k, d_inner, n_ff, cap; float eps, base; } dg_cfg;
@@ -29,7 +29,9 @@ void* dg_alloc_zero(int dev, size_t bytes);
 int dg_zero(int dev, void* p, size_t bytes);
 double dg_bandwidth(int dev);
 void dg_prof_dump(void);
-int dg_qwen_run(int dev, const dg_cfg* c, const dg_layer* L, int nl, float* h, int n, int pos0);
+// snap != 0 saves the delta-net state after the first token (dg_qwen_restore puts it back)
+int dg_qwen_run(int dev, const dg_cfg* c, const dg_layer* L, int nl, float* h, int n, int pos0, int snap);
+int dg_qwen_restore(int dev, const dg_cfg* c, const dg_layer* L, int nl);
 #ifdef __cplusplus
 }
 #endif

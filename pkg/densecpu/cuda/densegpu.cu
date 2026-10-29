@@ -596,7 +596,7 @@ __global__ void l2_k(float* conv, int ch, int hk, float eps) {
 // the delta-rule recurrence of one value head per block, thread j owns column j of the 128 x 128 state (kept in registers
 // across all n tokens). hk == hv == 128.
 __global__ void __launch_bounds__(128) gdn_rec_k(const float* conv, const float* alpha, const float* beta, const float* dt,
-                                                const float* a, float* S, float* out, int n, int ch, int nk, int nv, int d_inner) {
+                                                const float* a, float* S, float* Ssnap, float* out, int n, int ch, int nk, int nv, int d_inner) {
     const int h = blockIdx.x, j = threadIdx.x, kh = h % nk;
     float* Sh = S + (size_t) h * 128 * 128;
     float s[128];
@@ -627,6 +627,10 @@ __global__ void __launch_bounds__(128) gdn_rec_k(const float* conv, const float*
             o += s[i] * qs[i] * qscale;
         }
         out[(size_t) t * d_inner + h * 128 + j] = o;
+        if (t == 0 && Ssnap) {   // the state after the first token, for rolling back a rejected draft
+#pragma unroll
+            for (int i = 0; i < 128; i++) Ssnap[(size_t) h * 128 * 128 + i * 128 + j] = s[i];
+        }
         __syncthreads();
     }
 #pragma unroll
@@ -852,7 +856,7 @@ extern "C" void dg_prof_dump() {
 
 // Runs layers L[0..nl) (all on dev) over n new tokens whose hidden states are h (n x n_embd, host), starting at position pos0;
 // the result replaces h. Returns 0 on success.
-extern "C" int dg_qwen_run(int dev, const dg_cfg* c, const dg_layer* L, int nl, float* h, int n, int pos0) {
+extern "C" int dg_qwen_run(int dev, const dg_cfg* c, const dg_layer* L, int nl, float* h, int n, int pos0, int snap) {
     if (n <= 0 || n > 4096 || c->hd != 256 || c->hk != 128 || c->d_inner != c->nv * 128 || c->n_head % c->n_kv) return 100;
     QCHK(cudaSetDevice(dev));
     QBuf& b = g_qb[dev];
@@ -875,9 +879,10 @@ extern "C" int dg_qwen_run(int dev, const dg_cfg* c, const dg_layer* L, int nl, 
             if ((rc = mm(*qkv, b.xn, b.ext + (size_t) 3 * ch)) || (rc = mm(*z, b.xn, b.z)) || (rc = mm(*be, b.xn, b.beta)) || (rc = mm(*al, b.xn, b.alpha))) return rc;
             prof_mark(1);
             gdn_conv_k<<<blocks((size_t) n * ch), 256>>>(b.ext, l.f[2], b.conv, ch, n, c->conv_k);
+            if (snap) QCHK(cudaMemcpyAsync(l.tail1, b.ext + ch, (size_t) 3 * ch * sizeof(float), cudaMemcpyDeviceToDevice));   // tail after token 0
             gdn_tail_k<<<blocks((size_t) 3 * ch), 256>>>(b.ext, l.tail, ch, n, c->conv_k);
             l2_k<<<dim3(n, 2 * c->nk), 128>>>(b.conv, ch, c->hk, c->eps);
-            gdn_rec_k<<<c->nv, 128>>>(b.conv, b.alpha, b.beta, l.f[0], l.f[1], l.S, b.o, n, ch, c->nk, c->nv, c->d_inner);
+            gdn_rec_k<<<c->nv, 128>>>(b.conv, b.alpha, b.beta, l.f[0], l.f[1], l.S, snap ? l.S1 : nullptr, b.o, n, ch, c->nk, c->nv, c->d_inner);
             gdn_gate_k<<<dim3(n, c->nv), 128>>>(b.o, b.z, l.f[3], c->d_inner, c->eps);
             prof_mark(2);
             if ((rc = mm(*out, b.o, b.y))) return rc;
@@ -912,4 +917,16 @@ extern "C" int dg_qwen_run(int dev, const dg_cfg* c, const dg_layer* L, int nl, 
     }
     QCHK(cudaMemcpy(h, b.h, (size_t) n * E * sizeof(float), cudaMemcpyDeviceToHost));
     return 0;
+}
+
+// puts the delta-net state of layers L[0..nl) back to what dg_qwen_run(..., snap = 1) saved after the first token of its call
+extern "C" int dg_qwen_restore(int dev, const dg_cfg* c, const dg_layer* L, int nl) {
+    if (cudaSetDevice(dev) != cudaSuccess) return 100;
+    const size_t ch = 2 * (size_t) c->nk * c->hk + c->d_inner;
+    for (int i = 0; i < nl; i++) {
+        if (L[i].attn) continue;
+        if (cudaMemcpyAsync(L[i].S, L[i].S1, (size_t) c->nv * 128 * 128 * sizeof(float), cudaMemcpyDeviceToDevice) != cudaSuccess) return 101;
+        if (cudaMemcpyAsync(L[i].tail, L[i].tail1, 3 * ch * sizeof(float), cudaMemcpyDeviceToDevice) != cudaSuccess) return 102;
+    }
+    return cudaDeviceSynchronize() == cudaSuccess ? 0 : 103;
 }

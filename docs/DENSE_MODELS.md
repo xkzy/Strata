@@ -99,7 +99,7 @@ Checked against the Go CPU path: top token and logits of a 6-token prompt (`Pari
 that takes the tensor-core path (19.720 vs 19.727, max difference 0.14); the differences come from the int8 inputs. Where the time went before the
 tensor-core step (512 tokens, `DG_PROF=1` prints the per-section GPU time): FFN 5.9 s of 8.5, gated delta-net projections 1.5 s, attention
 projections 0.4 s. Limits: one session at a time, K/V cache for `maxCtx` tokens on the cards, head size 256 and a 128-wide delta-net head are
-assumed, no speculative decoding with the MTP block yet.
+assumed.
 
 Later steps (same machine): 128-column tiles for the tensor-core matmuls took the 512-token prefill from 2.74 s to **1.56 s (326 tok/s)**; the chunk
 size no longer matters (2048 tokens: 301 / 314 / 315 tok/s at chunks of 256 / 512 / 1024), so prefill is bound by the matmul kernels, not by
@@ -110,6 +110,25 @@ over up to 32 blocks per head and combined (`attn_combine_k`): decode at 15,000 
 at 1k / 4k / 8k / 15k). Prefill still slows with depth (324 / 295 / 264 / 221 tok/s at 1k / 4k / 8k / 15k).
 The split gives the same top token as the single-block kernel but not the same logits (largest difference 0.39 on a 1500-token context, the same
 size as the noise between a 10-token call and a 1-token call of the same text, 0.13 at shallow depth).
+
+### Speculative decoding with the model's own MTP block (`EnableMTP`, `Generate(..., spec=true)`)
+
+The MTP block (Q8_0, 0.45 GB) runs on the last card with its own attention cache. After each accepted token it drafts the token after the
+next one; one 2-token pass of the main model checks the draft (the second token costs almost nothing because a pass is bound by reading
+the weights). A right draft yields two tokens per pass. A wrong one rolls the gated delta-net state back to a copy taken after the first
+token of the pass (`dg_qwen_restore`; the attention cache needs no rollback because later calls overwrite those rows). Greedy decoding, 64
+new tokens after a short prompt, `TestQwenSpecDecode`, plain decode against speculative, same session:
+
+| prompt | plain | speculative | drafts right | tokens identical to plain |
+|---|---|---|---|---|
+| capitals (3 shots) | 15.5 tok/s | **23.9 tok/s** | 32 of 32 | 64 of 64 |
+| short story | 15.5 | **21.9** | 29 of 35 | 64 of 64 |
+| Python function | 15.4 | **23.1** | 31 of 33 | 64 of 64 |
+
+Three prompts and 64 tokens each, so this is a demonstration, not an acceptance rate for real workloads. The tokens agree here, but a
+2-token pass rounds its int8 inputs the same way a 1-token pass does only up to sum order, so on other text a late token can differ from plain decode.
+Per cycle the MTP step costs about 15 ms outside the main pass (its 5120 x 10240 input projection and a second read of the 2.5 GB output matrix
+for its logits, both through host round trips).
 
 ## What is in the repo
 
