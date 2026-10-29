@@ -96,75 +96,115 @@ __global__ void kv_store_kernel(void* dk, void* dv, void* hk, void* hv, const fl
     }
 }
 
-// Causal attention with a per-head sink, split over positions (flash-decoding): block (token, head, split) reads its share of
-// the span and keeps a running softmax (max m, sum l, weighted values o); attn_combine_kernel merges the splits and the sink.
-// grid (n_tok, n_head, splits), hd threads (a multiple of 32, at most 256). Q holds the new tokens, so the query of token t
-// sits at position pos0 + t.
-__global__ void attn_part_kernel(const float* Q, const FlintKV kv, int n_head, int n_kv, int hd, int window, bool local, int pos0,
+// Causal attention with a per-head sink, split over positions (flash-decoding): block (token, kv head, split) serves the 8 query
+// heads that share the kv head, so each K/V row is read once for all of them. It reads its share of the span in tiles of 32
+// positions and keeps, per head, a running softmax (max m, sum l, weighted values o); attn_combine_kernel merges the splits and the sink.
+// grid (n_tok, n_kv, splits), 256 threads; 8 heads per kv head and head_dim 128 (checked by the caller). Q holds the new tokens,
+// so the query of token t sits at position pos0 + t. Partials are stored per (token, head, split).
+#define ATTN_TJ 32
+#define ATTN_HD 128
+__global__ void attn_part_kernel(const float* Q, const FlintKV kv, int n_head, int n_kv, int window, bool local, int pos0,
                                  int splits, float* pm, float* pl, float* po) {
-    __shared__ float qh[256], sc[256], red[8];
-    const int tq = blockIdx.x, h = blockIdx.y, sp = blockIdx.z, kvh = h / (n_head / n_kv);
+    constexpr int hd = ATTN_HD, KS = hd + 1;
+    __shared__ float qs[8 * KS], ks[ATTN_TJ * KS], red[8][8][ATTN_TJ], ps[ATTN_TJ][8], corr_s[8];
+    __shared__ const char *kp[ATTN_TJ], *vp[ATTN_TJ];
+    const int tq = blockIdx.x, kvh = blockIdx.y, sp = blockIdx.z;
     const int t = pos0 + tq;
     const int lo = (local && t - window + 1 > 0) ? t - window + 1 : 0;
     const int per = (t - lo + 1 + splits - 1) / splits;
     const int a = lo + sp * per, b = min(t + 1, a + per);
-    const size_t slot = ((size_t) tq * n_head + h) * splits + sp;
-    const int d = threadIdx.x, lane = d & 31, warp = d >> 5, nwarp = blockDim.x >> 5;
-    qh[d] = Q[((size_t) tq * n_head + h) * hd + d];
-    __syncthreads();
+    const int tid = threadIdx.x, lane = tid & 31, g = tid >> 5;
+    const size_t esz = kv.half ? 2 : 4;
     const float scale = rsqrtf((float) hd);
-    float m = -INFINITY, l = 0, o = 0;
-    for (int base = a; base < b; base += blockDim.x) {
-        const int j = base + d;
-        float s = -INFINITY;
-        if (j < b) {
+    const float* q0 = Q + ((size_t) tq * n_head + kvh * 8) * hd;
+    for (int i = tid; i < 8 * hd; i += 256) qs[(i / hd) * KS + i % hd] = q0[i];
+    // scores: thread = 4 positions (pq) x 2 heads (hp) x 16 dims (dc); values: thread = 2 dims (dp) x 8 heads, every 4th position (jg)
+    const int pq = tid & 7, hp = (tid >> 3) & 3, dc = tid >> 5, dp = tid & 63, jg = tid >> 6;
+    float o[8][2] = {}, m = -INFINITY, l = 0;
+    for (int base = a; base < b; base += ATTN_TJ) {
+        const int cnt = min(ATTN_TJ, b - base);
+        if (tid < cnt) {
             bool host;
-            const size_t row = kv_row(j, kv.cap, local, host);
-            const size_t off = (row * n_kv + kvh) * hd;
-            float acc = 0;
+            const size_t off = (kv_row(base + tid, kv.cap, local, host) * n_kv + kvh) * hd * esz;
+            kp[tid] = (const char*) (host ? kv.hk : kv.k) + off;
+            vp[tid] = (const char*) (host ? kv.hv : kv.v) + off;
+        }
+        __syncthreads();
+        for (int i = tid; i < cnt * (hd / 8); i += 256) {  // 8 values per load
+            const int r = i / (hd / 8), c = i % (hd / 8);
+            float* dst = ks + r * KS + c * 8;
             if (kv.half) {
-                const uint4* kj = (const uint4*) ((const __half*) (host ? kv.hk : kv.k) + off);  // 8 halves per load
-                for (int i = 0; i < hd / 8; ++i) {
-                    const uint4 w = kj[i];
-                    const __half2* hh = (const __half2*) &w;
-                    for (int c = 0; c < 4; ++c) {
-                        const float2 f = __half22float2(hh[c]);
-                        acc += qh[8 * i + 2 * c] * f.x + qh[8 * i + 2 * c + 1] * f.y;
-                    }
+                const uint4 u = ((const uint4*) kp[r])[c];
+                const __half2* hh = (const __half2*) &u;
+                for (int q = 0; q < 4; ++q) {
+                    const float2 f = __half22float2(hh[q]);
+                    dst[2 * q] = f.x;
+                    dst[2 * q + 1] = f.y;
                 }
             } else {
-                const float4* kj = (const float4*) ((host ? kv.hk : kv.k) + off);
-                for (int i = 0; i < hd / 4; ++i) {
-                    const float4 kk = kj[i];
-                    acc += qh[4 * i] * kk.x + qh[4 * i + 1] * kk.y + qh[4 * i + 2] * kk.z + qh[4 * i + 3] * kk.w;
-                }
+                const float4 u0 = ((const float4*) kp[r])[2 * c], u1 = ((const float4*) kp[r])[2 * c + 1];
+                dst[0] = u0.x; dst[1] = u0.y; dst[2] = u0.z; dst[3] = u0.w;
+                dst[4] = u1.x; dst[5] = u1.y; dst[6] = u1.z; dst[7] = u1.w;
             }
-            s = acc * scale;
+        }
+        __syncthreads();
+        float acc[2][4] = {};
+        for (int i = 0; i < 16; ++i) {
+            const int d = 16 * dc + i;
+            const float k0 = ks[(4 * pq) * KS + d], k1 = ks[(4 * pq + 1) * KS + d], k2 = ks[(4 * pq + 2) * KS + d], k3 = ks[(4 * pq + 3) * KS + d];
+            const float q0v = qs[(2 * hp) * KS + d], q1v = qs[(2 * hp + 1) * KS + d];
+            acc[0][0] += q0v * k0; acc[0][1] += q0v * k1; acc[0][2] += q0v * k2; acc[0][3] += q0v * k3;
+            acc[1][0] += q1v * k0; acc[1][1] += q1v * k1; acc[1][2] += q1v * k2; acc[1][3] += q1v * k3;
+        }
+        for (int c = 0; c < 2; ++c)
+            for (int r = 0; r < 4; ++r) red[dc][2 * hp + c][4 * pq + r] = acc[c][r];
+        __syncthreads();
+        // softmax: warp g is head g, lane the position in the tile
+        float s = -INFINITY;
+        if (lane < cnt) {
+            float sum = 0;
+            for (int c = 0; c < 8; ++c) sum += red[c][g][lane];
+            s = sum * scale;
         }
         float tm = s;
         for (int off = 16; off > 0; off >>= 1) tm = fmaxf(tm, __shfl_xor_sync(0xffffffff, tm, off));
-        if (lane == 0) red[warp] = tm;
-        __syncthreads();
-        tm = red[0];
-        for (int w = 1; w < nwarp; ++w) tm = fmaxf(tm, red[w]);
         const float mn = fmaxf(m, tm), corr = expf(m - mn);  // m = -inf the first time: corr = 0
-        sc[d] = j < b ? expf(s - mn) : 0.0f;
-        __syncthreads();
-        l *= corr;
-        o *= corr;
-        const int cnt = min((int) blockDim.x, b - base);
-        for (int jj = 0; jj < cnt; ++jj) {
-            bool host;
-            const size_t row = kv_row(base + jj, kv.cap, local, host);
-            const size_t off = (row * n_kv + kvh) * hd + d;
-            o += sc[jj] * (kv.half ? __half2float(((const __half*) (host ? kv.hv : kv.v))[off]) : (host ? kv.hv : kv.v)[off]);
-            l += sc[jj];
-        }
+        const float p = lane < cnt ? expf(s - mn) : 0.0f;
+        float ts = p;
+        for (int off = 16; off > 0; off >>= 1) ts += __shfl_xor_sync(0xffffffff, ts, off);
+        ps[lane][g] = p;
+        if (lane == 0) corr_s[g] = corr;
+        l = l * corr + ts;
         m = mn;
         __syncthreads();
+        for (int h = 0; h < 8; ++h) { o[h][0] *= corr_s[h]; o[h][1] *= corr_s[h]; }
+        for (int j = jg; j < cnt; j += 4) {
+            float2 v;
+            if (kv.half) v = __half22float2(((const __half2*) vp[j])[dp]);
+            else v = ((const float2*) vp[j])[dp];
+            const float4 pa = *(const float4*) &ps[j][0], pb = *(const float4*) &ps[j][4];
+            const float pj[8] = {pa.x, pa.y, pa.z, pa.w, pb.x, pb.y, pb.z, pb.w};
+            for (int h = 0; h < 8; ++h) { o[h][0] += pj[h] * v.x; o[h][1] += pj[h] * v.y; }
+        }
+        __syncthreads();
     }
-    if (d == 0) { pm[slot] = m; pl[slot] = l; }
-    po[slot * hd + d] = o;
+    // sum the 4 position groups through smem (ks is free), then write the partials
+    if (jg > 0)
+        for (int h = 0; h < 8; ++h) { ks[((jg - 1) * 8 + h) * hd + 2 * dp] = o[h][0]; ks[((jg - 1) * 8 + h) * hd + 2 * dp + 1] = o[h][1]; }
+    __syncthreads();
+    if (jg == 0)
+        for (int h = 0; h < 8; ++h) {
+            float x = o[h][0], y = o[h][1];
+            for (int k = 0; k < 3; ++k) { x += ks[(k * 8 + h) * hd + 2 * dp]; y += ks[(k * 8 + h) * hd + 2 * dp + 1]; }
+            const size_t slot = ((size_t) tq * n_head + kvh * 8 + h) * splits + sp;
+            po[slot * hd + 2 * dp] = x;
+            po[slot * hd + 2 * dp + 1] = y;
+        }
+    if (lane == 0) {
+        const size_t slot = ((size_t) tq * n_head + kvh * 8 + g) * splits + sp;
+        pm[slot] = m;
+        pl[slot] = l;
+    }
 }
 
 __global__ void attn_combine_kernel(const float* sinks, const float* pm, const float* pl, const float* po, float* out, int n_head, int hd, int splits) {
@@ -342,6 +382,10 @@ void flint_layer_forward(const FlintLayer& L, FlintKV& kv, int pos0, const float
     // positions one query reads, split so a long context spreads over many blocks
     const int span = (L.local && L.window < total) ? L.window : total;
     const int splits = std::max(1, std::min(64, (span + 511) / 512));
+    if (L.n_head != 8 * L.n_kv || L.head_dim != ATTN_HD) {
+        std::fprintf(stderr, "flint attention needs 8 query heads per kv head and head_dim %d\n", ATTN_HD);
+        std::exit(1);
+    }
     const int E = L.n_embd, hd = L.head_dim, QD = L.n_head * hd, KD = L.n_kv * hd;
     Scratch m;
     // y = W x for ncols fp32 columns of length W.n_in at x (column c at x + c*n_in)
@@ -371,7 +415,7 @@ void flint_layer_forward(const FlintLayer& L, FlintKV& kv, int pos0, const float
     float *pm = m.get<float>(nslot), *pl = m.get<float>(nslot), *po = m.get<float>(nslot * hd);
     for (int t0 = 0; t0 < n; t0 += group) {
         const int g = std::min(group, n - t0);
-        attn_part_kernel<<<dim3(g, L.n_head, splits), hd, 0, s>>>(Q + (size_t) t0 * QD, kv, L.n_head, L.n_kv, hd, L.window, L.local, pos0 + t0, splits, pm, pl, po);
+        attn_part_kernel<<<dim3(g, L.n_kv, splits), 256, 0, s>>>(Q + (size_t) t0 * QD, kv, L.n_head, L.n_kv, L.window, L.local, pos0 + t0, splits, pm, pl, po);
         attn_combine_kernel<<<dim3(g, L.n_head), hd, 0, s>>>(L.sinks, pm, pl, po, ctx + (size_t) t0 * QD, L.n_head, hd, splits);
     }
     matmul(L.o, ctx, o, n);
