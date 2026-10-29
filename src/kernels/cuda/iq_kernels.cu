@@ -706,6 +706,69 @@ __global__ void __launch_bounds__(128) mmq_q8_0_kernel(const uint8_t* __restrict
 #endif
 }
 
+// Q5_K the same way: one mma is one 32-value sub-block (5-bit values 0..31 as bytes), scaled by d * sc and offset by dmin * m times
+// the activation's sum (ds.y). Same tiling as mmq_q8_0_kernel.
+__global__ void __launch_bounds__(128) mmq_q5_k_kernel(const uint8_t* __restrict__ w, size_t row_bytes, const block_q8_1* __restrict__ x,
+                                                       float* __restrict__ y, int n_in, int n_out, int ncols) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, g = lane >> 2, t4 = lane & 3;
+    const int r0 = blockIdx.x * 64 + warp * 16 + g, r1 = r0 + 8, c0 = blockIdx.y * 32;
+    const uint8_t* w0 = w + (size_t) min(r0, n_out - 1) * row_bytes;
+    const uint8_t* w1 = w + (size_t) min(r1, n_out - 1) * row_bytes;
+    float acc[4][4] = {};
+    for (int sb = 0; sb < n_in / 256; ++sb) {
+        const block_q5_K* q0 = (const block_q5_K*) w0 + sb;
+        const block_q5_K* q1 = (const block_q5_K*) w1 + sb;
+        const float d0 = __low2float(q0->dm), m0 = __high2float(q0->dm), d1 = __low2float(q1->dm), m1 = __high2float(q1->dm);
+        for (int j = 0; j < 8; ++j) {
+            const int p = j >> 1, sh = 4 * (j & 1);
+            int a[4];
+            for (int h = 0; h < 2; ++h)      // h: k = t4 * 4 + 16 * h
+                for (int r = 0; r < 2; ++r) {  // r: row g or g + 8
+                    const block_q5_K* q = r ? q1 : q0;
+                    const int lo = (get_int_b4(q->qs, 8 * p + t4 + 4 * h) >> sh) & 0x0F0F0F0F;
+                    const int hi = ((get_int_b4(q->qh, t4 + 4 * h) >> j) & 0x01010101) << 4;
+                    a[2 * h + r] = lo | hi;
+                }
+            float sc[2], mn[2];
+            for (int r = 0; r < 2; ++r) {
+                const uint8_t* S = (r ? q1 : q0)->scales;
+                const int s_ = j < 4 ? (S[j] & 63) : ((S[j + 4] & 0xF) | ((S[j - 4] >> 6) << 4));
+                const int m_ = j < 4 ? (S[j + 4] & 63) : ((S[j + 4] >> 4) | ((S[j] >> 6) << 4));
+                sc[r] = (r ? d1 : d0) * s_;
+                mn[r] = (r ? m1 : m0) * m_;
+            }
+            const int kb = sb * 8 + j;
+            for (int c = 0; c < 4; ++c) {
+                const block_q8_1* bx = x + (size_t) min(c0 + 8 * c + g, ncols - 1) * (n_in / 32) + kb;
+                const int x0 = get_int_b4(bx->qs, t4), x1 = get_int_b4(bx->qs, t4 + 4);
+                int cc[4] = {0, 0, 0, 0};
+                asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+                             : "+r"(cc[0]), "+r"(cc[1]), "+r"(cc[2]), "+r"(cc[3])
+                             : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(x0), "r"(x1));
+                const block_q8_1* e0 = x + (size_t) min(c0 + 8 * c + 2 * t4, ncols - 1) * (n_in / 32) + kb;
+                const block_q8_1* e1 = x + (size_t) min(c0 + 8 * c + 2 * t4 + 1, ncols - 1) * (n_in / 32) + kb;
+                // the min term uses the sum of the quantized activations, as vec_dot_q5_K_q8_1 does: an mma against all-ones weights
+                int cs[4] = {0, 0, 0, 0};
+                asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+                             : "+r"(cs[0]), "+r"(cs[1]), "+r"(cs[2]), "+r"(cs[3])
+                             : "r"(0x01010101), "r"(0x01010101), "r"(0x01010101), "r"(0x01010101), "r"(x0), "r"(x1));
+                const float v0 = __low2float(e0->ds), v1 = __low2float(e1->ds);
+                acc[c][0] += v0 * ((float) cc[0] * sc[0] - mn[0] * (float) cs[0]);
+                acc[c][1] += v1 * ((float) cc[1] * sc[0] - mn[0] * (float) cs[1]);
+                acc[c][2] += v0 * ((float) cc[2] * sc[1] - mn[1] * (float) cs[2]);
+                acc[c][3] += v1 * ((float) cc[3] * sc[1] - mn[1] * (float) cs[3]);
+            }
+        }
+    }
+    for (int j = 0; j < 4; ++j)
+        for (int i = 0; i < 4; ++i) {
+            const int row = (i & 2) ? r1 : r0, col = c0 + 8 * j + 2 * t4 + (i & 1);
+            if (row < n_out && col < ncols) y[(size_t) col * n_out + row] = acc[j][i];
+        }
+#endif
+}
+
 static bool has_tensor_cores() {
     static const bool ok = [] {
         int dev = 0, major = 0;
@@ -2058,9 +2121,11 @@ void launch_mmvq(const uint8_t* W, size_t rb, const block_q8_1* X, float* y, int
                  cudaStream_t s) {
     const dim3 grid((unsigned) ((n_out + 3) / 4)), block(32, 4);
 #if !defined(__HIPCC__)
-    if constexpr (TY == 8) {
+    if constexpr (TY == 8 || TY == 13) {
         if (ncols >= 16 && !g_old_kernels && has_tensor_cores()) {
-            mmq_q8_0_kernel<<<dim3((unsigned) ((n_out + 63) / 64), (unsigned) ((ncols + 31) / 32)), 128, 0, s>>>(W, rb, X, y, n_in, n_out, ncols);
+            const dim3 g2((unsigned) ((n_out + 63) / 64), (unsigned) ((ncols + 31) / 32));
+            if constexpr (TY == 8) mmq_q8_0_kernel<<<g2, 128, 0, s>>>(W, rb, X, y, n_in, n_out, ncols);
+            else mmq_q5_k_kernel<<<g2, 128, 0, s>>>(W, rb, X, y, n_in, n_out, ncols);
             return;
         }
     }
