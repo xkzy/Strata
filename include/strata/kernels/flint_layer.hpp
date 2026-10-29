@@ -32,6 +32,8 @@ struct FlintExpertCache {
     uint64_t epoch = 0;
     double inc = 1;                    // what one use adds; grows a little every call, which ages the older counts
     long long hits = 0, copies = 0, direct = 0;
+    void* copy_stream = nullptr;       // cudaStream_t: expert copies run here while the cached experts compute
+    std::vector<void*> copied;         // per expert: cudaEvent_t recorded when its copy has finished
 };
 
 struct FlintLayer {

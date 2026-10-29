@@ -362,12 +362,17 @@ __global__ void gather_rows_kernel(const float* x, const int* tok, float* xg, in
     for (int i = threadIdx.x; i < dim; i += blockDim.x) dst[i] = src[i];
 }
 
-// acc[tok[j]] += w[j] * y[j]: a token appears once per expert, so no two blocks write the same row
-__global__ void scatter_axpy_kernel(float* acc, const int* tok, const float* w, const float* y, int dim) {
-    float* dst = acc + (size_t) tok[blockIdx.x] * dim;
-    const float* src = y + (size_t) blockIdx.x * dim;
-    const float wt = w[blockIdx.x];
-    for (int i = threadIdx.x; i < dim; i += blockDim.x) dst[i] += wt * src[i];
+// acc[t] += w[p] * y[p] over the n_used pairs p of token t, in the order of pairs: the sum does not depend on which expert ran first
+__global__ void combine_kernel(float* acc, const int* pairs, const float* w, const float* y, int n_used, int dim) {
+    float* dst = acc + (size_t) blockIdx.x * dim;
+    for (int i = threadIdx.x; i < dim; i += blockDim.x) {
+        float a = dst[i];
+        for (int j = 0; j < n_used; ++j) {
+            const int p = pairs[(size_t) blockIdx.x * n_used + j];
+            a += w[p] * y[(size_t) p * dim + i];
+        }
+        dst[i] = a;
+    }
 }
 
 }  // namespace
@@ -471,7 +476,7 @@ void flint_layer_forward(const FlintLayer& L, FlintKV& kv, int pos0, const float
         float* d_w = m.get<float>(wcat.size());
         cudaMemcpyAsync(d_tok, tcat.data(), tcat.size() * sizeof(int), cudaMemcpyHostToDevice, s);
         cudaMemcpyAsync(d_w, wcat.data(), wcat.size() * sizeof(float), cudaMemcpyHostToDevice, s);
-        float *xg = m.get<float>((size_t) n * E), *eg = m.get<float>((size_t) n * F), *eu = m.get<float>((size_t) n * F), *ed = m.get<float>((size_t) n * E);
+        float *xg = m.get<float>((size_t) n * E), *eg = m.get<float>((size_t) n * F), *eu = m.get<float>((size_t) n * F), *ed = m.get<float>((size_t) n * L.n_used * E);
         FlintExpertCache* C = L.cache;
         std::vector<const char*> pg(L.n_exp), pu(L.n_exp), pd(L.n_exp);  // where each used expert is read from
         for (int e = 0; e < L.n_exp; ++e) {
@@ -479,7 +484,15 @@ void flint_layer_forward(const FlintLayer& L, FlintKV& kv, int pos0, const float
             pu[e] = (const char*) L.up_exps.w + (size_t) e * up_stride;
             pd[e] = (const char*) L.down_exps.w + (size_t) e * dn_stride;
         }
+        std::vector<char> late(L.n_exp, 0);  // experts whose copy the compute must wait for
+        cudaStream_t cs = nullptr;
         if (C) {
+            if (!C->copy_stream) {
+                cudaStreamCreateWithFlags((cudaStream_t*) &C->copy_stream, cudaStreamNonBlocking);
+                C->copied.resize(L.n_exp);
+                for (void*& ev : C->copied) cudaEventCreateWithFlags((cudaEvent_t*) &ev, cudaEventDisableTiming);
+            }
+            cs = (cudaStream_t) C->copy_stream;
             ++C->epoch;
             C->inc *= 1.0001;
             if (C->inc > 1e100) { for (double& v : C->score) v /= C->inc; C->inc = 1; }
@@ -503,16 +516,26 @@ void flint_layer_forward(const FlintLayer& L, FlintKV& kv, int pos0, const float
                 C->owner[victim] = L.index * C->n_exp + e, C->slot_of[(size_t) L.index * C->n_exp + e] = victim;
                 C->locked_at[victim] = C->epoch, C->score[victim] = C->inc, ++C->copies;
                 char* b = C->pool + (size_t) victim * C->slot_bytes;
-                cudaMemcpyAsync(b, (const char*) L.host_gate + (size_t) e * gu_stride, gu_stride, cudaMemcpyHostToDevice, s);
-                cudaMemcpyAsync(b + gu_stride, (const char*) L.host_up + (size_t) e * up_stride, up_stride, cudaMemcpyHostToDevice, s);
-                cudaMemcpyAsync(b + gu_stride + up_stride, (const char*) L.host_down + (size_t) e * dn_stride, dn_stride, cudaMemcpyHostToDevice, s);
+                cudaMemcpyAsync(b, (const char*) L.host_gate + (size_t) e * gu_stride, gu_stride, cudaMemcpyHostToDevice, cs);
+                cudaMemcpyAsync(b + gu_stride, (const char*) L.host_up + (size_t) e * up_stride, up_stride, cudaMemcpyHostToDevice, cs);
+                cudaMemcpyAsync(b + gu_stride + up_stride, (const char*) L.host_down + (size_t) e * dn_stride, dn_stride, cudaMemcpyHostToDevice, cs);
+                cudaEventRecord((cudaEvent_t) C->copied[e], cs);
+                late[e] = 1;
                 pg[e] = b, pu[e] = b + gu_stride, pd[e] = b + gu_stride + up_stride;
             }
         }
-        size_t off = 0;
-        for (int e = 0; e < L.n_exp; ++e) {
+        // the experts already on the card go first, so their compute hides the copies of the others (everything the previous
+        // layer used has finished: the router read above synchronised the stream)
+        std::vector<size_t> offs(L.n_exp);
+        std::vector<int> order;
+        for (int e = 0, o = 0; e < L.n_exp; ++e) offs[e] = o, o += (int) toks[e].size();
+        for (int pass = 0; pass < 2; ++pass)
+            for (int e = 0; e < L.n_exp; ++e)
+                if (!toks[e].empty() && late[e] == pass) order.push_back(e);
+        for (int e : order) {
             const int c = (int) toks[e].size();
-            if (c == 0) continue;
+            const size_t off = offs[e];
+            if (late[e]) cudaStreamWaitEvent(s, (cudaEvent_t) C->copied[e], 0);
             FlintMat G = L.gate_exps, U = L.up_exps, D = L.down_exps;
             G.w = pg[e];
             U.w = pu[e];
@@ -521,10 +544,15 @@ void flint_layer_forward(const FlintLayer& L, FlintKV& kv, int pos0, const float
             matmul(G, xg, eg, c);
             matmul(U, xg, eu, c);
             swiglu_kernel<<<grid((long long) c * F), 256, 0, s>>>(eg, eu, (long long) c * F);
-            matmul(D, eg, ed, c);
-            scatter_axpy_kernel<<<c, 256, 0, s>>>(ff, d_tok + off, d_w + off, ed, E);
-            off += c;
+            matmul(D, eg, ed + off * E, c);
         }
+        // pairs of each token in expert order, whatever order the experts ran in
+        std::vector<int> pairs((size_t) n * L.n_used), np(n, 0);
+        for (int e = 0; e < L.n_exp; ++e)
+            for (size_t i = 0; i < toks[e].size(); ++i) pairs[(size_t) toks[e][i] * L.n_used + np[toks[e][i]]++] = (int) (offs[e] + i);
+        int* d_pairs = m.get<int>(pairs.size());
+        cudaMemcpyAsync(d_pairs, pairs.data(), pairs.size() * sizeof(int), cudaMemcpyHostToDevice, s);
+        combine_kernel<<<n, 256, 0, s>>>(ff, d_pairs, d_w, ed, L.n_used, E);
     }
     add_kernel<<<grid((long long) n * E), 256, 0, s>>>(h_out, h1, ff, (long long) n * E);
     cudaStreamSynchronize(s);
