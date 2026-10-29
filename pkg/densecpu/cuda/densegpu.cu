@@ -364,6 +364,42 @@ extern "C" void dg_free(int dev, void* p) {
     if (p && cudaSetDevice(dev) == cudaSuccess) cudaFree(p);
 }
 
+// y = W x for n device-resident fp32 inputs (x, y on dev); the int8 dp4a path for n >= 4, the exact float kernels below
+static int mm_dev(int dev, int type, const void* w, size_t row_bytes, int rows, int cols, int n, const float* x, float* y) {
+    Scratch& s = g_scratch[dev];
+    const dim3 grid(rows, (n + NB - 1) / NB), block(128);
+    const uint8_t* wp = (const uint8_t*) w;
+    if (n >= 4 && cols % 256 == 0 && (type == T_Q4_K || type == T_Q5_K || type == T_Q6_K || type == T_Q8_0)) {
+        const size_t qb = (size_t) n * cols, db = (size_t) n * (cols / 32) * sizeof(float);
+        if (qb + db > s.qcap) {
+            cudaFree(s.xq);
+            cudaFree(s.xd);
+            s.xq = nullptr;
+            s.xd = nullptr;
+            if (cudaMalloc(&s.xq, qb) != cudaSuccess || cudaMalloc(&s.xd, db) != cudaSuccess) return 108;
+            s.qcap = qb + db;
+        }
+        const int warps = n * (cols / 32);
+        quant_x<<<(warps + 7) / 8, 256>>>(x, cols, n, s.xq, s.xd);
+        switch (type) {
+        case T_Q4_K: mmq<T_Q4_K><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, y); break;
+        case T_Q5_K: mmq<T_Q5_K><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, y); break;
+        case T_Q6_K: mmq<T_Q6_K><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, y); break;
+        default: mmq<T_Q8_0><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, y); break;
+        }
+        return cudaGetLastError() != cudaSuccess ? 106 : 0;
+    }
+    switch (type) {
+    case T_Q4_K: matvec<T_Q4_K><<<grid, block>>>(wp, row_bytes, rows, cols, n, x, y); break;
+    case T_Q5_K: matvec<T_Q5_K><<<grid, block>>>(wp, row_bytes, rows, cols, n, x, y); break;
+    case T_Q6_K: matvec<T_Q6_K><<<grid, block>>>(wp, row_bytes, rows, cols, n, x, y); break;
+    case T_Q8_0: matvec<T_Q8_0><<<grid, block>>>(wp, row_bytes, rows, cols, n, x, y); break;
+    case T_BF16: matvec<T_BF16><<<grid, block>>>(wp, row_bytes, rows, cols, n, x, y); break;
+    default: return 105;
+    }
+    return cudaGetLastError() != cudaSuccess ? 106 : 0;
+}
+
 extern "C" int dg_matvec(int dev, int type, const void* w, size_t row_bytes, int rows, int cols, const float* x,
                          int n, float* y) {
     if (dev < 0 || dev >= 16 || rows <= 0 || cols <= 0 || n <= 0 || rows > 1 << 30 || n > 65535) return 100;
@@ -383,39 +419,354 @@ extern "C" int dg_matvec(int dev, int type, const void* w, size_t row_bytes, int
         s.ycap = yb;
     }
     if (cudaMemcpy(s.x, x, xb, cudaMemcpyHostToDevice) != cudaSuccess) return 104;
-    const dim3 grid(rows, (n + NB - 1) / NB), block(128);
-    const uint8_t* wp = (const uint8_t*) w;
-    if (n >= 4 && cols % 256 == 0 && (type == T_Q4_K || type == T_Q5_K || type == T_Q6_K || type == T_Q8_0)) {
-        const size_t qb = (size_t) n * cols, db = (size_t) n * (cols / 32) * sizeof(float);
-        if (qb + db > s.qcap) {
-            cudaFree(s.xq);
-            cudaFree(s.xd);
-            s.xq = nullptr;
-            s.xd = nullptr;
-            if (cudaMalloc(&s.xq, qb) != cudaSuccess || cudaMalloc(&s.xd, db) != cudaSuccess) return 108;
-            s.qcap = qb + db;
+    if (const int rc = mm_dev(dev, type, w, row_bytes, rows, cols, n, s.x, s.y)) return rc;
+    return cudaMemcpy(y, s.y, yb, cudaMemcpyDeviceToHost) != cudaSuccess ? 107 : 0;
+}
+
+// ======================= Qwen3.8 dense forward with the activations on the card (see dg_qwen_run) =======================
+
+__global__ void rmsnorm_k(const float* x, const float* w, float* out, int dim, float eps) {
+    const float* xi = x + (size_t) blockIdx.x * dim;
+    float ss = 0.f;
+    for (int i = threadIdx.x; i < dim; i += blockDim.x) ss += xi[i] * xi[i];
+    __shared__ float part[32];
+    for (int o = 16; o > 0; o >>= 1) ss += __shfl_xor_sync(0xffffffffu, ss, o);
+    if ((threadIdx.x & 31) == 0) part[threadIdx.x >> 5] = ss;
+    __syncthreads();
+    float t = 0.f;
+    for (int k = 0; k < (int) (blockDim.x >> 5); k++) t += part[k];
+    const float k = rsqrtf(t / dim + eps);
+    for (int i = threadIdx.x; i < dim; i += blockDim.x) out[(size_t) blockIdx.x * dim + i] = xi[i] * k * w[i];
+}
+
+__device__ __forceinline__ float sigm(float x) { return 1.f / (1.f + __expf(-x)); }
+__device__ __forceinline__ float silu_(float x) { return x * sigm(x); }
+
+__global__ void add_k(float* h, const float* y, size_t n) {
+    const size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) h[i] += y[i];
+}
+
+__global__ void silu_mul_k(float* g, const float* u, size_t n) {
+    const size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) g[i] = silu_(g[i]) * u[i];
+}
+
+// causal depthwise conv (taps cw[c*K .. c*K+K)) over ext = [3 rows of history; n new rows], then silu
+__global__ void gdn_conv_k(const float* ext, const float* cw, float* out, int ch, int n, int K) {
+    const size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= (size_t) n * ch) return;
+    const int t = (int) (i / ch), c = (int) (i % ch);
+    float s = 0.f;
+    for (int k = 0; k < K; k++) s += cw[c * K + k] * ext[(size_t) (t + k) * ch + c];
+    out[i] = silu_(s);
+}
+
+__global__ void gdn_tail_k(const float* ext, float* tail, int ch, int n, int K) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= (K - 1) * ch) return;
+    tail[i] = ext[(size_t) n * ch + i];  // rows n .. n+K-2 of ext
+}
+
+// q and k of every token, per head: x / sqrt(sum x^2 + eps); block = one (token, head) of the 2 * nk heads
+__global__ void l2_k(float* conv, int ch, int hk, float eps) {
+    float* v = conv + (size_t) blockIdx.x * ch + blockIdx.y * hk;
+    float ss = 0.f;
+    for (int i = threadIdx.x; i < hk; i += blockDim.x) ss += v[i] * v[i];
+    __shared__ float part[32];
+    for (int o = 16; o > 0; o >>= 1) ss += __shfl_xor_sync(0xffffffffu, ss, o);
+    if ((threadIdx.x & 31) == 0) part[threadIdx.x >> 5] = ss;
+    __syncthreads();
+    float t = 0.f;
+    for (int k = 0; k < (int) (blockDim.x >> 5); k++) t += part[k];
+    const float k = rsqrtf(t + eps);
+    for (int i = threadIdx.x; i < hk; i += blockDim.x) v[i] *= k;
+}
+
+// the delta-rule recurrence of one value head per block, thread j owns column j of the 128 x 128 state (kept in registers
+// across all n tokens). hk == hv == 128.
+__global__ void __launch_bounds__(128) gdn_rec_k(const float* conv, const float* alpha, const float* beta, const float* dt,
+                                                const float* a, float* S, float* out, int n, int ch, int nk, int nv, int d_inner) {
+    const int h = blockIdx.x, j = threadIdx.x, kh = h % nk;
+    float* Sh = S + (size_t) h * 128 * 128;
+    float s[128];
+#pragma unroll
+    for (int i = 0; i < 128; i++) s[i] = Sh[i * 128 + j];
+    __shared__ float ks[128], qs[128];
+    const float qscale = rsqrtf(128.f);
+    for (int t = 0; t < n; t++) {
+        const float* row = conv + (size_t) t * ch;
+        ks[j] = row[nk * 128 + kh * 128 + j];
+        qs[j] = row[kh * 128 + j];
+        __syncthreads();
+        const float v = row[2 * nk * 128 + h * 128 + j];
+        const float x = alpha[t * nv + h] + dt[h];
+        const float sp = x > 20.f ? x : log1pf(expf(x));
+        const float decay = expf(sp * a[h]), b = sigm(beta[t * nv + h]);
+        float d = 0.f;
+#pragma unroll
+        for (int i = 0; i < 128; i++) {
+            s[i] *= decay;
+            d += s[i] * ks[i];
         }
-        const int warps = n * (cols / 32);
-        quant_x<<<(warps + 7) / 8, 256>>>(s.x, cols, n, s.xq, s.xd);
-        switch (type) {
-        case T_Q4_K: mmq<T_Q4_K><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, s.y); break;
-        case T_Q5_K: mmq<T_Q5_K><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, s.y); break;
-        case T_Q6_K: mmq<T_Q6_K><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, s.y); break;
-        default: mmq<T_Q8_0><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, s.y); break;
+        d = (v - d) * b;
+        float o = 0.f;
+#pragma unroll
+        for (int i = 0; i < 128; i++) {
+            s[i] += ks[i] * d;
+            o += s[i] * qs[i] * qscale;
         }
-        if (cudaGetLastError() != cudaSuccess) return 106;
-        if (cudaMemcpy(y, s.y, yb, cudaMemcpyDeviceToHost) != cudaSuccess) return 107;
-        return 0;
+        out[(size_t) t * d_inner + h * 128 + j] = o;
+        __syncthreads();
     }
-    switch (type) {
-    case T_Q4_K: matvec<T_Q4_K><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.x, s.y); break;
-    case T_Q5_K: matvec<T_Q5_K><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.x, s.y); break;
-    case T_Q6_K: matvec<T_Q6_K><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.x, s.y); break;
-    case T_Q8_0: matvec<T_Q8_0><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.x, s.y); break;
-    case T_BF16: matvec<T_BF16><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.x, s.y); break;
-    default: return 105;
+#pragma unroll
+    for (int i = 0; i < 128; i++) Sh[i * 128 + j] = s[i];
+}
+
+// o = rms(o per head, w) * silu(z), in place; block = (token, head), 128 threads
+__global__ void gdn_gate_k(float* o, const float* z, const float* w, int d_inner, float eps) {
+    const size_t base = (size_t) blockIdx.x * d_inner + blockIdx.y * 128;
+    const int j = threadIdx.x;
+    const float v = o[base + j];
+    float ss = v * v;
+    for (int q = 16; q > 0; q >>= 1) ss += __shfl_xor_sync(0xffffffffu, ss, q);
+    __shared__ float part[4];
+    if ((j & 31) == 0) part[j >> 5] = ss;
+    __syncthreads();
+    const float k = rsqrtf((part[0] + part[1] + part[2] + part[3]) / 128.f + eps);
+    o[base + j] = v * k * w[j] * silu_(z[base + j]);
+}
+
+// per (token, head): rms-norm with w, neox rope on the first n_rot values; blockIdx.y < n_head: a query head of qf (query and
+// gate interleaved, 2 * hd per head) written to Q; otherwise a key head of Kb written to the half cache with its value head
+__global__ void __launch_bounds__(256) qk_prep_k(const float* qf, const float* Kb, const float* Vb, float* Q, __half* Kc, __half* Vc, const float* qn,
+                                                 const float* kn, int n_head, int n_kv, int hd, int n_rot, float eps, float base, int pos0) {
+    const int t = blockIdx.x, hh = blockIdx.y, i = threadIdx.x;
+    const bool isq = hh < n_head;
+    const int head = isq ? hh : hh - n_head;
+    const float* src = isq ? qf + ((size_t) t * n_head + head) * 2 * hd : Kb + ((size_t) t * n_kv + head) * hd;
+    const float* w = isq ? qn : kn;
+    __shared__ float v[256], part[8];
+    const float x = src[i];
+    float ss = x * x;
+    for (int o = 16; o > 0; o >>= 1) ss += __shfl_xor_sync(0xffffffffu, ss, o);
+    if ((i & 31) == 0) part[i >> 5] = ss;
+    __syncthreads();
+    float tot = 0.f;
+    for (int k = 0; k < hd / 32; k++) tot += part[k];
+    v[i] = x * rsqrtf(tot / hd + eps) * w[i];
+    __syncthreads();
+    float r = v[i];
+    const int half = n_rot / 2;
+    if (i < n_rot) {  // pair (i % half, i % half + half)
+        const int p = i % half;
+        const double theta = (double) (pos0 + t) * pow((double) base, -2.0 * p / n_rot);
+        double sn, cs;
+        sincos(theta, &sn, &cs);
+        const float a = v[p], b = v[p + half];
+        r = i < half ? (float) (a * cs - b * sn) : (float) (a * sn + b * cs);
     }
-    if (cudaGetLastError() != cudaSuccess) return 106;
-    if (cudaMemcpy(y, s.y, yb, cudaMemcpyDeviceToHost) != cudaSuccess) return 107;
+    if (isq) Q[((size_t) t * n_head + head) * hd + i] = r;
+    else {
+        const size_t o = ((size_t) (pos0 + t) * n_kv + head) * hd + i;
+        Kc[o] = __float2half(r);
+        Vc[o] = __float2half(Vb[((size_t) t * n_kv + head) * hd + i]);
+    }
+}
+
+// causal attention, one block per (token, query head), hd == 256: a warp walks every 8th position with an online softmax,
+// then the 8 partial results are merged; the output is multiplied by sigmoid(gate)
+__global__ void __launch_bounds__(256) attn_k(const float* Q, const float* qf, const __half* Kc, const __half* Vc, float* ctx, int n_head, int n_kv, int pos0) {
+    const int t = blockIdx.x, h = blockIdx.y, tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    const int kvh = h / (n_head / n_kv), last = pos0 + t, row = n_kv * 256;
+    float q[8];
+    for (int e = 0; e < 8; e++) q[e] = Q[((size_t) t * n_head + h) * 256 + lane * 8 + e];
+    const float scale = rsqrtf(256.f);
+    float m = -INFINITY, l = 0.f, o[8] = {};
+    for (int j = warp; j <= last; j += 8) {
+        const uint4 kv = *(const uint4*) (Kc + (size_t) j * row + kvh * 256 + lane * 8);
+        const __half2* kh = (const __half2*) &kv;
+        float s = 0.f;
+        for (int e = 0; e < 4; e++) {
+            const float2 f = __half22float2(kh[e]);
+            s += q[2 * e] * f.x + q[2 * e + 1] * f.y;
+        }
+        for (int d = 16; d > 0; d >>= 1) s += __shfl_xor_sync(0xffffffffu, s, d);
+        s *= scale;
+        const float mn = fmaxf(m, s), corr = __expf(m - mn), p = __expf(s - mn);
+        l = l * corr + p;
+        const uint4 vv = *(const uint4*) (Vc + (size_t) j * row + kvh * 256 + lane * 8);
+        const __half2* vh = (const __half2*) &vv;
+        for (int e = 0; e < 4; e++) {
+            const float2 f = __half22float2(vh[e]);
+            o[2 * e] = o[2 * e] * corr + p * f.x;
+            o[2 * e + 1] = o[2 * e + 1] * corr + p * f.y;
+        }
+        m = mn;
+    }
+    __shared__ float wm[8], wl[8], wo[8][256];
+    if (lane == 0) wm[warp] = m, wl[warp] = l;
+    for (int e = 0; e < 8; e++) wo[warp][lane * 8 + e] = o[e];
+    __syncthreads();
+    float M = -INFINITY;
+    for (int w = 0; w < 8; w++) M = fmaxf(M, wm[w]);
+    float L = 0.f, acc = 0.f;
+    for (int w = 0; w < 8; w++) {
+        const float c = wm[w] == -INFINITY ? 0.f : __expf(wm[w] - M);
+        L += wl[w] * c;
+        acc += wo[w][tid] * c;
+    }
+    ctx[((size_t) t * n_head + h) * 256 + tid] = acc / L * sigm(qf[((size_t) t * n_head + h) * 512 + 256 + tid]);
+}
+
+struct QBuf {
+    float *h = nullptr, *xn, *ext, *z, *beta, *alpha, *conv, *o, *y, *g, *u, *qf, *Q, *Kb, *Vb;
+    size_t cap = 0;  // tokens
+};
+static QBuf g_qb[16];
+
+static bool qalloc(QBuf& b, int n, const dg_cfg& c) {
+    if ((size_t) n <= b.cap) return true;
+    cudaFree(b.h);
+    const size_t E = c.n_embd, ch = 2 * (size_t) c.nk * c.hk + c.d_inner, nq = (size_t) c.n_head * c.hd, nkv = (size_t) c.n_kv * c.hd;
+    const size_t per = 3 * E + (ch + 3 * ch) + 2 * c.d_inner + 2 * (size_t) c.nv + E + 2 * (size_t) c.n_ff + 2 * nq + nq + 2 * nkv;
+    float* p = nullptr;
+    if (cudaMalloc(&p, (per * n + 3 * ch) * sizeof(float)) != cudaSuccess) return false;
+    size_t off = 0;
+    auto take = [&](size_t cnt) { float* r = p + off; off += cnt; return r; };
+    b.h = take((size_t) n * E);
+    b.xn = take((size_t) n * E);
+    b.ext = take((size_t) (n + 3) * ch);
+    b.z = take((size_t) n * c.d_inner);
+    b.beta = take((size_t) n * c.nv);
+    b.alpha = take((size_t) n * c.nv);
+    b.conv = take((size_t) n * ch);
+    b.o = take((size_t) n * c.d_inner);
+    b.y = take((size_t) n * E);
+    b.g = take((size_t) n * c.n_ff);
+    b.u = take((size_t) n * c.n_ff);
+    b.qf = take((size_t) n * 2 * nq);
+    b.Q = take((size_t) n * nq);
+    b.Kb = take((size_t) n * nkv);
+    b.Vb = take((size_t) n * nkv);
+    b.cap = n;
+    return true;
+}
+
+extern "C" void* dg_alloc_zero(int dev, size_t bytes) {
+    if (cudaSetDevice(dev) != cudaSuccess) return nullptr;
+    void* d = nullptr;
+    if (cudaMalloc(&d, bytes) != cudaSuccess) return nullptr;
+    cudaMemset(d, 0, bytes);
+    return d;
+}
+
+extern "C" int dg_zero(int dev, void* p, size_t bytes) {
+    return cudaSetDevice(dev) == cudaSuccess && cudaMemset(p, 0, bytes) == cudaSuccess ? 0 : 1;
+}
+
+// device read bandwidth in GB/s, measured with a device-to-device copy
+extern "C" double dg_bandwidth(int dev) {
+    if (cudaSetDevice(dev) != cudaSuccess) return 0;
+    const size_t sz = 256 << 20;
+    void *a = nullptr, *b = nullptr;
+    if (cudaMalloc(&a, sz) != cudaSuccess || cudaMalloc(&b, sz) != cudaSuccess) return 0;
+    cudaEvent_t e0, e1;
+    cudaEventCreate(&e0);
+    cudaEventCreate(&e1);
+    cudaMemcpy(b, a, sz, cudaMemcpyDeviceToDevice);
+    cudaEventRecord(e0);
+    for (int i = 0; i < 4; i++) cudaMemcpy(b, a, sz, cudaMemcpyDeviceToDevice);
+    cudaEventRecord(e1);
+    cudaEventSynchronize(e1);
+    float ms = 0;
+    cudaEventElapsedTime(&ms, e0, e1);
+    cudaFree(a);
+    cudaFree(b);
+    return 4.0 * sz * 2 / (ms * 1e6);  // a copy reads and writes
+}
+
+// DG_PROF=1: wait after every section of dg_qwen_run and add its time to a category; dg_prof_dump prints and clears them
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+static const char* kCat[] = {"norm+add", "gdn proj (qkv,z,beta,alpha)", "gdn conv/l2/rec/gate", "gdn out", "attn proj (q,k,v)", "attn prep+core", "attn out", "ffn gate+up", "silu_mul", "ffn down"};
+static double g_prof[10];
+static bool g_prof_on = getenv("DG_PROF") != nullptr;
+static std::chrono::steady_clock::time_point g_t0;
+static void prof_mark(int cat) {
+    if (!g_prof_on) return;
+    cudaDeviceSynchronize();
+    const auto t = std::chrono::steady_clock::now();
+    if (cat >= 0) g_prof[cat] += std::chrono::duration<double, std::milli>(t - g_t0).count();
+    g_t0 = t;
+}
+extern "C" void dg_prof_dump() {
+    for (int i = 0; i < 10; i++) {
+        if (g_prof[i] > 0) fprintf(stderr, "  %-30s %8.1f ms\n", kCat[i], g_prof[i]);
+        g_prof[i] = 0;
+    }
+}
+
+#define QCHK(x) do { if ((x) != cudaSuccess) return 200 + __LINE__ % 100; } while (0)
+
+// Runs layers L[0..nl) (all on dev) over n new tokens whose hidden states are h (n x n_embd, host), starting at position pos0;
+// the result replaces h. Returns 0 on success.
+extern "C" int dg_qwen_run(int dev, const dg_cfg* c, const dg_layer* L, int nl, float* h, int n, int pos0) {
+    if (n <= 0 || n > 4096 || c->hd != 256 || c->hk != 128 || c->d_inner != c->nv * 128 || c->n_head % c->n_kv) return 100;
+    QCHK(cudaSetDevice(dev));
+    QBuf& b = g_qb[dev];
+    if (!qalloc(b, n, *c)) return 101;
+    const int E = c->n_embd, ch = 2 * c->nk * c->hk + c->d_inner;
+    QCHK(cudaMemcpy(b.h, h, (size_t) n * E * sizeof(float), cudaMemcpyHostToDevice));
+    auto mm = [&](const dg_mat& m, const float* x, float* y) {
+        return mm_dev(dev, m.type, m.w, m.rb, m.rows, m.cols, n, x, y);
+    };
+    auto blocks = [](size_t cnt) { return (unsigned) ((cnt + 255) / 256); };
+    for (int li = 0; li < nl; li++) {
+        const dg_layer& l = L[li];
+        int rc = 0;
+        prof_mark(-1);
+        rmsnorm_k<<<n, 256>>>(b.h, l.attn_norm, b.xn, E, c->eps);
+        prof_mark(0);
+        if (!l.attn) {
+            const dg_mat *qkv = &l.m[0], *z = &l.m[1], *be = &l.m[2], *al = &l.m[3], *out = &l.m[4];
+            QCHK(cudaMemcpyAsync(b.ext, l.tail, (size_t) 3 * ch * sizeof(float), cudaMemcpyDeviceToDevice));
+            if ((rc = mm(*qkv, b.xn, b.ext + (size_t) 3 * ch)) || (rc = mm(*z, b.xn, b.z)) || (rc = mm(*be, b.xn, b.beta)) || (rc = mm(*al, b.xn, b.alpha))) return rc;
+            prof_mark(1);
+            gdn_conv_k<<<blocks((size_t) n * ch), 256>>>(b.ext, l.f[2], b.conv, ch, n, c->conv_k);
+            gdn_tail_k<<<blocks((size_t) 3 * ch), 256>>>(b.ext, l.tail, ch, n, c->conv_k);
+            l2_k<<<dim3(n, 2 * c->nk), 128>>>(b.conv, ch, c->hk, c->eps);
+            gdn_rec_k<<<c->nv, 128>>>(b.conv, b.alpha, b.beta, l.f[0], l.f[1], l.S, b.o, n, ch, c->nk, c->nv, c->d_inner);
+            gdn_gate_k<<<dim3(n, c->nv), 128>>>(b.o, b.z, l.f[3], c->d_inner, c->eps);
+            prof_mark(2);
+            if ((rc = mm(*out, b.o, b.y))) return rc;
+            prof_mark(3);
+        } else {
+            if ((c->cap < pos0 + n)) return 102;
+            const dg_mat *q = &l.m[0], *k = &l.m[1], *v = &l.m[2], *o = &l.m[3];
+            if ((rc = mm(*q, b.xn, b.qf)) || (rc = mm(*k, b.xn, b.Kb)) || (rc = mm(*v, b.xn, b.Vb))) return rc;
+            prof_mark(4);
+            qk_prep_k<<<dim3(n, c->n_head + c->n_kv), 256>>>(b.qf, b.Kb, b.Vb, b.Q, (__half*) l.Kc, (__half*) l.Vc, l.f[0], l.f[1], c->n_head, c->n_kv, c->hd,
+                                                              c->n_rot, c->eps, c->base, pos0);
+            attn_k<<<dim3(n, c->n_head), 256>>>(b.Q, b.qf, (const __half*) l.Kc, (const __half*) l.Vc, b.o, c->n_head, c->n_kv, pos0);
+            prof_mark(5);
+            if ((rc = mm(*o, b.o, b.y))) return rc;
+            prof_mark(6);
+        }
+        add_k<<<blocks((size_t) n * E), 256>>>(b.h, b.y, (size_t) n * E);
+        rmsnorm_k<<<n, 256>>>(b.h, l.post_norm, b.xn, E, c->eps);
+        prof_mark(0);
+        if ((rc = mm(l.ffn_gate, b.xn, b.g)) || (rc = mm(l.ffn_up, b.xn, b.u))) return rc;
+        prof_mark(7);
+        silu_mul_k<<<blocks((size_t) n * c->n_ff), 256>>>(b.g, b.u, (size_t) n * c->n_ff);
+        prof_mark(8);
+        if ((rc = mm(l.ffn_down, b.g, b.y))) return rc;
+        prof_mark(9);
+        add_k<<<blocks((size_t) n * E), 256>>>(b.h, b.y, (size_t) n * E);
+        prof_mark(0);
+        QCHK(cudaGetLastError());
+    }
+    QCHK(cudaMemcpy(h, b.h, (size_t) n * E * sizeof(float), cudaMemcpyDeviceToHost));
     return 0;
 }
