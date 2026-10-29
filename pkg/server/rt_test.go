@@ -133,8 +133,9 @@ func TestRuntimeCorrectsAWrongAnswerInternally(t *testing.T) {
 	if !strings.Contains(string(raw), "Verified facts for this answer") || !strings.Contains(string(raw), "703") {
 		t.Fatalf("the regeneration prompt should carry the correction (as ordinary context):\n%s", raw)
 	}
-	// the request itself was a plain chat request: no tool, no special prompt
-	if !strings.Contains(string(raw), "<|im_start|>user\nWhat is 37 * 19?<|im_end|>") {
+	// the request itself was a plain chat request: no tool, no special prompt; the correction follows the question inside the
+	// user turn, so the tokens before it are the same on every attempt (the engine reuses their K/V)
+	if !strings.Contains(string(raw), "<|im_start|>user\nWhat is 37 * 19?\n\nVerified facts for this answer") {
 		t.Fatalf("user turn missing:\n%s", raw)
 	}
 	// metrics are available to the operator

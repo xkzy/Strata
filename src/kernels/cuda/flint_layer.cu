@@ -364,10 +364,16 @@ void flint_layer_forward(const FlintLayer& L, FlintKV& kv, int pos0, const float
     qk_norm_rope_kernel<<<dim3(n, L.n_head), hd, hd * sizeof(float), s>>>(Q, L.q_norm, L.n_head, hd, L.eps, L.local, L.rope_base, pos0);
     qk_norm_rope_kernel<<<dim3(n, L.n_kv), hd, hd * sizeof(float), s>>>(K, L.k_norm, L.n_kv, hd, L.eps, L.local, L.rope_base, pos0);
     kv_store_kernel<<<n, 256, 0, s>>>(kv.k, kv.v, kv.hk, kv.hv, K, V, KD, kv.cap, L.local, pos0, kv.half);
-    const size_t nslot = (size_t) n * L.n_head * splits;
+    // the partial results of the splits take n * n_head * splits * (hd + 2) floats: done in groups of tokens so a long prefill chunk
+    // at a deep position stays within 128 MB
+    const int group = (int) std::max<size_t>(1, std::min<size_t>(n, (128ull << 20) / ((size_t) L.n_head * splits * (hd + 2) * sizeof(float))));
+    const size_t nslot = (size_t) group * L.n_head * splits;
     float *pm = m.get<float>(nslot), *pl = m.get<float>(nslot), *po = m.get<float>(nslot * hd);
-    attn_part_kernel<<<dim3(n, L.n_head, splits), hd, 0, s>>>(Q, kv, L.n_head, L.n_kv, hd, L.window, L.local, pos0, splits, pm, pl, po);
-    attn_combine_kernel<<<dim3(n, L.n_head), hd, 0, s>>>(L.sinks, pm, pl, po, ctx, L.n_head, hd, splits);
+    for (int t0 = 0; t0 < n; t0 += group) {
+        const int g = std::min(group, n - t0);
+        attn_part_kernel<<<dim3(g, L.n_head, splits), hd, 0, s>>>(Q + (size_t) t0 * QD, kv, L.n_head, L.n_kv, hd, L.window, L.local, pos0 + t0, splits, pm, pl, po);
+        attn_combine_kernel<<<dim3(g, L.n_head), hd, 0, s>>>(L.sinks, pm, pl, po, ctx + (size_t) t0 * QD, L.n_head, hd, splits);
+    }
     matmul(L.o, ctx, o, n);
     add_kernel<<<grid((long long) n * E), 256, 0, s>>>(h1, h_in, o, (long long) n * E);
     check("attention");

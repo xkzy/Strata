@@ -133,7 +133,7 @@ void die(const char* what, cudaError_t e) {
 
 int main(int argc, char** argv) {
     std::string model;
-    int ctx = 8192, chunk = 256;
+    int ctx = 8192, chunk = 2048;  // a bigger chunk amortises the expert copies: 8000 tokens prefill in 34 s at 2048, 46 s at 512, 60 s at 256
     double kv_dev_gib = 1.5;  // device memory for the first positions of the full-attention layers; the rest of the context sits in host RAM
     bool kv_fp32 = false;     // full layers keep fp32 K/V instead of fp16
     double margin_gib = 1.0;  // left free after the expert pool: per-call temporaries

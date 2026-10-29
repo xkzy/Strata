@@ -149,6 +149,11 @@ func (b *rtBackend) signal(err error) {
 	})
 }
 
+// runtimeNote reports whether a system message is the context block the runtime builds (src/rt/context_manager.cpp).
+func runtimeNote(c string) bool {
+	return strings.HasPrefix(c, "Relevant information:") || strings.HasPrefix(c, "Known about this user:")
+}
+
 func (b *rtBackend) BuildPrompt(ctx context.Context, msgs []rtclient.Message, prefix string) ([]int, error) {
 	tok := b.s.tokenizerOrNil()
 	if tok == nil {
@@ -156,18 +161,36 @@ func (b *rtBackend) BuildPrompt(ctx context.Context, msgs []rtclient.Message, pr
 		b.signal(err)
 		return nil, err
 	}
-	// the template accepts system text only at the start: any system message (the runtime adds notes as system messages)
-	// is merged into one leading block
-	var sys []string
+	// The template accepts system text only at the start. The runtime's notes (retrieved context, verified facts, a steer) differ
+	// from one attempt and request to the next, so they go after the conversation, in its last user turn: the tokens before
+	// them stay the same and the engine reuses their K/V. A system message the caller sent leads, as before.
+	var sys, notes []string
 	var rest []chattemplate.Message
 	for _, m := range msgs {
 		if m.Role == "system" || m.Role == "developer" {
-			if strings.TrimSpace(m.Content) != "" {
+			switch {
+			case strings.TrimSpace(m.Content) == "":
+			case len(rest) > 0 || runtimeNote(m.Content):
+				notes = append(notes, m.Content)
+			default:
 				sys = append(sys, m.Content)
 			}
 			continue
 		}
 		rest = append(rest, chattemplate.Message{Role: m.Role, Content: m.Content})
+	}
+	if len(notes) > 0 {
+		last := -1
+		for i := range rest {
+			if rest[i].Role == "user" {
+				last = i
+			}
+		}
+		if last >= 0 {
+			rest[last].Content += "\n\n" + strings.Join(notes, "\n\n")
+		} else {
+			sys = append(sys, notes...)
+		}
 	}
 	var all []chattemplate.Message
 	if len(sys) > 0 {
