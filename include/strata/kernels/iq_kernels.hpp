@@ -29,6 +29,10 @@ void quantize_q8_1_rows(const float* x, int64_t n_rows, int64_t n_cols, void* y,
 bool iq_mmq_grouped(int t, const void* const* w, int n_in, int n_out, const void* xq, float* y, const int* tile_e, const int* tile_c0,
                     const int* e_cnt, const int* e_off, int n_tiles, void* stream);
 
+/// n_experts one-column products in one launch (decode; Q5_K, type 13, or IQ4_XS, type 23): expert j reads its weights at w[j] and the q8_1 column at
+/// x + j * x_stride_blocks and writes n_out floats at y + j * n_out. Returns false, having done nothing, for another type.
+bool iq_mmvq_experts(int t, const void* const* w, const void* x_q8_1, size_t x_stride_blocks, float* y, int n_in, int n_out, int n_experts, void* stream);
+
 /// Q6_K weights x q8_1 columns on the tensor cores; false (nothing run) below 16 columns or without sm_80.
 bool iq_mmq_q6k(const void* w, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream);
 void iq_mmvq(int ggml_type, const void* w, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream);

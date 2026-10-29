@@ -41,6 +41,15 @@ by what q8_1 rounding of the activations alone does to the reference (`src/kerne
   first reply. `FLINT_NO_CARD2=1` turns it off. Decode on a 200-token prompt with 300 sampled tokens (RTX 5060 Ti + RTX 4060, two runs per
   start, two starts each): 22.2-23.7 ms/token without, 17.9-21.8 with; experts copied in per 600 tokens 44-48k without, 27-32k with. A 24-token
   greedy answer after a 1500-token prompt is identical with and without. The two cards cannot read each other's memory (no peer access here).
+- Decode, per layer (host timers, `FLINT_TRACE=1`, 200-token prompt): attention plus router 0.176 ms, classifying and starting copies 0.017,
+  launching the layer's experts 0.063, the second card 0.031, waiting for the GPU 0.104; 47 layers. Two changes, both with the same greedy
+  output (150 tokens after a 300-token prompt, and 24 after 1500, identical with and without): (1) the experts of a pass run in one
+  launch per matrix (`iq_mmvq_experts`, Q5_K / IQ4_XS, same arithmetic as the one-column kernels; `FLINT_NO_BATCH=1` turns it off) instead of five
+  launches per expert: launching 0.063 -> 0.026 ms. (2) The router runs on the layer's input on a side stream while attention is launched, and the
+  experts it names that no pool holds are copied then, not after the real router (`FLINT_NO_PREDICT=1` turns it off): about 70% of the predicted
+  copies were used (17-20k of 25-29k per 600 tokens), waiting for the GPU 0.104 -> 0.07 ms. Together decode went from 19.7-20.4 ms/token to
+  16.7-17.9 (RTX 5060 Ti + RTX 4060, same prompt, two runs per start, runs vary by about 2 ms). Splitting attention over more blocks for short contexts
+  (`FLINT_SPLIT_G`) cut attention 0.176 -> 0.133 ms but moved the time into the wait for copies, so it is not on by default.
 - The pre-tokenizer pattern (digits in groups of three, letters only) is the GLM4 one, not read from the file; checked
   against the Python `regex` module, not against the model's own tokenizer.
 - Tool calls come back as text: the output parser does not know flint's `<tool_call>name<arg_key>` format yet.

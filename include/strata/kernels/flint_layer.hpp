@@ -50,6 +50,12 @@ struct FlintExpertCache {
     void* ev_x = nullptr;              // cudaEvent_t on dev1: the activations for dev2 are in hx
     float *x2 = nullptr, *g2 = nullptr, *u2 = nullptr, *y2 = nullptr, *hx = nullptr, *hy = nullptr;  // dev2 buffers, pinned host buffers (120 rows)
     char* xq2 = nullptr;
+    // decode: the router run early on the layer's input predicts its experts; the missing ones are copied while attention runs
+    void* psl = nullptr;               // cudaStream_t: the prediction
+    void* pev = nullptr;               // cudaEvent_t: the predicted ids are on the host
+    float *pfx = nullptr, *plog = nullptr, *pw = nullptr;
+    int *pid = nullptr, *hpid = nullptr;  // hpid: pinned
+    long long pred_hit = 0, pred_copied = 0;
 };
 
 struct FlintLayer {

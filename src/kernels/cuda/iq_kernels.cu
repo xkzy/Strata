@@ -1457,6 +1457,36 @@ __global__ void __launch_bounds__(128) mmvq_multi_kernel(const uint8_t* __restri
     }
 }
 
+// Decode: all of a layer's experts in one launch (blockIdx.y = expert, its weights at wp[y], its single q8_1 column at x + y * x_stride).
+// Same arithmetic, in the same order, as the one-column launch of mmvq_multi_kernel (split formats) / mmvq_kernel (the others).
+template<int TY>
+__global__ void __launch_bounds__(128) mmvq_experts_kernel(const uint8_t* const* __restrict__ wp, size_t row_bytes,
+                                                           const block_q8_1* __restrict__ x, size_t x_stride, float* __restrict__ y,
+                                                           int n_in, int n_out) {
+    STRATA_SHARED_ALIGN16_U32(s_grid_buf, (IqGridWords<TY, false>::value));
+    const uint32_t* s_grid = stage_iq_grid<TY, false>(s_grid_buf, threadIdx.y * 32 + threadIdx.x, 128);
+    const int row = blockIdx.x * 4 + threadIdx.y;
+    if (row >= n_out) return;
+    const int lane = threadIdx.x, nb = n_in / Fmt<TY>::qk;
+    const uint8_t* wr = wp[blockIdx.y] + (size_t) row * row_bytes;
+    const block_q8_1* xj = x + (size_t) blockIdx.y * x_stride;
+    if constexpr (kSplit<TY>) {
+        const int off[1] = {0};
+        float sum[1];
+        row_dot_multi<TY, 1, true, false>(wr, xj, off, 1, nb, lane, sum, s_grid);
+        if (lane == 0) y[(size_t) blockIdx.y * n_out + row] = sum[0];
+    } else {
+        using F = Fmt<TY>;
+        float acc = 0.f;
+        for (int k = lane; k < nb * F::ipb; k += 32) {
+            const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
+            acc += F::dot(wr, xj + kbx * (F::qk / 32), kbx, iqs);
+        }
+        const float t = warp_sum(acc);
+        if (lane == 0) y[(size_t) blockIdx.y * n_out + row] = t;
+    }
+}
+
 // ---------------------------------------------------------------- grouped native experts
 constexpr int GU_ROWS = 8;     // rows per block (one warp each)
 
@@ -3032,6 +3062,18 @@ void iq_mmvq(int t, const void* w, const void* x_q8_1, float* y, int n_in, int n
         default: std::fprintf(stderr, "iq_mmvq: type %d is not supported\n", t); std::exit(1);
     }
     check("iq_mmvq");
+}
+
+// n_experts one-column products in one launch (Q5_K, type 13, or IQ4_XS, type 23); false, having done nothing, for another type
+bool iq_mmvq_experts(int t, const void* const* w, const void* x_q8_1, size_t x_stride_blocks, float* y, int n_in, int n_out, int n_experts, void* stream) {
+    if (t != 13 && t != 23) return false;
+    const size_t rb = iq_row_bytes(t, n_in);
+    const dim3 grid((unsigned) ((n_out + 3) / 4), (unsigned) n_experts), block(32, 4);
+    cudaStream_t s = (cudaStream_t) stream;
+    if (t == 13) mmvq_experts_kernel<13><<<grid, block, 0, s>>>((const uint8_t* const*) w, rb, (const block_q8_1*) x_q8_1, x_stride_blocks, y, n_in, n_out);
+    else mmvq_experts_kernel<23><<<grid, block, 0, s>>>((const uint8_t* const*) w, rb, (const block_q8_1*) x_q8_1, x_stride_blocks, y, n_in, n_out);
+    check("iq_mmvq_experts");
+    return true;
 }
 
 // Q6_K matrix x q8_1 columns on the tensor cores (ncols >= 16, sm_80+); false when it cannot run (the caller uses another kernel)

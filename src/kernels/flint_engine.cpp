@@ -314,7 +314,7 @@ int main(int argc, char** argv) {
                 seen.push_back(t);
             }
         }
-        { const FlintExpertCache& c = ld.cache; std::fprintf(stderr, "flint_engine: expert cache: %lld hits, %lld copied in, %lld read from host\n", c.hits, c.copies, c.direct); }
+        { const FlintExpertCache& c = ld.cache; std::fprintf(stderr, "flint_engine: expert cache: %lld hits, %lld copied in, %lld read from host; predicted %lld copied, %lld of them used\n", c.hits, c.copies, c.direct, c.pred_copied, c.pred_hit); }
         if (const int n2 = flint_loader::cache_place2(ld.cache)) std::fprintf(stderr, "flint_engine: %d experts placed on device %d\n", n2, ld.cache.dev2);
         flint_loader::cache_save(pool_file, ld.cache);
         say("DONE %d %zu %lld %lld %s", n, ids.size(), (long long) prefill, (long long) (ms_since() - prefill), reason);
