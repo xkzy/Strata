@@ -346,18 +346,18 @@ __device__ __forceinline__ void mma_s8_k16(int* c, const int* a, int b0) {
                  : "r"(a[0]), "r"(a[1]), "r"(b0));
 }
 
-template <int TYPE>
+template <int TYPE, int NT>
 __global__ void __launch_bounds__(128) mma_q(const uint8_t* __restrict__ w, size_t row_bytes, int rows, int cols, int n,
                                             const int8_t* __restrict__ xq, const float* __restrict__ xd, float* __restrict__ y) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
     const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, g = lane >> 2, t4 = lane & 3;
-    const int r0 = blockIdx.x * 64 + warp * 16 + g, r1 = r0 + 8, c0 = blockIdx.y * 32;
+    const int r0 = blockIdx.x * 64 + warp * 16 + g, r1 = r0 + 8, c0 = blockIdx.y * 8 * NT;
     const uint8_t* w0 = w + (size_t) min(r0, rows - 1) * row_bytes;
     const uint8_t* w1 = w + (size_t) min(r1, rows - 1) * row_bytes;
     const int nb32 = cols / 32;
-    const int8_t* xb[4];
-    for (int c = 0; c < 4; ++c) xb[c] = xq + (size_t) min(c0 + 8 * c + g, n - 1) * cols;
-    float acc[4][4] = {};
+    const int8_t* xb[NT];
+    for (int c = 0; c < NT; ++c) xb[c] = xq + (size_t) min(c0 + 8 * c + g, n - 1) * cols;
+    float acc[NT][4] = {};
     for (int sb = 0; sb < cols / 256; ++sb) {
         if (TYPE == T_Q4_K) {
             const uint8_t* q0 = w0 + (size_t) sb * 144;
@@ -378,7 +378,7 @@ __global__ void __launch_bounds__(128) mma_q(const uint8_t* __restrict__ w, size
                     mn[r] = dm[r] * mv;
                 }
                 const int kb = sb * 8 + j;
-                for (int c = 0; c < 4; ++c) {
+                for (int c = 0; c < NT; ++c) {
                     const int b0 = *(const int*) (xb[c] + kb * 32 + 4 * t4), b1 = *(const int*) (xb[c] + kb * 32 + 16 + 4 * t4);
                     int cc[4] = {0, 0, 0, 0}, cs[4] = {0, 0, 0, 0};
                     mma_s8_k32(cc, a, b0, b1);
@@ -409,7 +409,7 @@ __global__ void __launch_bounds__(128) mma_q(const uint8_t* __restrict__ w, size
                     for (int h = 0; h < 2; ++h)
                         for (int r = 0; r < 2; ++r) sc[h][r] = dd[r] * (float) ((const int8_t*) ((r ? q1 : q0) + 192))[8 * nn + 2 * k + h];
                     const int kb = sb * 8 + 4 * nn + k;
-                    for (int c = 0; c < 4; ++c) {
+                    for (int c = 0; c < NT; ++c) {
                         int cc[2][4] = {};
                         for (int h = 0; h < 2; ++h) mma_s8_k16(cc[h], a[h], *(const int*) (xb[c] + kb * 32 + 16 * h + 4 * t4));
                         const float v0 = xd[(size_t) min(c0 + 8 * c + 2 * t4, n - 1) * nb32 + kb], v1 = xd[(size_t) min(c0 + 8 * c + 2 * t4 + 1, n - 1) * nb32 + kb];
@@ -421,7 +421,7 @@ __global__ void __launch_bounds__(128) mma_q(const uint8_t* __restrict__ w, size
                 }
         }
     }
-    for (int c = 0; c < 4; ++c)
+    for (int c = 0; c < NT; ++c)
         for (int i = 0; i < 4; ++i) {
             const int row = (i & 2) ? r1 : r0, col = c0 + 8 * c + 2 * t4 + (i & 1);
             if (row < rows && col < n) y[(size_t) col * rows + row] = acc[c][i];
@@ -484,9 +484,10 @@ static int mm_dev(int dev, int type, const void* w, size_t row_bytes, int rows, 
         const int warps = n * (cols / 32);
         quant_x<<<(warps + 7) / 8, 256>>>(x, cols, n, s.xq, s.xd);
         if (n >= 16 && has_mma() && (type == T_Q4_K || type == T_Q6_K)) {
-            const dim3 g2((rows + 63) / 64, (n + 31) / 32);
-            if (type == T_Q4_K) mma_q<T_Q4_K><<<g2, 128>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, y);
-            else mma_q<T_Q6_K><<<g2, 128>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, y);
+            const bool wide = n >= 128;   // 128 columns per block: each weight read serves 4x more columns
+            const dim3 g2((rows + 63) / 64, (n + (wide ? 127 : 31)) / (wide ? 128 : 32));
+            if (type == T_Q4_K) { if (wide) mma_q<T_Q4_K, 16><<<g2, 128>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, y); else mma_q<T_Q4_K, 4><<<g2, 128>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, y); }
+            else { if (wide) mma_q<T_Q6_K, 16><<<g2, 128>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, y); else mma_q<T_Q6_K, 4><<<g2, 128>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, y); }
             return cudaGetLastError() != cudaSuccess ? 106 : 0;
         }
         switch (type) {

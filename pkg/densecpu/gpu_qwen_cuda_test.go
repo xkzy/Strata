@@ -51,6 +51,25 @@ func TestQwenResident(t *testing.T) {
 	if len(long) < 16 || argmax(refL) != argmax(gotL) {
 		t.Fatal("long prompt: too short or top token differs")
 	}
+	// 200 tokens in one call (128-column tiles) against two calls of 100 (32-column tiles): same math, so the logits must agree
+	f200 := make([]int, 200)
+	for i := range f200 {
+		f200[i] = 760 + i%37
+	}
+	g.Reset()
+	wide := g.Step(f200)
+	g.Reset()
+	g.chunk = 100
+	narrow := g.Step(f200)
+	g.chunk = 512
+	md = 0
+	for i := range wide {
+		md = math.Max(md, math.Abs(float64(wide[i]-narrow[i])))
+	}
+	t.Logf("wide vs narrow tiles: max |logit diff| %.5f", md)
+	if md > 0.05 || argmax(wide) != argmax(narrow) {
+		t.Fatal("wide tiles disagree with narrow tiles")
+	}
 	g.Reset()
 	g.Step(ids)
 	// decode: 16 more tokens greedily, timed
