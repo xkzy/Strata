@@ -23,6 +23,12 @@ size_t iq_row_bytes(int ggml_type, int64_t n) noexcept;
 void quantize_q8_1_rows(const float* x, int64_t n_rows, int64_t n_cols, void* y, void* stream);
 
 /// y[c][r] = W[r] . x[c] for `ncols` columns of q8_1 activations (x stride n_in/32 blocks per column).
+/// All experts of one prefill phase in one launch (Q5_K, type 13, or IQ4_XS, type 23): w[e] = expert e's weights (device or mapped
+/// host pointers), tile i = columns tile_c0[i].. of expert tile_e[i], expert e has e_cnt[e] columns starting at column e_off[e] of the
+/// q8_1 activations and of y (n_out floats per column). Returns false, having done nothing, when the type or card is not supported.
+bool iq_mmq_grouped(int t, const void* const* w, int n_in, int n_out, const void* xq, float* y, const int* tile_e, const int* tile_c0,
+                    const int* e_cnt, const int* e_off, int n_tiles, void* stream);
+
 void iq_mmvq(int ggml_type, const void* w, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream);
 
 /// Dequantize `n` contiguous values (n a multiple of 256) to fp16 / fp32.

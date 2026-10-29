@@ -181,6 +181,11 @@ inline int make_cache(Loader& ld, std::vector<FlintLayer>& layers, size_t margin
     c.owner.assign(c.n_slot, -1);
     c.score.assign(c.n_slot, 0.0);
     c.locked_at.assign(c.n_slot, 0);
+    c.layer.assign((size_t) max_layer + 2, nullptr);
+    c.used_prev.assign((size_t) (max_layer + 1) * c.n_exp, 0);
+    c.pend.assign(c.n_slot, 0);
+    c.pf_ev.assign((size_t) max_layer + 2, nullptr);
+    for (FlintLayer& L : layers) c.layer[L.index] = &L;
     for (FlintLayer& L : layers) if (L.moe) L.cache = &c;
     return c.n_slot;
 }

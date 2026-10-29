@@ -709,10 +709,22 @@ __global__ void __launch_bounds__(128) mmq_q8_0_kernel(const uint8_t* __restrict
 // Q5_K the same way: one mma is one 32-value sub-block (5-bit values 0..31 as bytes), scaled by d * sc and offset by dmin * m times
 // the activation's sum (ds.y). Same tiling as mmq_q8_0_kernel.
 __global__ void __launch_bounds__(128) mmq_q5_k_kernel(const uint8_t* __restrict__ w, size_t row_bytes, const block_q8_1* __restrict__ x,
-                                                       float* __restrict__ y, int n_in, int n_out, int ncols) {
+                                                       float* __restrict__ y, int n_in, int n_out, int ncols,
+                                                       const uint8_t* const* wt = nullptr, const int* tile_e = nullptr, const int* tile_c0 = nullptr,
+                                                       const int* e_cnt = nullptr, const int* e_off = nullptr) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
     const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, g = lane >> 2, t4 = lane & 3;
-    const int r0 = blockIdx.x * 64 + warp * 16 + g, r1 = r0 + 8, c0 = blockIdx.y * 32;
+    // grouped launch: tile blockIdx.y is columns c0.. of expert e, whose weights are wt[e] and whose columns start at e_off[e]
+    int c0 = blockIdx.y * 32;
+    if (wt) {
+        const int e = tile_e[blockIdx.y];
+        w = wt[e];
+        ncols = e_cnt[e];
+        c0 = tile_c0[blockIdx.y];
+        x += (size_t) e_off[e] * (n_in / 32);
+        y += (size_t) e_off[e] * n_out;
+    }
+    const int r0 = blockIdx.x * 64 + warp * 16 + g, r1 = r0 + 8;
     const uint8_t* w0 = w + (size_t) min(r0, n_out - 1) * row_bytes;
     const uint8_t* w1 = w + (size_t) min(r1, n_out - 1) * row_bytes;
     float acc[4][4] = {};
@@ -772,10 +784,22 @@ __global__ void __launch_bounds__(128) mmq_q5_k_kernel(const uint8_t* __restrict
 // IQ4_XS the same way: a sub-block's 16 bytes hold values 0-15 (low nibbles) and 16-31 (high nibbles), which are exactly the
 // k and k + 16 halves of an mma fragment; the table gives int8 values, the 6-bit sub-block scale and d scale the int32 result.
 __global__ void __launch_bounds__(128) mmq_iq4_xs_kernel(const uint8_t* __restrict__ w, size_t row_bytes, const block_q8_1* __restrict__ x,
-                                                         float* __restrict__ y, int n_in, int n_out, int ncols) {
+                                                         float* __restrict__ y, int n_in, int n_out, int ncols,
+                                                       const uint8_t* const* wt = nullptr, const int* tile_e = nullptr, const int* tile_c0 = nullptr,
+                                                       const int* e_cnt = nullptr, const int* e_off = nullptr) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
     const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, g = lane >> 2, t4 = lane & 3;
-    const int r0 = blockIdx.x * 64 + warp * 16 + g, r1 = r0 + 8, c0 = blockIdx.y * 32;
+    // grouped launch: tile blockIdx.y is columns c0.. of expert e, whose weights are wt[e] and whose columns start at e_off[e]
+    int c0 = blockIdx.y * 32;
+    if (wt) {
+        const int e = tile_e[blockIdx.y];
+        w = wt[e];
+        ncols = e_cnt[e];
+        c0 = tile_c0[blockIdx.y];
+        x += (size_t) e_off[e] * (n_in / 32);
+        y += (size_t) e_off[e] * n_out;
+    }
+    const int r0 = blockIdx.x * 64 + warp * 16 + g, r1 = r0 + 8;
     const uint8_t* w0 = w + (size_t) min(r0, n_out - 1) * row_bytes;
     const uint8_t* w1 = w + (size_t) min(r1, n_out - 1) * row_bytes;
     float acc[4][4] = {};
@@ -2918,6 +2942,25 @@ void quantize_q8_1_rows(const float* x, int64_t n_rows, int64_t n_cols, void* y,
     if (n <= 0) return;
     quantize_q8_1_kernel<<<(unsigned) ((n + 255) / 256), 256, 0, (cudaStream_t) stream>>>(x, (block_q8_1*) y, n);
     check("quantize_q8_1_rows");
+}
+
+// All experts of one phase in one launch (Q5_K or IQ4_XS weights, prefill): w[e] is expert e's weights, tile i is columns
+// tile_c0[i].. of expert tile_e[i]; expert e has e_cnt[e] columns starting at column e_off[e] of xq (q8_1) and y. False when
+// the type or the card does not support it (the caller then runs the experts one by one).
+bool iq_mmq_grouped(int t, const void* const* w, int n_in, int n_out, const void* xq, float* y, const int* tile_e, const int* tile_c0,
+                    const int* e_cnt, const int* e_off, int n_tiles, void* stream) {
+#if !defined(__HIPCC__)
+    if ((t != 13 && t != 23) || g_old_kernels || !has_tensor_cores()) return false;
+    if (n_tiles == 0) return true;  // only asking
+    const dim3 grid((unsigned) ((n_out + 63) / 64), (unsigned) n_tiles);
+    const size_t rb = iq_row_bytes(t, n_in);
+    if (t == 13) mmq_q5_k_kernel<<<grid, 128, 0, (cudaStream_t) stream>>>(nullptr, rb, (const block_q8_1*) xq, y, n_in, n_out, 0, (const uint8_t* const*) w, tile_e, tile_c0, e_cnt, e_off);
+    else mmq_iq4_xs_kernel<<<grid, 128, 0, (cudaStream_t) stream>>>(nullptr, rb, (const block_q8_1*) xq, y, n_in, n_out, 0, (const uint8_t* const*) w, tile_e, tile_c0, e_cnt, e_off);
+    check("iq_mmq_grouped");
+    return true;
+#else
+    return false;
+#endif
 }
 
 void iq_mmvq(int t, const void* w, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream) {

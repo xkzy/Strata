@@ -384,6 +384,13 @@ __global__ void gather_rows_kernel(const float* x, const int* tok, float* xg, in
     for (int i = threadIdx.x; i < dim; i += blockDim.x) dst[i] = src[i];
 }
 
+// xg[j] = x[tok[j]] for q8_1 rows of `words` 32-bit words
+__global__ void gather_words_kernel(const int* x, const int* tok, int* xg, int words) {
+    const int* src = x + (size_t) tok[blockIdx.x] * words;
+    int* dst = xg + (size_t) blockIdx.x * words;
+    for (int i = threadIdx.x; i < words; i += blockDim.x) dst[i] = src[i];
+}
+
 // acc[t] += w[p] * y[p] over the n_used pairs p of token t, in the order of pairs: the sum does not depend on which expert ran first
 __global__ void combine_kernel(float* acc, const int* pairs, const float* w, const float* y, int n_used, int dim) {
     float* dst = acc + (size_t) blockIdx.x * dim;
@@ -492,14 +499,7 @@ void flint_layer_forward(const FlintLayer& L, FlintKV& kv, int pos0, const float
                 toks[e].push_back(t);
                 wsel[e].push_back(hw[(size_t) t * L.n_used + k]);
             }
-        std::vector<int> tcat;
-        std::vector<float> wcat;
-        for (int e = 0; e < L.n_exp; ++e) tcat.insert(tcat.end(), toks[e].begin(), toks[e].end()), wcat.insert(wcat.end(), wsel[e].begin(), wsel[e].end());
-        int* d_tok = m.get<int>(tcat.size());
-        float* d_w = m.get<float>(wcat.size());
-        cudaMemcpyAsync(d_tok, tcat.data(), tcat.size() * sizeof(int), cudaMemcpyHostToDevice, s);
-        cudaMemcpyAsync(d_w, wcat.data(), wcat.size() * sizeof(float), cudaMemcpyHostToDevice, s);
-        float *xg = m.get<float>((size_t) n * E), *eg = m.get<float>((size_t) n * F), *eu = m.get<float>((size_t) n * F), *ed = m.get<float>((size_t) n * L.n_used * E);
+        float *xg = nullptr, *eg = nullptr, *eu = nullptr, *ed = m.get<float>((size_t) n * L.n_used * E);
         FlintExpertCache* C = L.cache;
         std::vector<const char*> pg(L.n_exp), pu(L.n_exp), pd(L.n_exp);  // where each used expert is read from
         for (int e = 0; e < L.n_exp; ++e) {
@@ -507,15 +507,17 @@ void flint_layer_forward(const FlintLayer& L, FlintKV& kv, int pos0, const float
             pu[e] = (const char*) L.up_exps.w + (size_t) e * up_stride;
             pd[e] = (const char*) L.down_exps.w + (size_t) e * dn_stride;
         }
-        std::vector<char> late(L.n_exp, 0);  // experts whose copy the compute must wait for
+        std::vector<char> late(L.n_exp, 0), pf(L.n_exp, 0);  // experts whose copy the compute must wait for; pf: copied ahead
+        bool any_pf = false;
         cudaStream_t cs = nullptr;
         if (C) {
             if (!C->copy_stream) {
                 cudaStreamCreateWithFlags((cudaStream_t*) &C->copy_stream, cudaStreamNonBlocking);
-                C->copied.resize(L.n_exp);
+                C->copied.resize(L.n_exp + 1);  // the last: all copies of this layer done
                 for (void*& ev : C->copied) cudaEventCreateWithFlags((cudaEvent_t*) &ev, cudaEventDisableTiming);
             }
             cs = (cudaStream_t) C->copy_stream;
+            for (int e = 0; e < L.n_exp; ++e) C->used_prev[(size_t) L.index * C->n_exp + e] = !toks[e].empty();
             ++C->epoch;
             C->inc *= 1.0001;
             if (C->inc > 1e100) { for (double& v : C->score) v /= C->inc; C->inc = 1; }
@@ -526,6 +528,7 @@ void flint_layer_forward(const FlintLayer& L, FlintKV& kv, int pos0, const float
                 const int slot = C->slot_of[(size_t) L.index * C->n_exp + e];
                 if (slot < 0) { missing.push_back(e); continue; }
                 C->locked_at[slot] = C->epoch, C->score[slot] += C->inc, ++C->hits;
+                if (C->pend[slot]) C->pend[slot] = 0, late[e] = 1, pf[e] = 1, any_pf = true;  // copied ahead: wait for that copy
                 char* b = C->pool + (size_t) slot * C->slot_bytes;
                 pg[e] = b, pu[e] = b + gu_stride, pd[e] = b + gu_stride + up_stride;
             }
@@ -537,7 +540,7 @@ void flint_layer_forward(const FlintLayer& L, FlintKV& kv, int pos0, const float
                 if (victim < 0) { ++C->direct; continue; }  // no free slot: read it from host memory this once
                 if (C->owner[victim] >= 0) C->slot_of[C->owner[victim]] = -1;
                 C->owner[victim] = L.index * C->n_exp + e, C->slot_of[(size_t) L.index * C->n_exp + e] = victim;
-                C->locked_at[victim] = C->epoch, C->score[victim] = C->inc, ++C->copies;
+                C->locked_at[victim] = C->epoch, C->score[victim] = C->inc, C->pend[victim] = 0, ++C->copies;
                 char* b = C->pool + (size_t) victim * C->slot_bytes;
                 cudaMemcpyAsync(b, (const char*) L.host_gate + (size_t) e * gu_stride, gu_stride, cudaMemcpyHostToDevice, cs);
                 cudaMemcpyAsync(b + gu_stride, (const char*) L.host_up + (size_t) e * up_stride, up_stride, cudaMemcpyHostToDevice, cs);
@@ -547,18 +550,113 @@ void flint_layer_forward(const FlintLayer& L, FlintKV& kv, int pos0, const float
                 pg[e] = b, pu[e] = b + gu_stride, pd[e] = b + gu_stride + up_stride;
             }
         }
+        if (C && std::count(late.begin(), late.end(), 1)) cudaEventRecord((cudaEvent_t) C->copied[L.n_exp], cs);
+        // while this layer computes, copy in the experts the next layer used last time (a long prefill chunk uses nearly all of
+        // them), into the slots with the lowest scores that this layer does not use
+        const FlintLayer* nx = C && n >= 16 && L.index + 1 < (int) C->layer.size() ? C->layer[L.index + 1] : nullptr;
+        if (nx && nx->moe && nx->cache == C) {
+            // the next layer may use other quantisations: its own strides
+            const size_t ngu = (size_t) nx->gate_exps.n_out * iq_row_bytes(nx->gate_exps.type, nx->gate_exps.n_in);
+            const size_t nup = (size_t) nx->up_exps.n_out * iq_row_bytes(nx->up_exps.type, nx->up_exps.n_in);
+            const size_t ndn = (size_t) nx->down_exps.n_out * (nx->down_exps.type == 14 ? iq_row_bytes_q6k(nx->down_exps.n_in) : iq_row_bytes(nx->down_exps.type, nx->down_exps.n_in));
+            const size_t need = ngu + nup + ndn;
+            bool any = false;
+            // never run before: a chunk of 1024 tokens or more uses most of a layer's experts anyway
+            bool seen = false;
+            for (int e = 0; e < L.n_exp && !seen; ++e) seen = C->used_prev[(size_t) nx->index * C->n_exp + e];
+            for (int e = 0; e < L.n_exp && need <= C->slot_bytes; ++e) {
+                const size_t key = (size_t) nx->index * C->n_exp + e;
+                if ((seen ? !C->used_prev[key] : n < 1024) || C->slot_of[key] >= 0) continue;
+                int victim = -1;
+                for (int i = 0; i < C->n_slot; ++i)
+                    if (C->locked_at[i] != C->epoch && (victim < 0 || C->score[i] < C->score[victim])) victim = i;
+                if (victim < 0) break;
+                if (C->owner[victim] >= 0) C->slot_of[C->owner[victim]] = -1;
+                C->owner[victim] = (int) key, C->slot_of[key] = victim;
+                C->locked_at[victim] = C->epoch, C->score[victim] = C->inc, C->pend[victim] = 1, ++C->copies;
+                char* b = C->pool + (size_t) victim * C->slot_bytes;
+                cudaMemcpyAsync(b, (const char*) nx->host_gate + (size_t) e * ngu, ngu, cudaMemcpyHostToDevice, cs);
+                cudaMemcpyAsync(b + ngu, (const char*) nx->host_up + (size_t) e * nup, nup, cudaMemcpyHostToDevice, cs);
+                cudaMemcpyAsync(b + ngu + nup, (const char*) nx->host_down + (size_t) e * ndn, ndn, cudaMemcpyHostToDevice, cs);
+                any = true;
+            }
+            if (any) {
+                if (!C->pf_ev[nx->index]) cudaEventCreateWithFlags((cudaEvent_t*) &C->pf_ev[nx->index], cudaEventDisableTiming);
+                cudaEventRecord((cudaEvent_t) C->pf_ev[nx->index], cs);
+            }
+        }
         // the experts already on the card go first, so their compute hides the copies of the others (everything the previous
-        // layer used has finished: the router read above synchronised the stream)
+        // layer used has finished: the router read above synchronised the stream); pairs are numbered in that order
         std::vector<size_t> offs(L.n_exp);
-        std::vector<int> order;
-        for (int e = 0, o = 0; e < L.n_exp; ++e) offs[e] = o, o += (int) toks[e].size();
+        std::vector<int> order, tcat;
+        std::vector<float> wcat;
         for (int pass = 0; pass < 2; ++pass)
             for (int e = 0; e < L.n_exp; ++e)
-                if (!toks[e].empty() && late[e] == pass) order.push_back(e);
+                if (!toks[e].empty() && late[e] == pass) {
+                    offs[e] = tcat.size();
+                    order.push_back(e);
+                    tcat.insert(tcat.end(), toks[e].begin(), toks[e].end());
+                    wcat.insert(wcat.end(), wsel[e].begin(), wsel[e].end());
+                }
+        int* d_tok = m.get<int>(tcat.size());
+        float* d_w = m.get<float>(wcat.size());
+        cudaMemcpyAsync(d_tok, tcat.data(), tcat.size() * sizeof(int), cudaMemcpyHostToDevice, s);
+        cudaMemcpyAsync(d_w, wcat.data(), wcat.size() * sizeof(float), cudaMemcpyHostToDevice, s);
+        const size_t P = tcat.size();
+        ed = m.get<float>(P * E);
+        // prefill with Q5_K / IQ4_XS experts: one launch per matrix and phase instead of one per expert
+        const int gt = L.gate_exps.type;
+        const bool grouped = n >= 16 && E % 256 == 0 && F % 256 == 0 && L.up_exps.type == gt && gt == L.down_exps.type &&
+                             iq_mmq_grouped(gt, nullptr, E, F, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, nullptr);
+        if (grouped) {
+            void* xq_all = m.get<char>((size_t) n * (E / 32) * Q8_1_BLOCK);
+            quantize_q8_1_rows(fx, n, E, xq_all, s);
+            void* xq_p = m.get<char>(P * (E / 32) * Q8_1_BLOCK);
+            gather_words_kernel<<<(unsigned) P, 128, 0, s>>>((const int*) xq_all, d_tok, (int*) xq_p, (int) (E / 32 * Q8_1_BLOCK / 4));
+            float *egp = m.get<float>(P * F), *eup = m.get<float>(P * F);
+            void* xq_f = m.get<char>(P * (F / 32) * Q8_1_BLOCK);
+            std::vector<int> cnt(L.n_exp), eoff(L.n_exp);
+            for (int e = 0; e < L.n_exp; ++e) cnt[e] = (int) toks[e].size(), eoff[e] = (int) offs[e];
+            const void** tw = m.get<const void*>(3 * (size_t) L.n_exp);
+            cudaMemcpyAsync(tw, pg.data(), L.n_exp * sizeof(void*), cudaMemcpyHostToDevice, s);
+            cudaMemcpyAsync(tw + L.n_exp, pu.data(), L.n_exp * sizeof(void*), cudaMemcpyHostToDevice, s);
+            cudaMemcpyAsync(tw + 2 * L.n_exp, pd.data(), L.n_exp * sizeof(void*), cudaMemcpyHostToDevice, s);
+            int* d_cnt = m.get<int>(2 * (size_t) L.n_exp);
+            cudaMemcpyAsync(d_cnt, cnt.data(), L.n_exp * sizeof(int), cudaMemcpyHostToDevice, s);
+            cudaMemcpyAsync(d_cnt + L.n_exp, eoff.data(), L.n_exp * sizeof(int), cudaMemcpyHostToDevice, s);
+            size_t p0 = 0;
+            for (int pass = 0; pass < 2; ++pass) {
+                std::vector<int> te, tc;
+                size_t p1 = p0;
+                for (int e : order)
+                    if (late[e] == pass) {
+                        for (int c0 = 0; c0 < cnt[e]; c0 += 32) te.push_back(e), tc.push_back(c0);
+                        p1 += cnt[e];
+                    }
+                if (te.empty()) continue;
+                int* d_te = m.get<int>(2 * te.size());
+                cudaMemcpyAsync(d_te, te.data(), te.size() * sizeof(int), cudaMemcpyHostToDevice, s);
+                cudaMemcpyAsync(d_te + te.size(), tc.data(), tc.size() * sizeof(int), cudaMemcpyHostToDevice, s);
+                if (pass) {
+                    cudaStreamWaitEvent(s, (cudaEvent_t) C->copied[L.n_exp], 0);
+                    if (any_pf) cudaStreamWaitEvent(s, (cudaEvent_t) C->pf_ev[L.index], 0);
+                }
+                const int nt = (int) te.size();
+                iq_mmq_grouped(gt, tw, E, F, xq_p, egp, d_te, d_te + nt, d_cnt, d_cnt + L.n_exp, nt, stream);
+                iq_mmq_grouped(gt, tw + L.n_exp, E, F, xq_p, eup, d_te, d_te + nt, d_cnt, d_cnt + L.n_exp, nt, stream);
+                swiglu_kernel<<<grid((long long) (p1 - p0) * F), 256, 0, s>>>(egp + p0 * F, eup + p0 * F, (long long) (p1 - p0) * F);
+                quantize_q8_1_rows(egp + p0 * F, (int64_t) (p1 - p0), F, (char*) xq_f + p0 * (F / 32) * Q8_1_BLOCK, s);
+                iq_mmq_grouped(gt, tw + 2 * L.n_exp, F, E, xq_f, ed, d_te, d_te + nt, d_cnt, d_cnt + L.n_exp, nt, stream);
+                p0 = p1;
+            }
+            order.clear();
+        } else {
+            xg = m.get<float>((size_t) n * E), eg = m.get<float>((size_t) n * F), eu = m.get<float>((size_t) n * F);
+        }
         for (int e : order) {
             const int c = (int) toks[e].size();
             const size_t off = offs[e];
-            if (late[e]) cudaStreamWaitEvent(s, (cudaEvent_t) C->copied[e], 0);
+            if (late[e]) cudaStreamWaitEvent(s, (cudaEvent_t) (pf[e] ? C->pf_ev[L.index] : C->copied[e]), 0);
             FlintMat G = L.gate_exps, U = L.up_exps, D = L.down_exps;
             G.w = pg[e];
             U.w = pu[e];

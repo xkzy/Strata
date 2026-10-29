@@ -21,6 +21,8 @@ struct FlintMat {
 /// A pool of device slots that keeps the experts used most, over all layers. The experts themselves live in host memory
 /// (FlintLayer::host_*); a layer call copies the ones it routes to that are not in the pool into the least-used free
 /// slots, and reads the rest straight from host memory. Slot = gate | up | down of one expert.
+struct FlintLayer;
+
 struct FlintExpertCache {
     char* pool = nullptr;
     size_t slot_bytes = 0;
@@ -34,6 +36,10 @@ struct FlintExpertCache {
     long long hits = 0, copies = 0, direct = 0;
     void* copy_stream = nullptr;       // cudaStream_t: expert copies run here while the cached experts compute
     std::vector<void*> copied;         // per expert: cudaEvent_t recorded when its copy has finished
+    std::vector<const FlintLayer*> layer;  // by layer index: the next layer's experts are copied in while this one computes
+    std::vector<char> used_prev;       // layer * n_exp + expert: it had tokens the last time that layer ran (what to prefetch)
+    std::vector<char> pend;            // slot -> a prefetch copy into it may still be running
+    std::vector<void*> pf_ev;          // by layer index: cudaEvent_t recorded after the prefetch copies for that layer
 };
 
 struct FlintLayer {
