@@ -82,6 +82,25 @@ of context 0.191 s (measured before the prefill changes). Gemma 4 31B, same 512-
 The remaining 13.8 s of the prefill is Go code on the CPU: the attention loops and the delta-net recurrence, which only
 GPU kernels will speed up.
 
+## Qwen3.8-27B with the whole forward pass on the GPUs (`EnableResident`, build tag `cuda`)
+
+`Qwen.EnableResident(maxCtx)` puts every layer on the GPUs: norms, the gated delta-net (conv, the recurrence with its 128 x 128 state per
+head kept in registers, gated norm), attention with a half-float K/V cache on the card, the FFN and the residuals. Layers are split over the
+cards in proportion to their measured copy bandwidth (here 29 and 35 layers; the 2.4 GB output matrix goes on the last card), so only the
+hidden state (n x 5120 floats) crosses the bus, twice per call. Embedding lookup and the final norm stay in Go. Same prompts as above, RTX 5060 Ti +
+RTX 4060, `TestQwenResident`:
+
+| | before (Go around GPU matmuls) | resident, dp4a matmuls | resident, int8 tensor-core matmuls (16+ tokens) |
+|---|---|---|---|
+| decode, 1 token | 167 ms | 110 ms | 107-112 ms (unchanged: 1 column) |
+| prefill, 512 tokens | 23.8 s (21 tok/s) | 8.5 s (60 tok/s) | **2.74 s (187 tok/s)** |
+
+Checked against the Go CPU path: top token and logits of a 6-token prompt (`Paris`, 16.357 vs 16.329, max difference 0.11) and a 23-token prompt
+that takes the tensor-core path (19.720 vs 19.727, max difference 0.14); the differences come from the int8 inputs. Where the time went before the
+tensor-core step (512 tokens, `DG_PROF=1` prints the per-section GPU time): FFN 5.9 s of 8.5, gated delta-net projections 1.5 s, attention
+projections 0.4 s. Limits: one session at a time, K/V cache for `maxCtx` tokens on the cards, head size 256 and a 128-wide delta-net head are
+assumed, no speculative decoding with the MTP block yet.
+
 ## What is in the repo
 
 - `pkg/modelschema/dense_gguf.go` - `ReadDensePlan(path)` reads a `qwen35` or `gemma4` GGUF and returns the

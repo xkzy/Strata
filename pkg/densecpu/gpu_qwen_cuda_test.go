@@ -37,6 +37,22 @@ func TestQwenResident(t *testing.T) {
 		t.Fatal("top token differs")
 	}
 	ProfDump()
+	// a prompt long enough (16+ tokens) for the tensor-core matmuls
+	long := m.GreedyEncode("The quick brown fox jumps over the lazy dog. The capital of Germany is Berlin, and the capital of France is")
+	t.Logf("long prompt: %d tokens", len(long))
+	g.Reset()
+	gotL := g.Step(long)
+	refL := m.Forward(long)
+	md = 0
+	for i := range refL {
+		md = math.Max(md, math.Abs(float64(refL[i]-gotL[i])))
+	}
+	t.Logf("long prompt: top cpu %q (%.3f) gpu %q (%.3f); max |logit diff| %.4f", m.Vocab[argmax(refL)], refL[argmax(refL)], m.Vocab[argmax(gotL)], gotL[argmax(gotL)], md)
+	if len(long) < 16 || argmax(refL) != argmax(gotL) {
+		t.Fatal("long prompt: too short or top token differs")
+	}
+	g.Reset()
+	g.Step(ids)
 	// decode: 16 more tokens greedily, timed
 	tok := argmax(got)
 	t0 = time.Now()

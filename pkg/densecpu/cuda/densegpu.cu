@@ -332,6 +332,108 @@ __global__ void mmq(const uint8_t* w, size_t row_bytes, int rows, int cols, int 
     }
 }
 
+// ---- prefill on the tensor cores (int8 mma.sync m16n8k32, sm_80+): the same int8 inputs and scales as the dp4a path, 16 rows x
+// 32 columns per warp, 64 rows per block. One mma is one 32-value block; the integer result is scaled in fp32 in block order. ----
+
+__device__ __forceinline__ void mma_s8_k32(int* c, const int* a, int b0, int b1) {
+    asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+                 : "+r"(c[0]), "+r"(c[1]), "+r"(c[2]), "+r"(c[3])
+                 : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+__device__ __forceinline__ void mma_s8_k16(int* c, const int* a, int b0) {
+    asm volatile("mma.sync.aligned.m16n8k16.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};\n"
+                 : "+r"(c[0]), "+r"(c[1]), "+r"(c[2]), "+r"(c[3])
+                 : "r"(a[0]), "r"(a[1]), "r"(b0));
+}
+
+template <int TYPE>
+__global__ void __launch_bounds__(128) mma_q(const uint8_t* __restrict__ w, size_t row_bytes, int rows, int cols, int n,
+                                            const int8_t* __restrict__ xq, const float* __restrict__ xd, float* __restrict__ y) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, g = lane >> 2, t4 = lane & 3;
+    const int r0 = blockIdx.x * 64 + warp * 16 + g, r1 = r0 + 8, c0 = blockIdx.y * 32;
+    const uint8_t* w0 = w + (size_t) min(r0, rows - 1) * row_bytes;
+    const uint8_t* w1 = w + (size_t) min(r1, rows - 1) * row_bytes;
+    const int nb32 = cols / 32;
+    const int8_t* xb[4];
+    for (int c = 0; c < 4; ++c) xb[c] = xq + (size_t) min(c0 + 8 * c + g, n - 1) * cols;
+    float acc[4][4] = {};
+    for (int sb = 0; sb < cols / 256; ++sb) {
+        if (TYPE == T_Q4_K) {
+            const uint8_t* q0 = w0 + (size_t) sb * 144;
+            const uint8_t* q1 = w1 + (size_t) sb * 144;
+            const float dd[2] = {h2f(q0), h2f(q1)}, dm[2] = {h2f(q0 + 2), h2f(q1 + 2)};
+            for (int j = 0; j < 8; ++j) {
+                const int p = j >> 1, sh = 4 * (j & 1);
+                int a[4];
+                for (int h = 0; h < 2; ++h)
+                    for (int r = 0; r < 2; ++r)
+                        a[2 * h + r] = (*(const int*) ((r ? q1 : q0) + 16 + 32 * p + 4 * t4 + 16 * h) >> sh) & 0x0F0F0F0F;
+                float sc[2], mn[2];
+                for (int r = 0; r < 2; ++r) {
+                    const uint8_t* S = (r ? q1 : q0) + 4;
+                    int sv, mv;
+                    scale_min(j, S, &sv, &mv);
+                    sc[r] = dd[r] * sv;
+                    mn[r] = dm[r] * mv;
+                }
+                const int kb = sb * 8 + j;
+                for (int c = 0; c < 4; ++c) {
+                    const int b0 = *(const int*) (xb[c] + kb * 32 + 4 * t4), b1 = *(const int*) (xb[c] + kb * 32 + 16 + 4 * t4);
+                    int cc[4] = {0, 0, 0, 0}, cs[4] = {0, 0, 0, 0};
+                    mma_s8_k32(cc, a, b0, b1);
+                    const int ones[4] = {0x01010101, 0x01010101, 0x01010101, 0x01010101};
+                    mma_s8_k32(cs, ones, b0, b1);
+                    const float v0 = xd[(size_t) min(c0 + 8 * c + 2 * t4, n - 1) * nb32 + kb], v1 = xd[(size_t) min(c0 + 8 * c + 2 * t4 + 1, n - 1) * nb32 + kb];
+                    acc[c][0] += v0 * ((float) cc[0] * sc[0] - mn[0] * (float) cs[0]);
+                    acc[c][1] += v1 * ((float) cc[1] * sc[0] - mn[0] * (float) cs[1]);
+                    acc[c][2] += v0 * ((float) cc[2] * sc[1] - mn[1] * (float) cs[2]);
+                    acc[c][3] += v1 * ((float) cc[3] * sc[1] - mn[1] * (float) cs[3]);
+                }
+            }
+        } else {  // Q6_K: a scale covers 16 values, so one 32-value block is two k16 steps
+            const uint8_t* q0 = w0 + (size_t) sb * 210;
+            const uint8_t* q1 = w1 + (size_t) sb * 210;
+            const float dd[2] = {h2f(q0 + 208), h2f(q1 + 208)};
+            for (int nn = 0; nn < 2; ++nn)
+                for (int k = 0; k < 4; ++k) {
+                    int a[2][2];
+                    for (int h = 0; h < 2; ++h)
+                        for (int r = 0; r < 2; ++r) {
+                            const uint8_t* q = r ? q1 : q0;
+                            const uint32_t ql = ld32(q + 64 * nn + 32 * (k & 1) + 4 * t4 + 16 * h) >> (4 * (k >> 1));
+                            const uint32_t qh = ld32(q + 128 + 32 * nn + 4 * t4 + 16 * h) >> (2 * k);
+                            a[h][r] = __vsubss4((int) ((ql & 0x0F0F0F0Fu) | ((qh & 0x03030303u) << 4)), 0x20202020);
+                        }
+                    float sc[2][2];
+                    for (int h = 0; h < 2; ++h)
+                        for (int r = 0; r < 2; ++r) sc[h][r] = dd[r] * (float) ((const int8_t*) ((r ? q1 : q0) + 192))[8 * nn + 2 * k + h];
+                    const int kb = sb * 8 + 4 * nn + k;
+                    for (int c = 0; c < 4; ++c) {
+                        int cc[2][4] = {};
+                        for (int h = 0; h < 2; ++h) mma_s8_k16(cc[h], a[h], *(const int*) (xb[c] + kb * 32 + 16 * h + 4 * t4));
+                        const float v0 = xd[(size_t) min(c0 + 8 * c + 2 * t4, n - 1) * nb32 + kb], v1 = xd[(size_t) min(c0 + 8 * c + 2 * t4 + 1, n - 1) * nb32 + kb];
+                        acc[c][0] += v0 * ((float) cc[0][0] * sc[0][0] + (float) cc[1][0] * sc[1][0]);
+                        acc[c][1] += v1 * ((float) cc[0][1] * sc[0][0] + (float) cc[1][1] * sc[1][0]);
+                        acc[c][2] += v0 * ((float) cc[0][2] * sc[0][1] + (float) cc[1][2] * sc[1][1]);
+                        acc[c][3] += v1 * ((float) cc[0][3] * sc[0][1] + (float) cc[1][3] * sc[1][1]);
+                    }
+                }
+        }
+    }
+    for (int c = 0; c < 4; ++c)
+        for (int i = 0; i < 4; ++i) {
+            const int row = (i & 2) ? r1 : r0, col = c0 + 8 * c + 2 * t4 + (i & 1);
+            if (row < rows && col < n) y[(size_t) col * rows + row] = acc[c][i];
+        }
+#endif
+}
+
+static bool has_mma() {
+    static const bool ok = [] { int d = 0, mj = 0; cudaGetDevice(&d); cudaDeviceGetAttribute(&mj, cudaDevAttrComputeCapabilityMajor, d); return mj >= 8; }();
+    return ok;
+}
+
 struct Scratch {
     float *x = nullptr, *y = nullptr, *xd = nullptr;
     int8_t* xq = nullptr;
@@ -381,6 +483,12 @@ static int mm_dev(int dev, int type, const void* w, size_t row_bytes, int rows, 
         }
         const int warps = n * (cols / 32);
         quant_x<<<(warps + 7) / 8, 256>>>(x, cols, n, s.xq, s.xd);
+        if (n >= 16 && has_mma() && (type == T_Q4_K || type == T_Q6_K)) {
+            const dim3 g2((rows + 63) / 64, (n + 31) / 32);
+            if (type == T_Q4_K) mma_q<T_Q4_K><<<g2, 128>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, y);
+            else mma_q<T_Q6_K><<<g2, 128>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, y);
+            return cudaGetLastError() != cudaSuccess ? 106 : 0;
+        }
         switch (type) {
         case T_Q4_K: mmq<T_Q4_K><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, y); break;
         case T_Q5_K: mmq<T_Q5_K><<<grid, block>>>(wp, row_bytes, rows, cols, n, s.xq, s.xd, y); break;
