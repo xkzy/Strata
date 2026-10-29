@@ -101,6 +101,16 @@ tensor-core step (512 tokens, `DG_PROF=1` prints the per-section GPU time): FFN 
 projections 0.4 s. Limits: one session at a time, K/V cache for `maxCtx` tokens on the cards, head size 256 and a 128-wide delta-net head are
 assumed, no speculative decoding with the MTP block yet.
 
+Later steps (same machine): 128-column tiles for the tensor-core matmuls took the 512-token prefill from 2.74 s to **1.56 s (326 tok/s)**; the chunk
+size no longer matters (2048 tokens: 301 / 314 / 315 tok/s at chunks of 256 / 512 / 1024), so prefill is bound by the matmul kernels, not by
+weight reads. A warp-per-row kernel and a precomputed activation-sum for the Q4_K minimum term were tried and were not faster (66 vs 62 ms;
+1.82 vs 1.57 s) and were dropped. The copy bandwidth of the two cards is 252 and 387 GB/s (read plus write), which puts the floor of one
+decode step at about 54 ms with the cards working one after the other, so 62 ms is near it. Attention for 1-8 new tokens on a long context is split
+over up to 32 blocks per head and combined (`attn_combine_k`): decode at 15,000 tokens of context 79 -> 66.5 ms (63 / 63.5 / 64.6 / 66.5 ms
+at 1k / 4k / 8k / 15k). Prefill still slows with depth (324 / 295 / 264 / 221 tok/s at 1k / 4k / 8k / 15k).
+The split gives the same top token as the single-block kernel but not the same logits (largest difference 0.39 on a 1500-token context, the same
+size as the noise between a 10-token call and a 1-token call of the same text, 0.13 at shallow depth).
+
 ## What is in the repo
 
 - `pkg/modelschema/dense_gguf.go` - `ReadDensePlan(path)` reads a `qwen35` or `gemma4` GGUF and returns the

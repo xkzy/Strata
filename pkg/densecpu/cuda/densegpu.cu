@@ -3,6 +3,7 @@
 // Build: see build.sh. No peer access, no unified memory: weights are copied once, activations per call.
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#include <algorithm>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -685,14 +686,18 @@ __global__ void __launch_bounds__(256) qk_prep_k(const float* qf, const float* K
 
 // causal attention, one block per (token, query head), hd == 256: a warp walks every 8th position with an online softmax,
 // then the 8 partial results are merged; the output is multiplied by sigmoid(gate)
-__global__ void __launch_bounds__(256) attn_k(const float* Q, const float* qf, const __half* Kc, const __half* Vc, float* ctx, int n_head, int n_kv, int pos0) {
+// splits > 1: blockIdx.z takes a slice of the positions and writes its unnormalized result (max, sum, values) to pm/pl/po for
+// attn_combine_k; splits == 1 finishes the head here.
+__global__ void __launch_bounds__(256) attn_k(const float* Q, const float* qf, const __half* Kc, const __half* Vc, float* ctx, int n_head, int n_kv, int pos0,
+                                             int splits, float* pm, float* pl, float* po) {
     const int t = blockIdx.x, h = blockIdx.y, tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
     const int kvh = h / (n_head / n_kv), last = pos0 + t, row = n_kv * 256;
     float q[8];
     for (int e = 0; e < 8; e++) q[e] = Q[((size_t) t * n_head + h) * 256 + lane * 8 + e];
     const float scale = rsqrtf(256.f);
     float m = -INFINITY, l = 0.f, o[8] = {};
-    for (int j = warp; j <= last; j += 8) {
+    const int per = (last + 1 + splits - 1) / splits, jlo = blockIdx.z * per, jhi = min(last + 1, jlo + per);
+    for (int j = jlo + warp; j < jhi; j += 8) {
         const uint4 kv = *(const uint4*) (Kc + (size_t) j * row + kvh * 256 + lane * 8);
         const __half2* kh = (const __half2*) &kv;
         float s = 0.f;
@@ -725,11 +730,33 @@ __global__ void __launch_bounds__(256) attn_k(const float* Q, const float* qf, c
         L += wl[w] * c;
         acc += wo[w][tid] * c;
     }
+    if (splits > 1) {
+        const size_t slot = ((size_t) t * n_head + h) * splits + blockIdx.z;
+        if (tid == 0) pm[slot] = M, pl[slot] = L;
+        po[slot * 256 + tid] = acc;
+        return;
+    }
     ctx[((size_t) t * n_head + h) * 256 + tid] = acc / L * sigm(qf[((size_t) t * n_head + h) * 512 + 256 + tid]);
 }
 
+__global__ void __launch_bounds__(256) attn_combine_k(const float* pm, const float* pl, const float* po, const float* qf, float* ctx, int n_head, int splits) {
+    const int t = blockIdx.x, h = blockIdx.y, tid = threadIdx.x;
+    const size_t base = ((size_t) t * n_head + h) * splits;
+    float M = -INFINITY;
+    for (int s = 0; s < splits; s++) M = fmaxf(M, pm[base + s]);
+    float L = 0.f, acc = 0.f;
+    for (int s = 0; s < splits; s++) {
+        const float c = pm[base + s] == -INFINITY ? 0.f : __expf(pm[base + s] - M);
+        L += pl[base + s] * c;
+        acc += po[(base + s) * 256 + tid] * c;
+    }
+    ctx[((size_t) t * n_head + h) * 256 + tid] = acc / L * sigm(qf[((size_t) t * n_head + h) * 512 + 256 + tid]);
+}
+
+enum { kMaxSplitTokens = 8, kMaxSplits = 32 };
+
 struct QBuf {
-    float *h = nullptr, *xn, *ext, *z, *beta, *alpha, *conv, *o, *y, *g, *u, *qf, *Q, *Kb, *Vb;
+    float *h = nullptr, *xn, *ext, *pm, *pl, *po, *z, *beta, *alpha, *conv, *o, *y, *g, *u, *qf, *Q, *Kb, *Vb;
     size_t cap = 0;  // tokens
 };
 static QBuf g_qb[16];
@@ -740,7 +767,8 @@ static bool qalloc(QBuf& b, int n, const dg_cfg& c) {
     const size_t E = c.n_embd, ch = 2 * (size_t) c.nk * c.hk + c.d_inner, nq = (size_t) c.n_head * c.hd, nkv = (size_t) c.n_kv * c.hd;
     const size_t per = 3 * E + (ch + 3 * ch) + 2 * c.d_inner + 2 * (size_t) c.nv + E + 2 * (size_t) c.n_ff + 2 * nq + nq + 2 * nkv;
     float* p = nullptr;
-    if (cudaMalloc(&p, (per * n + 3 * ch) * sizeof(float)) != cudaSuccess) return false;
+    const size_t part = (size_t) kMaxSplitTokens * c.n_head * kMaxSplits;   // slots of the split attention
+    if (cudaMalloc(&p, (per * n + 3 * ch + part * 258) * sizeof(float)) != cudaSuccess) return false;
     size_t off = 0;
     auto take = [&](size_t cnt) { float* r = p + off; off += cnt; return r; };
     b.h = take((size_t) n * E);
@@ -758,6 +786,9 @@ static bool qalloc(QBuf& b, int n, const dg_cfg& c) {
     b.Q = take((size_t) n * nq);
     b.Kb = take((size_t) n * nkv);
     b.Vb = take((size_t) n * nkv);
+    b.pm = take(part);
+    b.pl = take(part);
+    b.po = take(part * 256);
     b.cap = n;
     return true;
 }
@@ -858,7 +889,10 @@ extern "C" int dg_qwen_run(int dev, const dg_cfg* c, const dg_layer* L, int nl, 
             prof_mark(4);
             qk_prep_k<<<dim3(n, c->n_head + c->n_kv), 256>>>(b.qf, b.Kb, b.Vb, b.Q, (__half*) l.Kc, (__half*) l.Vc, l.f[0], l.f[1], c->n_head, c->n_kv, c->hd,
                                                               c->n_rot, c->eps, c->base, pos0);
-            attn_k<<<dim3(n, c->n_head), 256>>>(b.Q, b.qf, (const __half*) l.Kc, (const __half*) l.Vc, b.o, c->n_head, c->n_kv, pos0);
+            // a few tokens on a long context: split the positions over blocks, then combine
+            const int splits = n <= kMaxSplitTokens && !getenv("DG_NOSPLIT") ? std::max(1, std::min((int) kMaxSplits, (pos0 + n) / 256)) : 1;
+            attn_k<<<dim3(n, c->n_head, splits), 256>>>(b.Q, b.qf, (const __half*) l.Kc, (const __half*) l.Vc, b.o, c->n_head, c->n_kv, pos0, splits, b.pm, b.pl, b.po);
+            if (splits > 1) attn_combine_k<<<dim3(n, c->n_head), 256>>>(b.pm, b.pl, b.po, b.qf, b.o, c->n_head, splits);
             prof_mark(5);
             if ((rc = mm(*o, b.o, b.y))) return rc;
             prof_mark(6);

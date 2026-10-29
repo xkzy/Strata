@@ -249,3 +249,6 @@ func (g *QwenGPU) Step(tokens []int) []float32 {
 
 // ProfDump prints (stderr) and clears the per-section GPU times collected when DG_PROF is set.
 func ProfDump() { C.dg_prof_dump() }
+
+// DeviceBandwidth is the device-to-device copy rate in GB/s (a copy reads and writes, so the figure is read+write traffic).
+func DeviceBandwidth(dev int) float64 { return float64(C.dg_bandwidth(C.int(dev))) }
