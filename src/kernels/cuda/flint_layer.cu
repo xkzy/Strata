@@ -547,6 +547,11 @@ void flint_layer_forward(const FlintLayer& L, FlintKV& kv, int pos0, const float
     // y = W x for ncols fp32 columns of length W.n_in at x (column c at x + c*n_in)
     auto matmul = [&](const FlintMat& W, const float* x, float* y, int ncols) {
         if (W.type == 14) {
+            if (ncols >= 16) {
+                void* xq = m.get<char>((size_t) ncols * W.n_in / 32 * Q8_1_BLOCK);
+                quantize_q8_1_rows(x, ncols, W.n_in, xq, stream);
+                if (iq_mmq_q6k(W.w, xq, y, W.n_in, W.n_out, ncols, stream)) return;
+            }
             q6k_matvec_kernel<<<(W.n_out + 127) / 128, 128, 0, s>>>((const uint8_t*) W.w, iq_row_bytes_q6k(W.n_in), x, y, W.n_in, W.n_out, ncols);
             return;
         }
