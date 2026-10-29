@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"strconv"
+	"sync"
 	"unsafe"
 )
 
@@ -237,28 +238,80 @@ func (g *QwenGPU) embed(tk int) []float32 {
 
 // forward runs the tokens through all layers and returns their hidden states before the final norm (one row each).
 // snap saves the delta-net state after the first token (see rollback); it is only meant for calls of a few tokens.
+// Several chunks are pipelined over the cards: while the last card works on chunk k the first one already runs chunk k+1
+// (a layer only needs the earlier chunks of its own layer, which its card finished).
 func (g *QwenGPU) forward(tokens []int, snap bool) [][]float32 {
 	ec := int(g.cfg.n_embd)
-	var rows [][]float32
+	type job struct {
+		h      []float32
+		n, pos int
+	}
+	var jobs []job
 	for lo := 0; lo < len(tokens); lo += g.chunk {
 		hi := min(lo+g.chunk, len(tokens))
-		n := hi - lo
-		h := make([]float32, n*ec)
+		h := make([]float32, (hi-lo)*ec)
 		for i, tk := range tokens[lo:hi] {
 			copy(h[i*ec:], g.embed(tk))
 		}
-		sn := C.int(0)
-		if snap {
-			sn = 1
+		jobs = append(jobs, job{h, hi - lo, g.pos + lo})
+	}
+	sn := C.int(0)
+	if snap {
+		sn = 1
+	}
+	run := func(s qseg, j job) {
+		if rc := C.dg_qwen_run(C.int(s.dev), &g.cfg, s.layers, C.int(s.n), (*C.float)(unsafe.Pointer(&j.h[0])), C.int(j.n), C.int(j.pos), sn); rc != 0 {
+			panic(fmt.Sprintf("densecpu: dg_qwen_run on device %d failed with code %d", s.dev, rc))
 		}
-		for _, s := range g.segs {
-			if rc := C.dg_qwen_run(C.int(s.dev), &g.cfg, s.layers, C.int(s.n), (*C.float)(unsafe.Pointer(&h[0])), C.int(n), C.int(g.pos), sn); rc != 0 {
-				panic(fmt.Sprintf("densecpu: dg_qwen_run on device %d failed with code %d", s.dev, rc))
+	}
+	if len(jobs) == 1 || len(g.segs) == 1 {
+		for _, j := range jobs {
+			for _, s := range g.segs {
+				run(s, j)
 			}
 		}
-		g.pos += n
-		for i := 0; i < n; i++ {
-			rows = append(rows, h[i*ec:(i+1)*ec])
+	} else {
+		in := make(chan job, len(jobs))
+		cur := in
+		var wg sync.WaitGroup
+		var failure any
+		var mu sync.Mutex
+		for _, s := range g.segs {
+			next := make(chan job, len(jobs))
+			wg.Add(1)
+			go func(s qseg, from <-chan job, to chan<- job) {
+				defer wg.Done()
+				defer close(to)
+				defer func() {
+					if r := recover(); r != nil {
+						mu.Lock()
+						failure = r
+						mu.Unlock()
+						for range from { // drain so the stages before this one finish
+						}
+					}
+				}()
+				for j := range from {
+					run(s, j)
+					to <- j
+				}
+			}(s, cur, next)
+			cur = next
+		}
+		for _, j := range jobs {
+			in <- j
+		}
+		close(in)
+		wg.Wait()
+		if failure != nil {
+			panic(failure)
+		}
+	}
+	g.pos += len(tokens)
+	var rows [][]float32
+	for _, j := range jobs {
+		for i := 0; i < j.n; i++ {
+			rows = append(rows, j.h[i*ec:(i+1)*ec])
 		}
 	}
 	return rows

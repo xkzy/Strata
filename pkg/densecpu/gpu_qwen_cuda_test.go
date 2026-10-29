@@ -5,6 +5,7 @@ package densecpu
 import (
 	"math"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -270,4 +271,37 @@ func depths() []int {
 		return []int{8192}
 	}
 	return []int{1024, 4096, 8192, 15000}
+}
+
+// three chunks in one call (pipelined over the cards) against three calls of one chunk each: the same arithmetic, so identical logits
+func TestQwenPipelineEqual(t *testing.T) {
+	m, err := OpenQwen(modelPath(t, "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q4_K_M.gguf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	g, err := m.EnableResident(4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	text := ""
+	for i := 0; len(m.GreedyEncode(text)) < 1300; i++ {
+		text += "Chapter " + strconv.Itoa(i) + " begins with the harbor at dawn, and the boats leave one after another. "
+	}
+	seq := m.GreedyEncode(text)[:1300]
+	g.Reset()
+	piped := g.Step(seq)
+	g.Reset()
+	g.Step(seq[:512])
+	g.Step(seq[512:1024])
+	plain := g.Step(seq[1024:])
+	var md float64
+	for i := range piped {
+		md = math.Max(md, math.Abs(float64(piped[i]-plain[i])))
+	}
+	t.Logf("pipelined vs sequential chunks: max |logit diff| %.6f", md)
+	if md != 0 {
+		t.Fatal("pipelined result differs")
+	}
 }
