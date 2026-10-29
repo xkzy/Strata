@@ -366,10 +366,14 @@ __global__ void __launch_bounds__(128) mma_q(const uint8_t* __restrict__ w, size
             const float dd[2] = {h2f(q0), h2f(q1)}, dm[2] = {h2f(q0 + 2), h2f(q1 + 2)};
             for (int j = 0; j < 8; ++j) {
                 const int p = j >> 1, sh = 4 * (j & 1);
+                // the k order inside an mma is free as long as weights and activations agree: this thread takes k = 8 * t4 .. 8 * t4 + 7
+                // (two words, one 64-bit load) for both, instead of 4 * t4 .. +3 and 16 + 4 * t4 .. +3
                 int a[4];
-                for (int h = 0; h < 2; ++h)
-                    for (int r = 0; r < 2; ++r)
-                        a[2 * h + r] = (*(const int*) ((r ? q1 : q0) + 16 + 32 * p + 4 * t4 + 16 * h) >> sh) & 0x0F0F0F0F;
+                for (int r = 0; r < 2; ++r) {
+                    const uint2 wv = *(const uint2*) ((r ? q1 : q0) + 16 + 32 * p + 8 * t4);
+                    a[r] = (wv.x >> sh) & 0x0F0F0F0F;
+                    a[2 + r] = (wv.y >> sh) & 0x0F0F0F0F;
+                }
                 float sc[2], mn[2];
                 for (int r = 0; r < 2; ++r) {
                     const uint8_t* S = (r ? q1 : q0) + 4;
@@ -380,7 +384,8 @@ __global__ void __launch_bounds__(128) mma_q(const uint8_t* __restrict__ w, size
                 }
                 const int kb = sb * 8 + j;
                 for (int c = 0; c < NT; ++c) {
-                    const int b0 = *(const int*) (xb[c] + kb * 32 + 4 * t4), b1 = *(const int*) (xb[c] + kb * 32 + 16 + 4 * t4);
+                    const uint2 bb = *(const uint2*) (xb[c] + kb * 32 + 8 * t4);
+                    const int b0 = (int) bb.x, b1 = (int) bb.y;
                     int cc[4] = {0, 0, 0, 0}, cs[4] = {0, 0, 0, 0};
                     mma_s8_k32(cc, a, b0, b1);
                     const int ones[4] = {0x01010101, 0x01010101, 0x01010101, 0x01010101};

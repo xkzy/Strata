@@ -111,13 +111,14 @@ func TestQwenDecodeDepth(t *testing.T) {
 	for i := range filler {
 		filler[i] = 760 + i%50
 	}
-	for _, depth := range []int{1024, 4096, 8192, 15000} {
+	for _, depth := range depths() {
 		g.Reset()
 		t0 := time.Now()
 		for g.pos < depth {
 			g.Step(filler[:min(1024, depth-g.pos)])
 		}
 		pf := time.Since(t0).Seconds()
+		ProfDump()
 		g.Step([]int{760})
 		t0 = time.Now()
 		for i := 0; i < 8; i++ {
@@ -262,4 +263,11 @@ func TestQwenSpecDecode(t *testing.T) {
 		}
 		t.Logf("%.30q: plain %.1f tok/s, spec %.1f tok/s; accepted %d of %d drafts; first %d of %d tokens identical", pr, float64(N)/tp.Seconds(), float64(N)/ts.Seconds(), st.Accepted, st.Cycles, same, N)
 	}
+}
+
+func depths() []int {
+	if os.Getenv("DG_PROF") != "" {
+		return []int{8192}
+	}
+	return []int{1024, 4096, 8192, 15000}
 }
