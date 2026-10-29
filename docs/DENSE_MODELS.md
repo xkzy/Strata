@@ -92,7 +92,7 @@ RTX 4060, `TestQwenResident`:
 
 | | before (Go around GPU matmuls) | resident, dp4a matmuls | resident, int8 tensor-core matmuls (16+ tokens) |
 |---|---|---|---|
-| decode, 1 token | 167 ms | 110 ms | 107-112 ms (unchanged: 1 column) |
+| decode, 1 token | 167 ms | 110 ms | 107-112 ms (unchanged: 1 column); **62 ms (16 tok/s)** once single tokens also use the int8 `dp4a` kernels instead of the float ones (same 16 greedy tokens) |
 | prefill, 512 tokens | 23.8 s (21 tok/s) | 8.5 s (60 tok/s) | **2.74 s (187 tok/s)** |
 
 Checked against the Go CPU path: top token and logits of a 6-token prompt (`Paris`, 16.357 vs 16.329, max difference 0.11) and a 23-token prompt

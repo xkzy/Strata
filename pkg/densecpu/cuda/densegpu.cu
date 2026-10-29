@@ -466,12 +466,12 @@ extern "C" void dg_free(int dev, void* p) {
     if (p && cudaSetDevice(dev) == cudaSuccess) cudaFree(p);
 }
 
-// y = W x for n device-resident fp32 inputs (x, y on dev); the int8 dp4a path for n >= 4, the exact float kernels below
-static int mm_dev(int dev, int type, const void* w, size_t row_bytes, int rows, int cols, int n, const float* x, float* y) {
+// y = W x for n device-resident fp32 inputs (x, y on dev); the int8 dp4a path for n >= min_q, the exact float kernels below
+static int mm_dev(int dev, int type, const void* w, size_t row_bytes, int rows, int cols, int n, const float* x, float* y, int min_q = 4) {
     Scratch& s = g_scratch[dev];
     const dim3 grid(rows, (n + NB - 1) / NB), block(128);
     const uint8_t* wp = (const uint8_t*) w;
-    if (n >= 4 && cols % 256 == 0 && (type == T_Q4_K || type == T_Q5_K || type == T_Q6_K || type == T_Q8_0)) {
+    if (n >= min_q && cols % 256 == 0 && (type == T_Q4_K || type == T_Q5_K || type == T_Q6_K || type == T_Q8_0)) {
         const size_t qb = (size_t) n * cols, db = (size_t) n * (cols / 32) * sizeof(float);
         if (qb + db > s.qcap) {
             cudaFree(s.xq);
@@ -828,7 +828,7 @@ extern "C" int dg_qwen_run(int dev, const dg_cfg* c, const dg_layer* L, int nl, 
     const int E = c->n_embd, ch = 2 * c->nk * c->hk + c->d_inner;
     QCHK(cudaMemcpy(b.h, h, (size_t) n * E * sizeof(float), cudaMemcpyHostToDevice));
     auto mm = [&](const dg_mat& m, const float* x, float* y) {
-        return mm_dev(dev, m.type, m.w, m.rb, m.rows, m.cols, n, x, y);
+        return mm_dev(dev, m.type, m.w, m.rb, m.rows, m.cols, n, x, y, 1);
     };
     auto blocks = [](size_t cnt) { return (unsigned) ((cnt + 255) / 256); };
     for (int li = 0; li < nl; li++) {
