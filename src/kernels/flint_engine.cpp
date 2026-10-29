@@ -1,6 +1,6 @@
 // src/kernels/flint_engine.cpp - the flint model as an engine process for `strata serve` (config: strata-flint.json).
 //
-//     flint_engine --native <flint.gguf> [--max-context N] [--chunk N]
+//     flint_engine --native <flint.gguf> [--max-context N (0 = the model's limit, or what RAM holds)] [--chunk N] [--kv-fp32] [--kv-device-gib G]
 //
 // Speaks the same stdin/stdout line protocol as cmd/densengine (GEN / STOP / QUIT in; INFO, READY, PP, REUSED, T, DONE,
 // ERR out), so the server's tokenizer, chat template and API layers need nothing engine-specific. One request at a time.
@@ -14,6 +14,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <deque>
+#include <filesystem>
 #include <iostream>
 #include <mutex>
 #include <random>
@@ -27,8 +28,16 @@ using namespace flint_loader;
 
 namespace {
 
-// the attention scores of one query live in shared memory, which bounds a full layer's span
-constexpr int MAX_CONTEXT = 24000;
+// Free RAM in bytes (MemAvailable counts the page cache, which the kernel gives back).
+size_t mem_available() {
+    std::FILE* f = std::fopen("/proc/meminfo", "r");
+    char line[256];
+    size_t kb = 0;
+    while (f && std::fgets(line, sizeof line, f))
+        if (std::sscanf(line, "MemAvailable: %zu kB", &kb) == 1) break;
+    if (f) std::fclose(f);
+    return kb * 1024;
+}
 
 struct Sampling {
     double temp = 0, top_p = 1, min_p = 0, rep = 1, freq = 0, pres = 0;
@@ -125,6 +134,8 @@ void die(const char* what, cudaError_t e) {
 int main(int argc, char** argv) {
     std::string model;
     int ctx = 8192, chunk = 256;
+    double kv_dev_gib = 1.5;  // device memory for the first positions of the full-attention layers; the rest of the context sits in host RAM
+    bool kv_fp32 = false;     // full layers keep fp32 K/V instead of fp16
     double margin_gib = 1.0;  // left free after the expert pool: per-call temporaries
     for (int i = 1; i < argc; ++i) {  // the server adds flags of its own; the ones not named here are skipped
         const std::string a = argv[i];
@@ -132,13 +143,11 @@ int main(int argc, char** argv) {
         if (a == "--native" && val) model = argv[++i];
         else if (a == "--max-context" && val) ctx = std::atoi(argv[++i]);
         else if (a == "--chunk" && val) chunk = std::atoi(argv[++i]);
+        else if (a == "--kv-fp32") kv_fp32 = true;
+        else if (a == "--kv-device-gib" && val) kv_dev_gib = std::atof(argv[++i]);
         else if (a == "--margin-gib" && val) margin_gib = std::atof(argv[++i]);
     }
     if (model.empty()) { std::fprintf(stderr, "flint_engine: --native <model.gguf> is required\n"); return 2; }
-    if (ctx > MAX_CONTEXT) {
-        std::fprintf(stderr, "flint_engine: context %d clamped to %d\n", ctx, MAX_CONTEXT);
-        ctx = MAX_CONTEXT;
-    }
     int ndev = 0;
     if (cudaGetDeviceCount(&ndev) != cudaSuccess || ndev == 0) { say("ERR no CUDA device"); return 1; }
     int dev = 0;  // the card with the most memory
@@ -158,15 +167,42 @@ int main(int argc, char** argv) {
     const int KD = (int) num(g, "flint.attention.head_count_kv") * (int) num(g, "flint.attention.key_length");
     const float eps = (float) num(g, "flint.attention.layer_norm_rms_epsilon");
 
-    // the context-sized buffers go first, so the loader sees what is left
+    // The context-sized buffers go first, so the loader sees what is left. A sliding-window layer keeps a ring of window + chunk
+    // rows. A full layer keeps its first positions on the card (kv_dev_gib across those layers) and the rest in pinned host RAM,
+    // which the attention kernel reads over the bus; --max-context 0 (or past the model's limit) means as much as RAM holds.
+    const MetaValue* pat = g.get("flint.attention.sliding_window_pattern");
+    int n_full = 0;
+    for (int l = 0; l < n_layer; ++l) n_full += !(pat && (size_t) l < pat->items.size() && pat->items[l].u != 0);
+    const size_t row = (size_t) KD * (kv_fp32 ? 4 : 2) * 2;  // K and V of one full layer's position
+    const int model_ctx = (int) num(g, "flint.context_length");
+    if (ctx <= 0 || ctx > model_ctx) ctx = model_ctx;
+    const size_t ram_free = mem_available(), file_bytes = std::filesystem::file_size(model);
+    const size_t ram_kv = ram_free > file_bytes + (4ull << 30) ? ram_free - file_bytes - (4ull << 30) : 0;  // the experts are pinned too
+    const int ram_ctx = (int) std::min<size_t>(ram_kv / (row * n_full), (size_t) model_ctx);
+    if (ctx > ram_ctx) {
+        std::fprintf(stderr, "flint_engine: context %d lowered to %d: the rest of the KV cache would not fit in RAM\n", ctx, ram_ctx);
+        ctx = ram_ctx;
+    }
+    const int dev_cap = (int) std::min<size_t>(ctx, (size_t) (kv_dev_gib * (1ull << 30)) / (row * n_full));
     std::vector<FlintKV> kv(n_layer);
-    for (FlintKV& c : kv) {
-        c.cap = ctx;
-        if (cudaMalloc(&c.k, (size_t) ctx * KD * 4) != cudaSuccess || cudaMalloc(&c.v, (size_t) ctx * KD * 4) != cudaSuccess) {
-            say("ERR the %d-token KV cache does not fit on %s; lower --max-context", ctx, prop.name);
+    for (int l = 0; l < n_layer; ++l) {
+        FlintKV& c = kv[l];
+        const bool local = pat && (size_t) l < pat->items.size() && pat->items[l].u != 0;
+        c.cap = local ? std::min(ctx, window + chunk) : dev_cap;
+        c.host_cap = local ? 0 : ctx - dev_cap;
+        c.half = !local && !kv_fp32;
+        const size_t esz = c.half ? 2 : 4, db = (size_t) c.cap * KD * esz, hb = (size_t) c.host_cap * KD * esz;
+        if (cudaMalloc(&c.k, db) != cudaSuccess || cudaMalloc(&c.v, db) != cudaSuccess) {
+            say("ERR the KV cache does not fit on %s; lower --kv-device-gib", prop.name);
+            return 1;
+        }
+        if (hb && (cudaHostAlloc(&c.hk, hb, cudaHostAllocMapped) != cudaSuccess || cudaHostAlloc(&c.hv, hb, cudaHostAllocMapped) != cudaSuccess)) {
+            say("ERR %.1f GiB of pinned host memory for the KV cache is not available; lower --max-context", n_full * 2.0 * hb / 1073741824.0);
             return 1;
         }
     }
+    std::fprintf(stderr, "flint_engine: context %d: %d full layers keep %d positions on the card (%.2f GiB) and %d in host RAM (%.2f GiB)\n", ctx,
+                 n_full, dev_cap, n_full * (double) dev_cap * row / 1073741824.0, ctx - dev_cap, n_full * (double) (ctx - dev_cap) * row / 1073741824.0);
     Loader ld(g);
     ld.cache_mode = true;
     const auto t0 = std::chrono::steady_clock::now();

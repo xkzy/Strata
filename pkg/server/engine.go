@@ -36,6 +36,7 @@ type engineSpec struct {
 	Tokenizer string            `json:"tokenizer"`
 	ModelName string            `json:"model_name"`
 	Env       map[string]string `json:"env"`
+	PromptCap int               `json:"prompt_cap"` // longest prompt in tokens; older turns are dropped past it (0 = the context)
 }
 
 func readEngineSpec(path string) (*engineSpec, error) {
@@ -324,7 +325,8 @@ func (s *StrataServer) StartEngine(ctx context.Context) error {
 				tokDir = filepath.Join(pack, "tokenizer")
 			}
 		}
-		if spec.ModelName != "" && s.Config.ModelName == "Qwen3.8-Flash-Next" {
+		s.Config.PromptCap = spec.PromptCap
+		if spec.ModelName != "" { // the config that is running names the model, not the name saved by the last run
 			s.Config.ModelName = spec.ModelName
 		}
 	case s.Config.ModelPath != "":

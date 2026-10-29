@@ -62,6 +62,9 @@ func (s *StrataServer) setupRuntime(vocab int) {
 	if window > s.Config.MaxContext {
 		window = s.Config.MaxContext
 	}
+	if c := s.Config.PromptCap; c > 0 && window > c { // a slow model gets a shorter prompt (the engine config's prompt_cap)
+		window = c
+	}
 	s.eng.mu.RLock()
 	tmpl := s.eng.templateSHA
 	s.eng.mu.RUnlock()

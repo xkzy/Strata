@@ -54,15 +54,22 @@ struct FlintLayer {
     FlintMat sh_gate, sh_up, sh_down;
 };
 
-/// The block's cache: rows of n_kv * head_dim floats, one per position, for up to `cap` positions (device).
+/// The block's cache: rows of n_kv * head_dim floats, one per position.
+/// Full layer: positions 0..cap-1 are rows of k/v (device), positions cap..cap+host_cap-1 are rows of hk/hv (pinned host
+/// memory the kernels read and write over the bus); the position limit is cap + host_cap.
+/// With half set the rows are fp16 (k/v/hk/hv point at __half data): a full layer's cache is most of the memory and of the bus
+/// traffic, and fp16 halves both; a ring is small and stays fp32.
+/// Local (sliding-window) layer: a ring of cap rows, position p at row p % cap; cap >= window + the most rows one call adds.
 struct FlintKV {
     float *k = nullptr, *v = nullptr;
     int cap = 0;
+    float *hk = nullptr, *hv = nullptr;
+    int host_cap = 0;
+    bool half = false;
 };
 
 /// h_out = block(h_in) for n_tok rows of n_embd floats (device pointers, may not alias) at positions pos0 ..
-/// pos0+n_tok-1; the cache must already hold positions 0..pos0-1 and gets the new rows. pos0 + n_tok <= kv.cap, and the
-/// attention span (the window, or the whole context for a full layer) must fit the kernel's shared memory.
+/// pos0+n_tok-1; the cache must already hold positions 0..pos0-1 and gets the new rows. pos0 + n_tok <= cap + host_cap for a full layer.
 void flint_layer_forward(const FlintLayer& L, FlintKV& kv, int pos0, const float* h_in, float* h_out, int n_tok, void* stream);
 
 /// logits = head(rmsnorm(h_last) * norm_w) for one row of head.n_in floats; logits has head.n_out floats.

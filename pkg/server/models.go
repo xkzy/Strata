@@ -67,6 +67,9 @@ func (s *StrataServer) pinModel(ctx context.Context, requested string) (func(), 
 				modelMu.Unlock()
 				return nil, &apiError{Status: 503, Type: "engine_unavailable", Msg: "the model did not load: " + err.Error()}
 			}
+			if n := s.EngineIPC.MaxContext(); n > 0 {
+				s.Config.MaxContext = n
+			}
 		}
 		modelMu.Unlock()
 	}
@@ -101,7 +104,7 @@ func autoFailed(err error, evs []genEvent) string {
 }
 
 // startChat runs a request. Model "auto" answers on the first model in autoModels that has a config and goes on to the
-// next when the reply failed; a streamed reply is already on its way to the client, so it stays on the first model.
+// next when the reply failed; a streamed reply is already on its way to the client, so it stays on the first model. After an escalation the first model is loaded again.
 func (s *StrataServer) startChat(ctx context.Context, spec genSpec) (<-chan genEvent, int, error) {
 	if !strings.EqualFold(strings.TrimSpace(spec.Model), "auto") {
 		return s.startChatOne(ctx, spec)
@@ -137,6 +140,13 @@ func (s *StrataServer) startChat(ctx context.Context, spec genSpec) (<-chan genE
 		}
 		if err != nil {
 			return nil, 0, err
+		}
+		if i > 0 { // the fast model answers first next time: go back to it now rather than on the next request
+			go func() {
+				if unpin, err := s.pinModel(context.WithoutCancel(ctx), chain[0]); err == nil {
+					unpin()
+				}
+			}()
 		}
 		out := make(chan genEvent, len(evs))
 		for _, ev := range evs {

@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -48,11 +49,20 @@ int main(int argc, char** argv) {
 
         Loader ld(g);
         FlintLayer L = load_layer(ld, l, window);
+        // FLINT_PARITY_SPLIT=1 runs the tiers: a full layer keeps half its positions in pinned host memory, a local one a ring
         FlintKV kv;
+        const bool split = std::getenv("FLINT_PARITY_SPLIT") != nullptr;
+        int maxn = 0;
+        for (const Step& st : seq) maxn = std::max(maxn, st.n);
         kv.cap = total;
-        const size_t kvb = (size_t) total * L.n_kv * L.head_dim * 4;
+        if (split && L.local) kv.cap = std::min(total, window + maxn);
+        else if (split) kv.cap = (total + 1) / 2, kv.host_cap = total - kv.cap;
+        kv.half = std::getenv("FLINT_PARITY_HALF") && !L.local;
+        const size_t esz = kv.half ? 2 : 4;
+        const size_t kvb = (size_t) kv.cap * L.n_kv * L.head_dim * esz, hkb = (size_t) kv.host_cap * L.n_kv * L.head_dim * esz;
         cudaMalloc(&kv.k, kvb);
         cudaMalloc(&kv.v, kvb);
+        if (hkb) cudaHostAlloc(&kv.hk, hkb, cudaHostAllocMapped), cudaHostAlloc(&kv.hv, hkb, cudaHostAllocMapped);
         float *din = nullptr, *dout = nullptr;
         cudaMalloc(&din, (size_t) total * E * 4);
         cudaMalloc(&dout, (size_t) total * E * 4);
@@ -82,6 +92,7 @@ int main(int argc, char** argv) {
         }
         cudaFree(kv.k);
         cudaFree(kv.v);
+        if (kv.hk) cudaFreeHost(kv.hk), cudaFreeHost(kv.hv);
         cudaFree(din);
         cudaFree(dout);
         const bool ok = worst < 0.05;

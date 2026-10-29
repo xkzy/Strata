@@ -14,7 +14,7 @@ the server unpacks the GGUF's tokenizer and chat template into `<gguf>.tokenizer
 On an RTX 5060 Ti (16 GB) with `--max-context 8192` (fp32 KV cache, 1.6 GB):
 
 - load: 4 s with a warm file cache, 38 s cold; all 21.5 GiB of experts in pinned host memory, plus a 10.4 GiB pool of expert slots on the card (4390 of 12032 experts)
-- decode: about 32 ms per token (31 tok/s) over four 300-token replies; 52 ms before the top-k kernel was parallelised, 41 ms before the expert pool. The pool is filled by use: an expert a layer routes to that is not in the pool is copied into the least-used slot, so the hot experts of every layer stay. Hit rate in those replies: 57% (an fp16 KV cache gave 4711 slots and the same decode time, and flipped the top token at parity step 2, so the cache is fp32)
+- decode: about 32 ms per token (31 tok/s) over four 300-token replies; 52 ms before the top-k kernel was parallelised, 41 ms before the expert pool. The pool is filled by use: an expert a layer routes to that is not in the pool is copied into the least-used slot, so the hot experts of every layer stay. Hit rate in those replies: 57% (an fp16 KV cache gave 4711 slots and the same decode time)
 - prefill: about 100 tok/s (3298-token prompt answered in 31 s with 60 new tokens; 2 minutes when every token ran its experts alone); the same prompt again reuses the cached prefix (3.7 s for 60 new tokens)
 - answers: the capital of France, and the value of item 77 in a 3298-token list, both correct
 
@@ -23,7 +23,13 @@ by what q8_1 rounding of the activations alone does to the reference (`src/kerne
 
 ## Limits
 
-- Context is capped at 24000 tokens (attention scores sit in shared memory) and 8192 in the shipped config (fp32 KV, 200 KB per token).
+- Context: the shipped config says `--max-context 0`, which is the model's limit (262144) or what RAM holds, whichever is less.
+  Of the 49 layers 35 slide a 513-token window and keep a ring of window + chunk positions; the other 14 keep K/V in fp16
+  (`--kv-fp32` for fp32): the first positions on the card (`--kv-device-gib`, default 1.5 GiB = 56172 positions) and the rest
+  in pinned host RAM, which the attention kernel reads over the bus. Attention is split over positions (flash-decoding), so
+  the span is not bound by shared memory. At 262144 positions the K/V cache is 7 GiB (14 GiB in fp32). fp16 vs fp32 K/V:
+  `flint_model_parity` passes 9/9 with TV 0.056 0.002 0.359 0.005 0.051 0.000 0.008 0.006 0.050 (fp32: 0.090 0.001 0.343
+  0.005 0.004 0.000 0.010 0.004 0.022; that run's TV floor from q8_1 alone is in the harness header).
 - Decode time is now the misses: about 120 experts (300 MB) copied over PCIe per token. A larger pool or a
   stored expert profile to warm it would raise the hit rate.
 - The pre-tokenizer pattern (digits in groups of three, letters only) is the GLM4 one, not read from the file; checked
@@ -39,6 +45,7 @@ switch with it); a name no config knows goes to the loaded model. A swap waits f
 
 Model `"auto"` answers on `flint-preview` first; if the reply failed (an error, nothing in it, or cut off at `max_tokens`) it
 is redone on `qwen3.8-flash-next-coder-iq1_m`, and the dense `qwen3.8-27b-dense` is the last resort. Models without a
-config are skipped. A streamed request stays on the first model, since the client has already seen its start.
+config are skipped. A streamed request stays on the first model, since the client has already seen its start. After an escalated reply
+the server swaps back to `flint-preview` in the background.
 Measured: `flint-preview` to `qwen3.8-27b-dense` and back, 10 s for the first request after the swap to the dense model
 (warm file cache).

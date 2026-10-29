@@ -5,6 +5,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -68,41 +69,116 @@ __global__ void qk_norm_rope_kernel(float* x, const float* w, int heads, int hd,
     }
 }
 
-// Causal attention with a per-head sink: softmax over the scores and the sink logit, the sink holding no value.
-// grid (n_tok, n_head), hd threads, `span` floats of dynamic shared memory (the most positions one query reads).
-// Q holds the new tokens; K and V are the cache, so the query of token t sits at position pos0 + t.
-__global__ void attn_kernel(const float* Q, const float* K, const float* V, const float* sinks, float* out, int n_head,
-                            int n_kv, int hd, int window, bool local, int pos0) {
-    extern __shared__ float sc[];
-    __shared__ float qh[256], red[2];
-    const int tq = blockIdx.x, h = blockIdx.y, kvh = h / (n_head / n_kv);
+// One cache row (n_kv heads of hd floats) of position j: a ring for a local layer, else the device rows then the host rows.
+__device__ __forceinline__ size_t kv_row(int j, int cap, bool local, bool& host) {
+    host = false;
+    if (local) return (size_t) (j % cap);
+    if (j < cap) return (size_t) j;
+    host = true;
+    return (size_t) (j - cap);
+}
+
+// kv[row(pos0 + r)] = src[r] for n rows of KD floats (stored as fp16 when half); grid n, any block size
+__global__ void kv_store_kernel(void* dk, void* dv, void* hk, void* hv, const float* K, const float* V, int KD, int cap, bool local, int pos0, bool half) {
+    bool host;
+    const size_t row = kv_row(pos0 + blockIdx.x, cap, local, host);
+    void* ok = (host ? hk : dk);
+    void* ov = (host ? hv : dv);
+    for (int i = threadIdx.x; i < KD; i += blockDim.x) {
+        const float a = K[(size_t) blockIdx.x * KD + i], b = V[(size_t) blockIdx.x * KD + i];
+        if (half) {
+            ((__half*) ok)[row * KD + i] = __float2half(a);
+            ((__half*) ov)[row * KD + i] = __float2half(b);
+        } else {
+            ((float*) ok)[row * KD + i] = a;
+            ((float*) ov)[row * KD + i] = b;
+        }
+    }
+}
+
+// Causal attention with a per-head sink, split over positions (flash-decoding): block (token, head, split) reads its share of
+// the span and keeps a running softmax (max m, sum l, weighted values o); attn_combine_kernel merges the splits and the sink.
+// grid (n_tok, n_head, splits), hd threads (a multiple of 32, at most 256). Q holds the new tokens, so the query of token t
+// sits at position pos0 + t.
+__global__ void attn_part_kernel(const float* Q, const FlintKV kv, int n_head, int n_kv, int hd, int window, bool local, int pos0,
+                                 int splits, float* pm, float* pl, float* po) {
+    __shared__ float qh[256], sc[256], red[8];
+    const int tq = blockIdx.x, h = blockIdx.y, sp = blockIdx.z, kvh = h / (n_head / n_kv);
     const int t = pos0 + tq;
     const int lo = (local && t - window + 1 > 0) ? t - window + 1 : 0;
-    qh[threadIdx.x] = Q[((size_t) tq * n_head + h) * hd + threadIdx.x];
+    const int per = (t - lo + 1 + splits - 1) / splits;
+    const int a = lo + sp * per, b = min(t + 1, a + per);
+    const size_t slot = ((size_t) tq * n_head + h) * splits + sp;
+    const int d = threadIdx.x, lane = d & 31, warp = d >> 5, nwarp = blockDim.x >> 5;
+    qh[d] = Q[((size_t) tq * n_head + h) * hd + d];
     __syncthreads();
     const float scale = rsqrtf((float) hd);
-    for (int j = lo + threadIdx.x; j <= t; j += blockDim.x) {
-        const float* kj = K + ((size_t) j * n_kv + kvh) * hd;
-        float s = 0;
-        for (int d = 0; d < hd; ++d) s += qh[d] * kj[d];
-        sc[j - lo] = s * scale;
-    }
-    __syncthreads();
-    if (threadIdx.x == 0) {
-        float mx = sinks[h];
-        for (int j = lo; j <= t; ++j) mx = fmaxf(mx, sc[j - lo]);
-        float sum = expf(sinks[h] - mx);
-        for (int j = lo; j <= t; ++j) {
-            sc[j - lo] = expf(sc[j - lo] - mx);
-            sum += sc[j - lo];
+    float m = -INFINITY, l = 0, o = 0;
+    for (int base = a; base < b; base += blockDim.x) {
+        const int j = base + d;
+        float s = -INFINITY;
+        if (j < b) {
+            bool host;
+            const size_t row = kv_row(j, kv.cap, local, host);
+            const size_t off = (row * n_kv + kvh) * hd;
+            float acc = 0;
+            if (kv.half) {
+                const uint4* kj = (const uint4*) ((const __half*) (host ? kv.hk : kv.k) + off);  // 8 halves per load
+                for (int i = 0; i < hd / 8; ++i) {
+                    const uint4 w = kj[i];
+                    const __half2* hh = (const __half2*) &w;
+                    for (int c = 0; c < 4; ++c) {
+                        const float2 f = __half22float2(hh[c]);
+                        acc += qh[8 * i + 2 * c] * f.x + qh[8 * i + 2 * c + 1] * f.y;
+                    }
+                }
+            } else {
+                const float4* kj = (const float4*) ((host ? kv.hk : kv.k) + off);
+                for (int i = 0; i < hd / 4; ++i) {
+                    const float4 kk = kj[i];
+                    acc += qh[4 * i] * kk.x + qh[4 * i + 1] * kk.y + qh[4 * i + 2] * kk.z + qh[4 * i + 3] * kk.w;
+                }
+            }
+            s = acc * scale;
         }
-        red[0] = sum;
+        float tm = s;
+        for (int off = 16; off > 0; off >>= 1) tm = fmaxf(tm, __shfl_xor_sync(0xffffffff, tm, off));
+        if (lane == 0) red[warp] = tm;
+        __syncthreads();
+        tm = red[0];
+        for (int w = 1; w < nwarp; ++w) tm = fmaxf(tm, red[w]);
+        const float mn = fmaxf(m, tm), corr = expf(m - mn);  // m = -inf the first time: corr = 0
+        sc[d] = j < b ? expf(s - mn) : 0.0f;
+        __syncthreads();
+        l *= corr;
+        o *= corr;
+        const int cnt = min((int) blockDim.x, b - base);
+        for (int jj = 0; jj < cnt; ++jj) {
+            bool host;
+            const size_t row = kv_row(base + jj, kv.cap, local, host);
+            const size_t off = (row * n_kv + kvh) * hd + d;
+            o += sc[jj] * (kv.half ? __half2float(((const __half*) (host ? kv.hv : kv.v))[off]) : (host ? kv.hv : kv.v)[off]);
+            l += sc[jj];
+        }
+        m = mn;
+        __syncthreads();
     }
-    __syncthreads();
-    const float inv = 1.0f / red[0];
-    float o = 0;
-    for (int j = lo; j <= t; ++j) o += sc[j - lo] * V[((size_t) j * n_kv + kvh) * hd + threadIdx.x];
-    out[((size_t) tq * n_head + h) * hd + threadIdx.x] = o * inv;
+    if (d == 0) { pm[slot] = m; pl[slot] = l; }
+    po[slot * hd + d] = o;
+}
+
+__global__ void attn_combine_kernel(const float* sinks, const float* pm, const float* pl, const float* po, float* out, int n_head, int hd, int splits) {
+    const int tq = blockIdx.x, h = blockIdx.y, d = threadIdx.x;
+    const size_t slot0 = ((size_t) tq * n_head + h) * splits;
+    float mx = sinks[h];
+    for (int s = 0; s < splits; ++s) mx = fmaxf(mx, pm[slot0 + s]);
+    float den = expf(sinks[h] - mx), num = 0;
+    for (int s = 0; s < splits; ++s) {
+        const float w = expf(pm[slot0 + s] - mx);  // an empty split has m = -inf and weighs nothing
+        den += w * pl[slot0 + s];
+        num += w * po[(slot0 + s) * hd + d];
+    }
+    out[((size_t) tq * n_head + h) * hd + d] = num / den;
 }
 
 __global__ void add_kernel(float* dst, const float* a, const float* b, long long n) {
@@ -259,20 +335,13 @@ __global__ void scatter_axpy_kernel(float* acc, const int* tok, const float* w, 
 void flint_layer_forward(const FlintLayer& L, FlintKV& kv, int pos0, const float* h_in, float* h_out, int n, void* stream) {
     cudaStream_t s = (cudaStream_t) stream;
     const int total = pos0 + n;
-    if (pos0 < 0 || total > kv.cap) {
-        std::fprintf(stderr, "flint_layer: positions %d..%d do not fit a cache of %d\n", pos0, total - 1, kv.cap);
+    if (pos0 < 0 || (L.local ? n + L.window > kv.cap && total > kv.cap : total > kv.cap + kv.host_cap)) {
+        std::fprintf(stderr, "flint_layer: positions %d..%d do not fit a cache of %d (+%d on the host)\n", pos0, total - 1, kv.cap, kv.host_cap);
         std::exit(1);
     }
-    // the most positions one query reads; the scores live in dynamic shared memory (opted in past the 48 KB default)
+    // positions one query reads, split so a long context spreads over many blocks
     const int span = (L.local && L.window < total) ? L.window : total;
-    const size_t attn_shared = (size_t) span * sizeof(float);
-    int max_shared = 0;
-    cudaDeviceGetAttribute(&max_shared, cudaDevAttrMaxSharedMemoryPerBlockOptin, 0);
-    if (attn_shared > (size_t) max_shared - 2048) {
-        std::fprintf(stderr, "flint_layer: attention span %d does not fit shared memory (%d bytes)\n", span, max_shared);
-        std::exit(1);
-    }
-    cudaFuncSetAttribute(attn_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) attn_shared + 2048);
+    const int splits = std::max(1, std::min(64, (span + 511) / 512));
     const int E = L.n_embd, hd = L.head_dim, QD = L.n_head * hd, KD = L.n_kv * hd;
     Scratch m;
     // y = W x for ncols fp32 columns of length W.n_in at x (column c at x + c*n_in)
@@ -294,9 +363,11 @@ void flint_layer_forward(const FlintLayer& L, FlintKV& kv, int pos0, const float
     matmul(L.v, xn, V, n);
     qk_norm_rope_kernel<<<dim3(n, L.n_head), hd, hd * sizeof(float), s>>>(Q, L.q_norm, L.n_head, hd, L.eps, L.local, L.rope_base, pos0);
     qk_norm_rope_kernel<<<dim3(n, L.n_kv), hd, hd * sizeof(float), s>>>(K, L.k_norm, L.n_kv, hd, L.eps, L.local, L.rope_base, pos0);
-    cudaMemcpyAsync(kv.k + (size_t) pos0 * KD, K, (size_t) n * KD * sizeof(float), cudaMemcpyDeviceToDevice, s);
-    cudaMemcpyAsync(kv.v + (size_t) pos0 * KD, V, (size_t) n * KD * sizeof(float), cudaMemcpyDeviceToDevice, s);
-    attn_kernel<<<dim3(n, L.n_head), hd, attn_shared, s>>>(Q, kv.k, kv.v, L.sinks, ctx, L.n_head, L.n_kv, hd, L.window, L.local, pos0);
+    kv_store_kernel<<<n, 256, 0, s>>>(kv.k, kv.v, kv.hk, kv.hv, K, V, KD, kv.cap, L.local, pos0, kv.half);
+    const size_t nslot = (size_t) n * L.n_head * splits;
+    float *pm = m.get<float>(nslot), *pl = m.get<float>(nslot), *po = m.get<float>(nslot * hd);
+    attn_part_kernel<<<dim3(n, L.n_head, splits), hd, 0, s>>>(Q, kv, L.n_head, L.n_kv, hd, L.window, L.local, pos0, splits, pm, pl, po);
+    attn_combine_kernel<<<dim3(n, L.n_head), hd, 0, s>>>(L.sinks, pm, pl, po, ctx, L.n_head, hd, splits);
     matmul(L.o, ctx, o, n);
     add_kernel<<<grid((long long) n * E), 256, 0, s>>>(h1, h_in, o, (long long) n * E);
     check("attention");

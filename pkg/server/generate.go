@@ -109,6 +109,9 @@ func (s *StrataServer) startGeneration(ctx context.Context, spec genSpec) (<-cha
 		}
 	}
 	ctxLimit := s.Config.MaxContext
+	if n := s.EngineIPC.MaxContext(); n > 0 { // what the running engine said in READY: it may lower or raise the configured size
+		ctxLimit = n
+	}
 	if ctxLimit <= 0 {
 		ctxLimit = 65536
 	}
@@ -118,6 +121,9 @@ func (s *StrataServer) startGeneration(ctx context.Context, spec genSpec) (<-cha
 		targetHeadroom = 512
 	}
 	maxPromptTokens := ctxLimit - targetHeadroom - engineSafetyMargin
+	if c := s.Config.PromptCap; c > 0 && c < maxPromptTokens {
+		maxPromptTokens = c
+	}
 	if maxPromptTokens < 16 {
 		maxPromptTokens = ctxLimit - engineSafetyMargin - 1
 	}

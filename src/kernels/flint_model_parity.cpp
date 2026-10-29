@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -69,10 +70,12 @@ int main(int argc, char** argv) {
     const int total = n_prompt + n_gen;
     const int KD = (int) num(g, "flint.attention.head_count_kv") * (int) num(g, "flint.attention.key_length");
     std::vector<FlintKV> kv(n_layer);
-    for (FlintKV& c : kv) {
+    for (int l = 0; l < n_layer; ++l) {  // FLINT_PARITY_HALF=1: the full layers keep fp16 K/V, as the engine does
+        FlintKV& c = kv[l];
         c.cap = total;
-        cudaMalloc(&c.k, (size_t) total * KD * 4);
-        cudaMalloc(&c.v, (size_t) total * KD * 4);
+        c.half = std::getenv("FLINT_PARITY_HALF") && !layers[l].local;
+        cudaMalloc(&c.k, (size_t) total * KD * (c.half ? 2 : 4));
+        cudaMalloc(&c.v, (size_t) total * KD * (c.half ? 2 : 4));
     }
     float *ha = nullptr, *hb = nullptr, *d_logits = nullptr;
     int32_t* d_tok = nullptr;
