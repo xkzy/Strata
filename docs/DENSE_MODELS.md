@@ -111,6 +111,30 @@ at 1k / 4k / 8k / 15k). Prefill still slows with depth (324 / 295 / 264 / 221 to
 The split gives the same top token as the single-block kernel but not the same logits (largest difference 0.39 on a 1500-token context, the same
 size as the noise between a 10-token call and a 1-token call of the same text, 0.13 at shallow depth).
 
+### Later prefill work (same machine, 512-token prefill unless stated)
+
+| change | prefill |
+|---|---|
+| 128-column tiles (above) | 1.56 s |
+| Q4_K matmul takes 8 consecutive k values per thread in the `mma` (the k order inside an `mma` is free if weights and activations agree), one 64-bit load for each operand | 1.38 s |
+| Q6_K matmul reads each weight word once for the four k groups it serves | 1.32 s (388 tok/s) |
+
+Chunks of one call are now pipelined over the two cards (the first card runs chunk k+1 while the second runs chunk k; results are bit-identical
+to running the chunks one call at a time, `TestQwenPipelineEqual`), and prefill attention runs on the tensor cores (f16 `mma`, fp32
+accumulation, 16 tokens x the 6 query heads of a kv head per block, so each K/V tile is read once for 6 heads). Prefill speed of 1,024-token
+calls at depth, tokens per second:
+
+| context already in the cache | 0-1k | 3-4k | 7-8k | 14-15k |
+|---|---|---|---|---|
+| start of this round (scalar attention, one card at a time) | 324 | 294 | 263 | 221 |
+| pipelined over the cards | 494 | 446 | 393 | 323 |
+| + tensor-core attention | **508** | **497** | **482** | **458** |
+
+The tensor-core attention differs from the scalar one in the largest logit by 0.44 on a 1,300-token text (same top token); two runs of one
+1,500-token text that only differ in how it is cut into chunks differ by up to 2.1 in the largest logit (same top token) - the f16 attention
+probabilities and the int8 matmul inputs make the exact values depend on the chunking. Not done: shared-memory staging of the activations in the
+matmul kernels (the FFN is still about half of prefill time at about 25 TOPS for Q4_K and 14 for Q6_K, a small part of the int8 peak of these cards).
+
 ### Speculative decoding with the model's own MTP block (`EnableMTP`, `Generate(..., spec=true)`)
 
 The MTP block (Q8_0, 0.45 GB) runs on the last card with its own attention cache. After each accepted token it drafts the token after the

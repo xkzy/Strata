@@ -301,6 +301,19 @@ func TestQwenPipelineEqual(t *testing.T) {
 		md = math.Max(md, math.Abs(float64(piped[i]-plain[i])))
 	}
 	t.Logf("pipelined vs sequential chunks: max |logit diff| %.6f", md)
+	// the tensor-core attention against the scalar one on the same 1300 tokens (the scalar one is picked with DG_NOATTNMMA)
+	os.Setenv("DG_NOATTNMMA", "1")
+	g.Reset()
+	scalar := g.Step(seq)
+	os.Unsetenv("DG_NOATTNMMA")
+	var ma float64
+	for i := range piped {
+		ma = math.Max(ma, math.Abs(float64(piped[i]-scalar[i])))
+	}
+	t.Logf("tensor-core vs scalar attention: max |logit diff| %.4f, top %q / %q", ma, m.Vocab[argmax(piped)], m.Vocab[argmax(scalar)])
+	if ma > 0.8 || argmax(piped) != argmax(scalar) {
+		t.Fatal("tensor-core attention disagrees with the scalar one")
+	}
 	if md != 0 {
 		t.Fatal("pipelined result differs")
 	}

@@ -767,6 +767,99 @@ __global__ void __launch_bounds__(256) attn_combine_k(const float* pm, const flo
     ctx[((size_t) t * n_head + h) * 256 + tid] = acc / L * sigm(qf[((size_t) t * n_head + h) * 512 + 256 + tid]);
 }
 
+
+// Prefill attention on the tensor cores (f16 mma, fp32 accumulation): a block is 16 query tokens x the 6 query heads of one kv head
+// (6 warps, one head each), so each K/V tile is read once for 6 heads. hd == 256. Same result layout as attn_k with one split.
+__device__ __forceinline__ void mma_f16(float* c, const uint32_t* a, uint32_t b0, uint32_t b1) {
+    asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+                 : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+                 : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+__device__ __forceinline__ uint32_t pack_half2(float lo, float hi) {
+    const __half2 h = __floats2half2_rn(lo, hi);
+    return *(const uint32_t*) &h;
+}
+__global__ void __launch_bounds__(192) attn_mma_k(const float* Q, const float* qf, const __half* Kc, const __half* Vc, float* ctx, int n_head, int n_kv, int pos0, int ntok) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    __shared__ __align__(16) __half Ks[32][264];
+    __shared__ __align__(16) __half Vt[256][40];
+    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, g = lane >> 2, t4 = lane & 3;
+    const int tq0 = blockIdx.x * 16, kvh = blockIdx.y, head = kvh * (n_head / n_kv) + warp, row = n_kv * 256;
+    const int tA = tq0 + g, tB = tA + 8;   // this thread's two query tokens (relative to this call)
+    const float scale = rsqrtf(256.f);
+    uint32_t qa[16][4];
+    for (int ks = 0; ks < 16; ++ks)
+        for (int r = 0; r < 4; ++r) {
+            const int tok = (r & 1) ? tB : tA, col = 16 * ks + 2 * t4 + (r >= 2 ? 8 : 0);
+            float2 v = make_float2(0, 0);
+            if (tok < ntok) v = *(const float2*) &Q[((size_t) tok * n_head + head) * 256 + col];
+            qa[ks][r] = pack_half2(v.x, v.y);
+        }
+    float o[32][4] = {};
+    float m[2] = {-INFINITY, -INFINITY}, l[2] = {0, 0};
+    const int last = pos0 + min(tq0 + 15, ntok - 1);
+    for (int base = 0; base <= last; base += 32) {
+        __syncthreads();
+        for (int i = tid; i < 32 * 32; i += 192) {   // 8 values of position r per i
+            const int r = i >> 5, c = i & 31, j = base + r;
+            uint4 kv = make_uint4(0, 0, 0, 0), vv = kv;
+            if (j <= last) {
+                kv = *(const uint4*) (Kc + (size_t) j * row + kvh * 256 + c * 8);
+                vv = *(const uint4*) (Vc + (size_t) j * row + kvh * 256 + c * 8);
+            }
+            *(uint4*) &Ks[r][c * 8] = kv;
+            const __half* vh = (const __half*) &vv;
+            for (int q = 0; q < 8; ++q) Vt[c * 8 + q][r] = vh[q];
+        }
+        __syncthreads();
+        float sc[4][4] = {};
+        for (int ks = 0; ks < 16; ++ks)
+            for (int nt = 0; nt < 4; ++nt)
+                mma_f16(sc[nt], qa[ks], *(const uint32_t*) &Ks[8 * nt + g][16 * ks + 2 * t4], *(const uint32_t*) &Ks[8 * nt + g][16 * ks + 2 * t4 + 8]);
+        float mx[2] = {-INFINITY, -INFINITY};
+        for (int nt = 0; nt < 4; ++nt)
+            for (int i = 0; i < 4; ++i) {
+                const int r = i >> 1, t = pos0 + (r ? tB : tA), pos = base + 8 * nt + 2 * t4 + (i & 1);
+                sc[nt][i] = pos <= t ? sc[nt][i] * scale : -INFINITY;
+                mx[r] = fmaxf(mx[r], sc[nt][i]);
+            }
+        for (int r = 0; r < 2; ++r) {
+            mx[r] = fmaxf(mx[r], __shfl_xor_sync(0xffffffffu, mx[r], 1));
+            mx[r] = fmaxf(mx[r], __shfl_xor_sync(0xffffffffu, mx[r], 2));
+            const float mn = fmaxf(m[r], mx[r]), ms = mn == -INFINITY ? 0.f : mn, corr = __expf(m[r] - ms);
+            m[r] = mn;
+            l[r] *= corr;
+            for (int nt2 = 0; nt2 < 32; ++nt2) o[nt2][2 * r] *= corr, o[nt2][2 * r + 1] *= corr;
+            for (int nt = 0; nt < 4; ++nt)
+                for (int j = 0; j < 2; ++j) {
+                    const float pv = __expf(sc[nt][2 * r + j] - ms);
+                    sc[nt][2 * r + j] = pv;
+                    l[r] += pv;
+                }
+        }
+        for (int k2 = 0; k2 < 2; ++k2) {
+            const uint32_t pa[4] = {pack_half2(sc[2 * k2][0], sc[2 * k2][1]), pack_half2(sc[2 * k2][2], sc[2 * k2][3]),
+                                    pack_half2(sc[2 * k2 + 1][0], sc[2 * k2 + 1][1]), pack_half2(sc[2 * k2 + 1][2], sc[2 * k2 + 1][3])};
+            for (int nt2 = 0; nt2 < 32; ++nt2)
+                mma_f16(o[nt2], pa, *(const uint32_t*) &Vt[8 * nt2 + g][16 * k2 + 2 * t4], *(const uint32_t*) &Vt[8 * nt2 + g][16 * k2 + 2 * t4 + 8]);
+        }
+    }
+    for (int r = 0; r < 2; ++r) {
+        float lr = l[r];
+        lr += __shfl_xor_sync(0xffffffffu, lr, 1);
+        lr += __shfl_xor_sync(0xffffffffu, lr, 2);
+        const int tok = r ? tB : tA;
+        if (tok >= ntok) continue;
+        const size_t at = ((size_t) tok * n_head + head);
+        for (int nt2 = 0; nt2 < 32; ++nt2)
+            for (int j = 0; j < 2; ++j) {
+                const int d = 8 * nt2 + 2 * t4 + j;
+                ctx[at * 256 + d] = o[nt2][2 * r + j] / lr * sigm(qf[at * 512 + 256 + d]);
+            }
+    }
+#endif
+}
+
 enum { kMaxSplitTokens = 8, kMaxSplits = 32 };
 
 struct QBuf {
@@ -906,6 +999,9 @@ extern "C" int dg_qwen_run(int dev, const dg_cfg* c, const dg_layer* L, int nl, 
                                                               c->n_rot, c->eps, c->base, pos0);
             // a few tokens on a long context: split the positions over blocks, then combine
             const int splits = n <= kMaxSplitTokens && !getenv("DG_NOSPLIT") ? std::max(1, std::min((int) kMaxSplits, (pos0 + n) / 256)) : 1;
+            if (n >= 16 && c->n_head == 6 * c->n_kv && has_mma() && !getenv("DG_NOATTNMMA")) {
+                attn_mma_k<<<dim3((n + 15) / 16, c->n_kv), 192>>>(b.Q, b.qf, (const __half*) l.Kc, (const __half*) l.Vc, b.o, c->n_head, c->n_kv, pos0, n);
+            } else
             attn_k<<<dim3(n, c->n_head, splits), 256>>>(b.Q, b.qf, (const __half*) l.Kc, (const __half*) l.Vc, b.o, c->n_head, c->n_kv, pos0, splits, b.pm, b.pl, b.po);
             if (splits > 1) attn_combine_k<<<dim3(n, c->n_head), 256>>>(b.pm, b.pl, b.po, b.qf, b.o, c->n_head, splits);
             prof_mark(5);
