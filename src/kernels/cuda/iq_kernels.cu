@@ -642,11 +642,80 @@ __global__ void __launch_bounds__(128) mmvq_kernel(const uint8_t* __restrict__ w
     const int lane = threadIdx.x;
     const int nb = n_in / Fmt<TY>::qk;
     const uint8_t* wr = w + (size_t) row * row_bytes;
-    for (int c = 0; c < ncols; ++c) {
-        const float s = row_dot<TY>(wr, x + (size_t) c * (n_in / 32), nb, lane);
-        if (lane == 0) y[(size_t) c * n_out + row] = s;
+    // 8 columns per pass over the row, so a weight word is loaded once for 8 activations; each column sums in the same order as row_dot
+    using F = Fmt<TY>;
+    for (int c0 = 0; c0 < ncols; c0 += 8) {
+        const int nc = min(8, ncols - c0);
+        float acc[8] = {};
+        for (int k = lane; k < nb * F::ipb; k += 32) {
+            const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
+#pragma unroll
+            for (int c = 0; c < 8; ++c)
+                if (c < nc) acc[c] += F::dot(wr, x + (size_t) (c0 + c) * (n_in / 32) + kbx * (F::qk / 32), kbx, iqs);
+        }
+#pragma unroll
+        for (int c = 0; c < 8; ++c)
+            if (c < nc) {
+                const float s = warp_sum(acc[c]);
+                if (lane == 0) y[(size_t) (c0 + c) * n_out + row] = s;
+            }
     }
 }
+
+#if !defined(__HIPCC__)
+// Q8_0 weights x q8_1 activations on the tensor cores (mma.sync m16n8k32 s8): one mma is one 32-value block of 16 rows x 8
+// columns. Block = 4 warps, each 16 rows x 32 columns; the block covers 64 rows. Per block of 32 values the int32 result is scaled by
+// the weight's and the activation's d and added in fp32, in block order. For ncols >= 16 (a prefill chunk); needs sm_80.
+__global__ void __launch_bounds__(128) mmq_q8_0_kernel(const uint8_t* __restrict__ w, size_t row_bytes, const block_q8_1* __restrict__ x,
+                                                       float* __restrict__ y, int n_in, int n_out, int ncols) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, g = lane >> 2, t4 = lane & 3;
+    const int r0 = blockIdx.x * 64 + warp * 16 + g, r1 = r0 + 8, c0 = blockIdx.y * 32;
+    const uint8_t* w0 = w + (size_t) min(r0, n_out - 1) * row_bytes;
+    const uint8_t* w1 = w + (size_t) min(r1, n_out - 1) * row_bytes;
+    const block_q8_1* xc[4];
+    for (int j = 0; j < 4; ++j) xc[j] = x + (size_t) min(c0 + 8 * j + g, ncols - 1) * (n_in / 32);
+    float acc[4][4] = {};
+    for (int kb = 0; kb < n_in / 32; ++kb) {
+        const block_q8_0* b0 = (const block_q8_0*) w0 + kb;
+        const block_q8_0* b1 = (const block_q8_0*) w1 + kb;
+        const int a0 = get_int_b2(b0->qs, t4), a1 = get_int_b2(b1->qs, t4), a2 = get_int_b2(b0->qs, t4 + 4), a3 = get_int_b2(b1->qs, t4 + 4);
+        const float d0 = __half2float(b0->d), d1 = __half2float(b1->d);
+        for (int j = 0; j < 4; ++j) {
+            const block_q8_1* bx = xc[j] + kb;
+            const int x0 = get_int_b4(bx->qs, t4), x1 = get_int_b4(bx->qs, t4 + 4);
+            int c[4] = {0, 0, 0, 0};
+            asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+                         : "+r"(c[0]), "+r"(c[1]), "+r"(c[2]), "+r"(c[3])
+                         : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(x0), "r"(x1));
+            // this thread's columns are 2 * t4 and 2 * t4 + 1 of the tile
+            const block_q8_1* e0 = x + (size_t) min(c0 + 8 * j + 2 * t4, ncols - 1) * (n_in / 32) + kb;
+            const block_q8_1* e1 = x + (size_t) min(c0 + 8 * j + 2 * t4 + 1, ncols - 1) * (n_in / 32) + kb;
+            const float s0 = __low2float(e0->ds), s1 = __low2float(e1->ds);
+            acc[j][0] += (float) c[0] * d0 * s0;
+            acc[j][1] += (float) c[1] * d0 * s1;
+            acc[j][2] += (float) c[2] * d1 * s0;
+            acc[j][3] += (float) c[3] * d1 * s1;
+        }
+    }
+    for (int j = 0; j < 4; ++j)
+        for (int i = 0; i < 4; ++i) {
+            const int row = (i & 2) ? r1 : r0, col = c0 + 8 * j + 2 * t4 + (i & 1);
+            if (row < n_out && col < ncols) y[(size_t) col * n_out + row] = acc[j][i];
+        }
+#endif
+}
+
+static bool has_tensor_cores() {
+    static const bool ok = [] {
+        int dev = 0, major = 0;
+        cudaGetDevice(&dev);
+        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+        return major >= 8;
+    }();
+    return ok;
+}
+#endif
 
 // ---------------------------------------------------------------- decode once, apply to every column
 // The kernels above call Fmt<TY>::dot once per (call, column): each column re-reads the weight words and redoes
@@ -1988,6 +2057,14 @@ template<int TY>
 void launch_mmvq(const uint8_t* W, size_t rb, const block_q8_1* X, float* y, int n_in, int n_out, int ncols,
                  cudaStream_t s) {
     const dim3 grid((unsigned) ((n_out + 3) / 4)), block(32, 4);
+#if !defined(__HIPCC__)
+    if constexpr (TY == 8) {
+        if (ncols >= 16 && !g_old_kernels && has_tensor_cores()) {
+            mmq_q8_0_kernel<<<dim3((unsigned) ((n_out + 63) / 64), (unsigned) ((ncols + 31) / 32)), 128, 0, s>>>(W, rb, X, y, n_in, n_out, ncols);
+            return;
+        }
+    }
+#endif
     if constexpr (!kSplit<TY>) mmvq_kernel<TY><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols);
     else if (g_old_kernels) mmvq_kernel<TY><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols);
     else if constexpr (kStageIqGrid<TY>) {
