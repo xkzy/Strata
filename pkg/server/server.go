@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"strata/pkg/installer"
 	"strata/pkg/logicverifier"
 	"strata/pkg/mathruntime"
+	"strata/pkg/mathruntime/lean"
 	"strata/pkg/modelschema"
 	"strata/pkg/multitenant"
 	"strata/pkg/processjob"
@@ -39,6 +41,7 @@ import (
 type ServerConfig struct {
 	Port           int
 	ModelName      string
+	PromptCap      int // from the engine config: a slow model gets a shorter prompt than its context
 	MaxContext     int
 	VirtualLimit   int
 	APIKey         string
@@ -680,10 +683,49 @@ func (s *StrataServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		data = append(data, s.modelEntry(primaryID))
 	}
 
+	data = s.withLoadedModels(data)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"object": "list",
 		"data":   data,
 	})
+}
+
+// withLoadedModels puts the loaded model first (marked "loaded") and adds the models of the strata-*.json configs and "auto",
+// which the registry's manifests do not know.
+func (s *StrataServer) withLoadedModels(data []map[string]interface{}) []map[string]interface{} {
+	loaded := strings.ToLower(s.Config.ModelName)
+	have := map[string]bool{}
+	for _, d := range data {
+		have[strings.ToLower(fmt.Sprint(d["id"]))] = true
+	}
+	var out []map[string]interface{}
+	add := func(id string) {
+		if have[strings.ToLower(id)] {
+			return
+		}
+		have[strings.ToLower(id)] = true
+		e := s.modelEntry(id)
+		e["id"] = id // the registry answers an unknown id with its default model's entry
+		out = append(out, e)
+	}
+	add(s.Config.ModelName)
+	names := make([]string, 0)
+	for n := range modelSpecs() {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		add(n)
+	}
+	add("auto")
+	out = append(out, data...)
+	for _, d := range out {
+		if strings.ToLower(fmt.Sprint(d["id"])) == loaded {
+			d["loaded"] = true
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i]["loaded"] == true && out[j]["loaded"] != true })
+	return out
 }
 
 func (s *StrataServer) handleSlots(w http.ResponseWriter, r *http.Request) {
@@ -1013,6 +1055,10 @@ func (s *StrataServer) handleMathBackends(w http.ResponseWriter, r *http.Request
 		"mathics_version":        s.MathRuntime.MathicsBackend.Version,
 		"sage_available":         s.MathRuntime.SageBackend.Available,
 		"sage_version":           s.MathRuntime.SageBackend.Version,
+		"lean_available":         s.MathRuntime.LeanBackend.Available,
+		"lean_version":           s.MathRuntime.LeanBackend.Version,
+		"lean_kernel":            "go port of the Lean 4 kernel (in process, no external binary)",
+		"lean_admitted_axioms":   lean.PreludeAxioms,
 		"fast_numeric_available": true,
 		"fast_numeric_version":   s.MathRuntime.FastBackend.Version,
 	})

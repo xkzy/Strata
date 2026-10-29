@@ -152,6 +152,8 @@ func keepAsText(text string) json.RawMessage {
 
 func (r *oaRequest) toSpec(s *StrataServer) (genSpec, error) {
 	var spec genSpec
+	spec.Model = r.Model
+	spec.Stream = r.Stream
 	for _, m := range r.Messages {
 		text, err := contentText(m.Content)
 		if err != nil {

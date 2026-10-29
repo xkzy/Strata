@@ -62,6 +62,9 @@ func (s *StrataServer) setupRuntime(vocab int) {
 	if window > s.Config.MaxContext {
 		window = s.Config.MaxContext
 	}
+	if c := s.Config.PromptCap; c > 0 && window > c { // a slow model gets a shorter prompt (the engine config's prompt_cap)
+		window = c
+	}
 	s.eng.mu.RLock()
 	tmpl := s.eng.templateSHA
 	s.eng.mu.RUnlock()
@@ -146,6 +149,11 @@ func (b *rtBackend) signal(err error) {
 	})
 }
 
+// runtimeNote reports whether a system message is the context block the runtime builds (src/rt/context_manager.cpp).
+func runtimeNote(c string) bool {
+	return strings.HasPrefix(c, "Relevant information:") || strings.HasPrefix(c, "Known about this user:")
+}
+
 func (b *rtBackend) BuildPrompt(ctx context.Context, msgs []rtclient.Message, prefix string) ([]int, error) {
 	tok := b.s.tokenizerOrNil()
 	if tok == nil {
@@ -153,18 +161,36 @@ func (b *rtBackend) BuildPrompt(ctx context.Context, msgs []rtclient.Message, pr
 		b.signal(err)
 		return nil, err
 	}
-	// the template accepts system text only at the start: any system message (the runtime adds notes as system messages)
-	// is merged into one leading block
-	var sys []string
+	// The template accepts system text only at the start. The runtime's notes (retrieved context, verified facts, a steer) differ
+	// from one attempt and request to the next, so they go after the conversation, in its last user turn: the tokens before
+	// them stay the same and the engine reuses their K/V. A system message the caller sent leads, as before.
+	var sys, notes []string
 	var rest []chattemplate.Message
 	for _, m := range msgs {
 		if m.Role == "system" || m.Role == "developer" {
-			if strings.TrimSpace(m.Content) != "" {
+			switch {
+			case strings.TrimSpace(m.Content) == "":
+			case len(rest) > 0 || runtimeNote(m.Content):
+				notes = append(notes, m.Content)
+			default:
 				sys = append(sys, m.Content)
 			}
 			continue
 		}
 		rest = append(rest, chattemplate.Message{Role: m.Role, Content: m.Content})
+	}
+	if len(notes) > 0 {
+		last := -1
+		for i := range rest {
+			if rest[i].Role == "user" {
+				last = i
+			}
+		}
+		if last >= 0 {
+			rest[last].Content += "\n\n" + strings.Join(notes, "\n\n")
+		} else {
+			sys = append(sys, notes...)
+		}
 	}
 	var all []chattemplate.Message
 	if len(sys) > 0 {
@@ -287,6 +313,7 @@ func (s *StrataServer) startRuntimeGeneration(ctx context.Context, spec genSpec)
 		}
 		msgs = append(msgs, rtclient.Message{Role: m.Role, Content: content})
 	}
+	// flint (Format != "") opens its own <think>: the prompt does not end inside one
 	thinking := spec.Opt.EnableThinking == nil || *spec.Opt.EnableThinking
 	sc, ephemeral := requestSession(spec.Scope)
 	maxTokens := spec.MaxTokens
@@ -299,7 +326,7 @@ func (s *StrataServer) startRuntimeGeneration(ctx context.Context, spec genSpec)
 		Sampling: rtclient.Sampling{Temperature: spec.Sampling.Temperature, TopP: spec.Sampling.TopP, TopK: spec.Sampling.TopK, MinP: spec.Sampling.MinP,
 			RepetitionPenalty: spec.Sampling.RepetitionPenalty, FrequencyPenalty: spec.Sampling.FrequencyPenalty, PresencePenalty: spec.Sampling.PresencePenalty,
 			Seed: spec.Sampling.Seed, Stop: spec.Stops},
-		MaxTokens: maxTokens, ReasoningPrefix: thinking && spec.Opt.AddGenerationPrompt, Debug: spec.Debug, Ephemeral: ephemeral,
+		MaxTokens: maxTokens, ReasoningPrefix: thinking && spec.Opt.AddGenerationPrompt && spec.Opt.Format == "", Debug: spec.Debug, Ephemeral: ephemeral,
 	}
 	be := &rtBackend{s: s, opt: spec.Opt, started: make(chan struct{}), ticket: ticket}
 	out := make(chan genEvent, 64)
@@ -378,6 +405,37 @@ func (s *StrataServer) startRuntimeGeneration(ctx context.Context, spec genSpec)
 // startChatUnguarded picks the path for a request: through the runtime when it is active, else straight to the engine.
 // startChat (guard.go) is the entry the API layer uses; it puts the reply guard around this.
 func (s *StrataServer) startChatUnguarded(ctx context.Context, spec genSpec) (<-chan genEvent, int, error) {
+	unpin, perr := s.pinModel(ctx, spec.Model)
+	if perr != nil {
+		return nil, 0, perr
+	}
+	spec.Opt.Format = s.templateFormat()
+	ch, n, err := s.startChatPinned(ctx, spec)
+	if err != nil {
+		unpin()
+		return nil, 0, err
+	}
+	out := make(chan genEvent, 64)
+	go func() { // the engine stays pinned until the reply is over
+		defer unpin()
+		defer close(out)
+		stalled := false // a client that stops reading must not hold the pin (and so every model swap) for long
+		for ev := range ch {
+			if stalled {
+				continue
+			}
+			select {
+			case out <- ev:
+			case <-ctx.Done():
+			case <-time.After(30 * time.Second):
+				stalled = true
+			}
+		}
+	}()
+	return out, n, nil
+}
+
+func (s *StrataServer) startChatPinned(ctx context.Context, spec genSpec) (<-chan genEvent, int, error) {
 	if !spec.Raw {
 		s.interceptMathIntent(&spec)
 		s.interceptToolIntent(&spec)

@@ -113,17 +113,56 @@ func (m *weights) matmul(name string, X [][]float32) [][]float32 {
 		panic("densecpu: missing or non-2D tensor " + name)
 	}
 	cols, rows := int(t.Dims[0]), int(t.Dims[1])
-	elems, bytes, err := blockInfo(t.Type)
-	if err != nil {
+	if _, _, err := blockInfo(t.Type); err != nil {
 		panic(err)
 	}
-	rowBytes := cols / elems * bytes
 	if m.gpu != nil {
 		if Y, ok := m.gpu.matmul(name, t, X); ok {
 			return Y
 		}
 	}
-	fused := fusedDot(t.Type)
+	return cpuMatmul(t.Type, b, cols, rows, X)
+}
+
+// quantActs rounds every activation vector to q8_1 (blocks of 32, a scale of max|x|/127) before the quantized matmuls, the
+// way the GPU kernels see them. Tests only: it measures how much of a GPU-vs-CPU difference that rounding alone explains.
+var quantActs bool
+
+func q8Round(X [][]float32) [][]float32 {
+	Y := make([][]float32, len(X))
+	for i, x := range X {
+		y := make([]float32, len(x))
+		for b := 0; b+32 <= len(x); b += 32 {
+			var amax float32
+			for _, v := range x[b : b+32] {
+				if a := float32(math.Abs(float64(v))); a > amax {
+					amax = a
+				}
+			}
+			if amax == 0 {
+				continue
+			}
+			d := amax / 127
+			for j := 0; j < 32; j++ {
+				y[b+j] = float32(math.Round(float64(x[b+j]/d))) * d
+			}
+		}
+		Y[i] = y
+	}
+	return Y
+}
+
+// cpuMatmul is matmul on the CPU for rows quantized rows of cols elements starting at b[0].
+func cpuMatmul(typ uint32, b []byte, cols, rows int, X [][]float32) [][]float32 {
+	elems, bytes, err := blockInfo(typ)
+	if err != nil {
+		panic(err)
+	}
+	rowBytes := cols / elems * bytes
+	if quantActs && typ != tBF16 && typ != tQ6_K {
+		X = q8Round(X)
+	}
+	fused := fusedDot(typ)
 	var xs [][]float32
 	if fused != nil {
 		for _, x := range X {
@@ -151,7 +190,7 @@ func (m *weights) matmul(name string, X [][]float32) [][]float32 {
 						}
 						continue
 					}
-					if err := DequantRow(t.Type, b[r*rowBytes:], cols, buf); err != nil {
+					if err := DequantRow(typ, b[r*rowBytes:], cols, buf); err != nil {
 						panic(err)
 					}
 					for i, x := range X {
@@ -194,16 +233,84 @@ func geluTanh(x float32) float32 {
 	return float32(0.5 * f * (1 + math.Tanh(0.7978845608028654*(f+0.044715*f*f*f))))
 }
 
-// ropeNeox rotates v (one head, len hd) in place: pairs (i, i+nRot/2), theta = pos*base^(-2i/nRot)/ff[i].
-func ropeNeox(v []float32, pos int, nRot int, base float32, ff []float32) {
+// ropeKey identifies one set of rotation angles; the heads of a token all share it, so one entry is enough.
+type ropeKey struct {
+	pos, nRot int
+	base      float32
+	ff        *float32
+}
+
+var ropeMemo struct {
+	sync.Mutex
+	key    ropeKey
+	cs, sn []float64
+}
+
+// ropeAngles returns cos and sin of theta_i = pos*base^(-2i/nRot)/ff[i] for i < nRot/2.
+func ropeAngles(pos int, nRot int, base float32, ff []float32) (cs, sn []float64) {
+	k := ropeKey{pos: pos, nRot: nRot, base: base}
+	if ff != nil {
+		k.ff = &ff[0]
+	}
+	ropeMemo.Lock()
+	defer ropeMemo.Unlock()
+	if ropeMemo.key == k && ropeMemo.cs != nil {
+		return ropeMemo.cs, ropeMemo.sn
+	}
 	half := nRot / 2
-	for i := 0; i < half; i++ {
+	cs, sn = make([]float64, half), make([]float64, half)
+	for i := range cs {
 		theta := float64(pos) * math.Pow(float64(base), -2*float64(i)/float64(nRot))
 		if ff != nil {
 			theta /= float64(ff[i])
 		}
-		s, c := math.Sincos(theta)
-		a, b := float64(v[i]), float64(v[i+half])
-		v[i], v[i+half] = float32(a*c-b*s), float32(a*s+b*c)
+		sn[i], cs[i] = math.Sincos(theta)
 	}
+	ropeMemo.key, ropeMemo.cs, ropeMemo.sn = k, cs, sn
+	return cs, sn
+}
+
+// ropeNeox rotates v (one head, len hd) in place: pairs (i, i+nRot/2), theta = pos*base^(-2i/nRot)/ff[i].
+func ropeNeox(v []float32, pos int, nRot int, base float32, ff []float32) {
+	half := nRot / 2
+	cs, sn := ropeAngles(pos, nRot, base, ff)
+	for i := 0; i < half; i++ {
+		a, b := float64(v[i]), float64(v[i+half])
+		v[i], v[i+half] = float32(a*cs[i]-b*sn[i]), float32(a*sn[i]+b*cs[i])
+	}
+}
+
+// ffn is the feed-forward block down(act(gate x) * up x), act being silu or (gelu) the tanh gelu. With the weights on
+// one card the whole block runs there and only x and the result cross the bus.
+func (m *weights) ffn(p string, X [][]float32, gelu bool) [][]float32 {
+	if m.gpu != nil {
+		if Y, ok := m.gpu.ffn(p, X, gelu); ok {
+			return Y
+		}
+	}
+	g, u := m.matmul(p+"ffn_gate.weight", X), m.matmul(p+"ffn_up.weight", X)
+	for i := range g {
+		for j := range g[i] {
+			if gelu {
+				g[i][j] = geluTanh(g[i][j]) * u[i][j]
+			} else {
+				g[i][j] = silu(g[i][j]) * u[i][j]
+			}
+		}
+	}
+	return m.matmul(p+"ffn_down.weight", g)
+}
+
+// matmulMulti applies several matrices that take the same input; on the GPU the input is uploaded once.
+func (m *weights) matmulMulti(names []string, X [][]float32) [][][]float32 {
+	if m.gpu != nil {
+		if Y, ok := m.gpu.multi(names, X); ok {
+			return Y
+		}
+	}
+	Y := make([][][]float32, len(names))
+	for k, nm := range names {
+		Y[k] = m.matmul(nm, X)
+	}
+	return Y
 }

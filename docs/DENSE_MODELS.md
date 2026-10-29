@@ -64,7 +64,7 @@ pass on it) and grows with the context: Qwen 64 KiB per token, Gemma global laye
 the head sizes, not measured). At a 262,144-token context that is about 16 GiB and 20 GiB, next to 17 GiB of weights,
 so on this PC (24 GB of VRAM in total) the maximum context still does not fit on the GPUs; the cache lives in system
 RAM (60 GB), which fits. An 8-bit cache would halve it again (not done).
-Decode-time-versus-context numbers are not measured yet (`TestDecodeVsContext`, build tag `cuda`).
+Decode time against context is in the prefill section below (`TestDecodeVsContext`, build tag `cuda`, up to 4096 tokens; longer is not measured).
 
 ### Prefill (measured: Qwen3.8-27B, 512 filler tokens in one session, both GPUs, 32 CPU threads)
 
@@ -73,14 +73,23 @@ Decode-time-versus-context numbers are not measured yet (`TestDecodeVsContext`, 
 | float kernel, one input per weight read | 59.9 s | 44.3 s |
 | 8 inputs per weight read (still float) | 60.0 s | not split |
 | int8 inputs + `dp4a` for batches of 4 or more | 25.5 s | 10.0 s |
-| row-major delta-net state update, 4-accumulator attention over the half cache | **23.8 s** (21 tokens/s) | 10.0 s |
+| row-major delta-net state update, 4-accumulator attention over the half cache | 23.8 s (21 tokens/s) | 10.0 s |
+| attention for batches of 4 or more on the GPU (`dg_attn`, online softmax, cache copied to the card per call) | 20.4 s | 10.3 s |
+| delta-net recurrence on the GPU (`dg_gdn`, one block per value head, state column in registers) | 18.4 s (28 tokens/s) | 11.2 s |
+| each layer's weights on one card (placement was tensor by tensor, 42 of 64 FFN blocks were split) and the feed-forward block run on the card (`dg_ffn`: x up once, gate/up/hidden stay there, one result back) | 16.9 s, then 13.2 s after the placement fix | 9.8 s |
+| q/k/v and qkv/gate/beta/alpha share one upload of their input (`dg_multi`) | 12.9 s | 9.5 s |
+| int8 tensor-core matmul (`mma.sync m16n8k32`, 64 rows x 32 inputs per block, weights decoded once per tile into shared memory) | **7.4 s** (69 tokens/s) | 4.1 s |
+
+Data crossing the bus in that run (`MatvecStats`): 15 GB (7 GB up, 8 GB down) at the start, 5.6 GB at the end. Matmul kernel time: 7.4 s, then 1.9 s. Gemma 4 31B, same test: 19.3 s (27 tokens/s), of which only 4.8 s was in GPU calls; the profile showed 10.9 s in `ropeNeox`, which recomputed `Pow` and `Sincos` for every head of every token. Computing the angles once per position (`ropeAngles`, same arithmetic, same logits) brought it to **8.6 s (60 tokens/s)**, 4.7 s of it in GPU calls, and Gemma's decode step to 0.226 s. A decode step (one token, 512 tokens of context) was 0.148 s for Qwen and 0.267 s for Gemma before the next change: measured on real weights, the one-token k-quant matmuls read only 112 to 225 GB/s (the BF16 output matrix reached 427 GB/s, the 5060 Ti's limit). Sending 1 to 3 inputs through the int8 `dp4a` kernel (one block per row, input quantized once) raised that to 210 to 390 GB/s and the step to **0.104 s for Qwen (about 10 tokens/s) and 0.182 s for Gemma**; 0.056 s of Qwen's is the matmul kernels, 0.042 s Go code (decode attention and the delta-net still run on the CPU, with the cache in host memory). The next step moved the rest onto the card: the K/V cache of every unwindowed attention layer (Qwen's 16, Gemma's global ones) and each delta-net block's state now live in VRAM next to that layer's weights (`devKV`, `devS`; the cache only uploads its new rows and grows by doubling, the state is read back only if the CPU has to continue it), and the attention and delta-net kernels serve single tokens. Measured: Qwen decode step **0.083 s at 512 tokens of context (12 tokens/s) and 87 ms at 2048** (143 ms before, when the CPU read the whole cache each step); Gemma 0.156 s (its 50 sliding layers still attended on the CPU for single tokens, 1024 rows each). Those layers now keep a ring of window + 512 slots on the card (`attn_kernel` takes the ring base and capacity; the cache re-uploads only new rows, with wraparound), and Gemma's decode step is **0.089 s at 512 tokens of context, 0.103 s at 2048 and 0.115 s at 4096** (Qwen: 0.085, 0.088, 0.097 s; `TestDecodeVsContext`). The ring costs about 600 MB for the 50 sliding layers; batches over 512 tokens use a temporary upload or the CPU. Card memory is not seen by the garbage collector: call `Free()` on a `QwenState`/`GemmaState` when done (finalizers are only a backstop; without it a second model loaded in the same process ran out of memory). Resident caches cost VRAM (Qwen 64 KiB per token); if an allocation fails the call falls back to the CPU. Decode inputs are now int8-quantized like the batched ones; `TestCUDAKernelsMatchCPU` checks sizes 1, 2, 3, 5, 8, 19 against the CPU kernels on the same quantized inputs, and `TestDecodeBandwidth` prints the per-matrix rates.
 
 The int8 path quantizes each input in groups of 32 (scale max|x|/127), so batched results differ slightly from the
 float path; `TestCUDAKernelsMatchCPU` compares the GPU against the CPU kernels run on the same quantized inputs. Single
 tokens (decode) still use the exact float kernels. One decode step with 512 tokens of context: 0.167 s; with 2048 tokens
-of context 0.191 s (measured before the prefill changes). Gemma 4 31B, same 512-token prefill after the int8 changes (`TestPrefill512Gemma`): 47.8 s (11 tokens/s), 11.3 s of it in GPU calls, one decode step afterwards 0.273 s. Not measured: 4096 tokens.
-The remaining 13.8 s of the prefill is Go code on the CPU: the attention loops and the delta-net recurrence, which only
-GPU kernels will speed up.
+of context 0.191 s (measured before the prefill changes). Gemma 4 31B, same 512-token prefill (`TestPrefill512Gemma`): 47.8 s (11 tokens/s) after the int8 changes, 34.4 s (15 tokens/s, 13.0 s in GPU calls) with attention on the GPU too; one decode step afterwards 0.277 s. Not measured: 4096 tokens.
+The two GPU kernels (the delta-net one is Qwen only; the attention one also serves Gemma, with its sliding window and attention scale 1) agree with the CPU loops: `TestCUDAAttnMatchesCPU`
+(2e-4, including window cases) and, for the recurrence, the model-level checks (`TestQwenOnGPU`: Paris logit 16.323 against 16.356 on the CPU;
+`TestQwenStepMatchesForward`). What is left outside GPU calls is about 7 s, mostly `silu`/`sigmoid` of the causal conv and
+the per-call copies of the activations, the state (3 MiB per layer) and the K/V cache.
 
 ## Qwen3.8-27B with the whole forward pass on the GPUs (`EnableResident`, build tag `cuda`)
 
@@ -134,6 +143,14 @@ The tensor-core attention differs from the scalar one in the largest logit by 0.
 1,500-token text that only differ in how it is cut into chunks differ by up to 2.1 in the largest logit (same top token) - the f16 attention
 probabilities and the int8 matmul inputs make the exact values depend on the chunking. Not done: shared-memory staging of the activations in the
 matmul kernels (the FFN is still about half of prefill time at about 25 TOPS for Q4_K and 14 for Q6_K, a small part of the int8 peak of these cards).
+
+### After merging `main` (second tensor-core matmul)
+
+`main` has its own dense GPU path (`mma_gemm`, shared-memory tiles, activation sums, used from 4 columns). Both paths now share `matvec_core`: it keeps
+`main`'s dp4a kernel below 4 columns and `main`'s `mma_gemm` for 4-15 columns and for Q5_K / Q8_0, and uses `mma_q` for Q4_K / Q6_K from 16 columns. Same
+machine, `TestQwenDecodeDepth`, prefill at 1k / 4k / 8k / 15k context: `mma_gemm` alone 314 / 310 / 304 / 294 tok/s, with `mma_q` 504 / 493 / 480 / 455 tok/s.
+`mma_gemm` alone also made the split-attention check noisier (largest logit difference 2.2 against 0.5 with `mma_q`, same top token). Decode (62 ms) and speculative
+decoding (22-24 tok/s) are unchanged. `main`'s non-resident 512-token prefill (`TestPrefill512`) went from 6.8 s to 6.1 s.
 
 ### Speculative decoding with the model's own MTP block (`EnableMTP`, `Generate(..., spec=true)`)
 

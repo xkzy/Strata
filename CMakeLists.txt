@@ -372,6 +372,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/kernels/cuda/qsa_select.cu
                           src/kernels/cuda/verify_kernels.cu
                           src/kernels/cuda/iq_kernels.cu
+                          src/kernels/cuda/flint_layer.cu
                           src/kernels/ngram.cpp
                           src/ngram/ple_reader.cpp
                           src/platform/direct_file.cpp)
@@ -1113,6 +1114,17 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(s2_gemv_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(s2_gemv_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME s2_gemv_parity COMMAND s2_gemv_parity --selftest)
+
+  # flint block vs the Go reference (pkg/densecpu/flint.go); needs the model and fixtures, so no add_test (see the source).
+  add_executable(flint_layer_parity src/kernels/flint_layer_parity.cpp)
+  target_include_directories(flint_layer_parity PRIVATE ${_strata_gpu_include_directories} src/kernels)
+  target_link_libraries(flint_layer_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_executable(flint_model_parity src/kernels/flint_model_parity.cpp)
+  target_include_directories(flint_model_parity PRIVATE ${_strata_gpu_include_directories} src/kernels)
+  target_link_libraries(flint_model_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_executable(flint_engine src/kernels/flint_engine.cpp)
+  target_include_directories(flint_engine PRIVATE ${_strata_gpu_include_directories} src/kernels)
+  target_link_libraries(flint_engine PRIVATE strata_kernels ${_strata_gpu_runtime_target})
 
   add_executable(iq_parity src/kernels/iq_parity.cpp)
   target_include_directories(iq_parity PRIVATE ${_strata_gpu_include_directories})

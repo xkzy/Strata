@@ -11,6 +11,8 @@ import "C"
 
 import (
 	"fmt"
+	"runtime"
+	"strings"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -29,6 +31,8 @@ type gpuTensor struct {
 	dev      int
 	ptr      unsafe.Pointer
 	rowBytes int
+	typ      uint32
+	rows     int
 }
 
 // gpuMatmul holds the uploaded weight matrices; matmul runs a tensor on its device or reports it is not resident.
@@ -59,6 +63,32 @@ func (m *weights) EnableGPU() (GPUStats, error) {
 		}
 	}
 	g := &gpuMatmul{res: map[string]gpuTensor{}}
+	// A layer's tensors stay together on one card (cards are filled in turn, not tensor by tensor), so a block's
+	// activations never have to cross the bus between its own matrices.
+	layerKey := func(name string) string {
+		if strings.HasPrefix(name, "blk.") {
+			if i := strings.Index(name[4:], "."); i >= 0 {
+				return name[:4+i]
+			}
+		}
+		return name
+	}
+	groupSize := map[string]uint64{}
+	for _, t := range m.g.Tensors {
+		if elems, bytes, err := blockInfo(t.Type); err == nil && len(t.Dims) == 2 && fusedDot(t.Type) != nil && int(t.Dims[0])%elems == 0 {
+			groupSize[layerKey(t.Name)] += uint64(int(t.Dims[0])/elems*bytes) * t.Dims[1]
+		}
+	}
+	mostFree := func() int {
+		best := 0
+		for d := range free {
+			if free[d] > free[best] {
+				best = d
+			}
+		}
+		return best
+	}
+	cur, lastKey := mostFree(), ""
 	for _, t := range m.g.Tensors {
 		elems, bytes, err := blockInfo(t.Type)
 		if err != nil || len(t.Dims) != 2 || fusedDot(t.Type) == nil || int(t.Dims[0])%elems != 0 {
@@ -66,11 +96,15 @@ func (m *weights) EnableGPU() (GPUStats, error) {
 		}
 		rowBytes := int(t.Dims[0]) / elems * bytes
 		size := uint64(rowBytes) * t.Dims[1]
-		best := 0
-		for d := range free {
-			if free[d] > free[best] {
-				best = d
+		if k := layerKey(t.Name); k != lastKey {
+			lastKey = k
+			if free[cur] < groupSize[k] {
+				cur = mostFree()
 			}
+		}
+		best := cur
+		if free[best] < size {
+			best = mostFree()
 		}
 		if free[best] < size {
 			st.CPUTensors++
@@ -82,7 +116,7 @@ func (m *weights) EnableGPU() (GPUStats, error) {
 		if p == nil {
 			return st, fmt.Errorf("densecpu: upload of %s (%d bytes) to device %d failed", t.Name, size, best)
 		}
-		g.res[t.Name] = gpuTensor{dev: best, ptr: p, rowBytes: rowBytes}
+		g.res[t.Name] = gpuTensor{dev: best, ptr: p, rowBytes: rowBytes, typ: t.Type, rows: int(t.Dims[1])}
 		free[best] -= size
 		st.GPUTensors++
 		st.GPUBytes += size
@@ -142,4 +176,307 @@ func (g *gpuMatmul) matmul(name string, t *gguf.TensorInfo, X [][]float32) ([][]
 		Y[i] = y[i*rows : (i+1)*rows]
 	}
 	return Y, true
+}
+
+// MatvecStats reports where dg_matvec spent its time since the last reset: seconds copying activations in, running the
+// kernels and copying results out, plus bytes moved each way and the number of calls.
+func MatvecStats(reset bool) (in, kern, out, bytesIn, bytesOut float64, calls int64) {
+	var t [9]C.double
+	var b [6]C.double
+	var n [3]C.long
+	C.dg_stats(&t[0], &b[0], &n[0])
+	if reset {
+		C.dg_stats_reset()
+	}
+	return float64(t[0]), float64(t[1]), float64(t[2]), float64(b[0]), float64(b[1]), int64(n[0])
+}
+
+// ffn runs down(act(gate x) * up x) for the layer prefix p on one card; gelu picks the Gemma activation. False means
+// one of the three weights is not resident on the same card, and the caller does the three matmuls itself.
+func (g *gpuMatmul) ffn(p string, X [][]float32, gelu bool) ([][]float32, bool) {
+	gt, ut, dt := g.res[p+"ffn_gate.weight"], g.res[p+"ffn_up.weight"], g.res[p+"ffn_down.weight"]
+	if gt.ptr == nil || ut.ptr == nil || dt.ptr == nil || gt.dev != ut.dev || gt.dev != dt.dev {
+		return nil, false
+	}
+	n, nEmbd := len(X), len(X[0])
+	nFF := gt.rows
+	x := make([]float32, 0, n*nEmbd)
+	for _, v := range X {
+		x = append(x, v...)
+	}
+	y := make([]float32, n*nEmbd)
+	act := C.int(0)
+	if gelu {
+		act = 1
+	}
+	defer func(t0 time.Time) { GPUCallNanos.Add(int64(time.Since(t0))); GPUCalls.Add(1) }(time.Now())
+	if C.dg_ffn(C.int(gt.dev), act, C.int(gt.typ), gt.ptr, C.size_t(gt.rowBytes), C.int(ut.typ), ut.ptr, C.size_t(ut.rowBytes),
+		C.int(dt.typ), dt.ptr, C.size_t(dt.rowBytes), C.int(nFF), C.int(nEmbd), (*C.float)(&x[0]), C.int(n), (*C.float)(&y[0])) != 0 {
+		return nil, false
+	}
+	Y := make([][]float32, n)
+	for i := range Y {
+		Y[i] = y[i*nEmbd : (i+1)*nEmbd]
+	}
+	return Y, true
+}
+
+// multi applies the named matrices to X with one upload of X. False means they are not all resident on one card (or
+// not all supported), and the caller multiplies them one by one.
+func (g *gpuMatmul) multi(names []string, X [][]float32) ([][][]float32, bool) {
+	cnt := len(names)
+	if cnt == 0 || cnt > 8 || len(X) == 0 {
+		return nil, false
+	}
+	ts := make([]gpuTensor, cnt)
+	types, rbs, rows := make([]C.int, cnt), make([]C.size_t, cnt), make([]C.int, cnt)
+	ws := make([]unsafe.Pointer, cnt)
+	total := 0
+	for k, nm := range names {
+		ts[k] = g.res[nm]
+		if ts[k].ptr == nil || ts[k].dev != ts[0].dev {
+			return nil, false
+		}
+		types[k], rbs[k], rows[k], ws[k] = C.int(ts[k].typ), C.size_t(ts[k].rowBytes), C.int(ts[k].rows), ts[k].ptr
+		total += ts[k].rows
+	}
+	n, cols := len(X), len(X[0])
+	x := make([]float32, 0, n*cols)
+	for _, v := range X {
+		x = append(x, v...)
+	}
+	y := make([]float32, n*total)
+	defer func(t0 time.Time) { GPUCallNanos.Add(int64(time.Since(t0))); GPUCalls.Add(1) }(time.Now())
+	if C.dg_multi(C.int(ts[0].dev), C.int(cnt), &types[0], (*unsafe.Pointer)(unsafe.Pointer(&ws[0])), &rbs[0], &rows[0],
+		C.int(cols), (*C.float)(&x[0]), C.int(n), (*C.float)(&y[0])) != 0 {
+		return nil, false
+	}
+	out := make([][][]float32, cnt)
+	off := 0
+	for k := range out {
+		r := ts[k].rows
+		out[k] = make([][]float32, n)
+		for i := range out[k] {
+			out[k][i] = y[off+i*r : off+(i+1)*r]
+		}
+		off += n * r
+	}
+	return out, true
+}
+
+// devKV is the device copy of one attention layer's K and V (half bits, one row per position, rows laid out as on the
+// host). It only ever grows by appended rows, so each call uploads just the new ones.
+type devKV struct {
+	dev     int
+	k, v    unsafe.Pointer
+	capRows int
+	rows    int // rows already on the card
+}
+
+// devS is the device copy of one delta-net block's recurrent state; while it exists, the host copy is stale.
+type devS struct {
+	dev int
+	ptr unsafe.Pointer
+}
+
+func flatHalf(rows [][]uint16) []uint16 {
+	f := make([]uint16, 0, len(rows)*len(rows[0]))
+	for _, r := range rows {
+		f = append(f, r...)
+	}
+	return f
+}
+
+// ringSlack is how many rows beyond the window a ring buffer holds, i.e. the largest batch it serves.
+const ringSlack = 512
+
+// resident brings the device copy of cache c up to date and returns it, or nil when the card has no room (the caller
+// then uploads the cache for this call only, or uses the CPU). Host row r is position b0+r. A windowed cache lives in a
+// ring of window+ringSlack slots (position p in slot p % cap), an unwindowed one (b0 = 0) in a buffer that doubles.
+func (g *gpuMatmul) resident(c *kvCache, dev, rowElems, b0, window int) *devKV {
+	rowBytes, end := rowElems*2, b0+len(c.K)
+	d := c.dev
+	if d == nil {
+		d = &devKV{dev: dev}
+		runtime.SetFinalizer(d, (*devKV).release)
+		c.dev = d
+	}
+	from := max(d.rows, b0) // first position not yet on the card
+	if window > 0 {
+		cp := window + ringSlack
+		if end-from > ringSlack {
+			return nil // a bigger batch than the ring has room for
+		}
+		if d.capRows == 0 {
+			d.k, d.v = C.dg_alloc(C.int(dev), C.size_t(cp*rowBytes)), C.dg_alloc(C.int(dev), C.size_t(cp*rowBytes))
+			if d.k == nil || d.v == nil {
+				C.dg_free(C.int(dev), d.k)
+				C.dg_free(C.int(dev), d.v)
+				d.k, d.v = nil, nil
+				return nil
+			}
+			d.capRows = cp
+		}
+		for p := from; p < end; {
+			slot := p % cp
+			run := min(end-p, cp-slot)
+			hk, hv := flatHalf(c.K[p-b0:p-b0+run]), flatHalf(c.V[p-b0:p-b0+run])
+			if C.dg_h2d(C.int(dev), d.k, C.size_t(slot*rowBytes), unsafe.Pointer(&hk[0]), C.size_t(run*rowBytes)) != 0 ||
+				C.dg_h2d(C.int(dev), d.v, C.size_t(slot*rowBytes), unsafe.Pointer(&hv[0]), C.size_t(run*rowBytes)) != 0 {
+				return nil
+			}
+			p += run
+		}
+		d.rows = end
+		return d
+	}
+	if end > d.capRows {
+		nc := max(2*end, 1024)
+		k, v := C.dg_alloc(C.int(dev), C.size_t(nc*rowBytes)), C.dg_alloc(C.int(dev), C.size_t(nc*rowBytes))
+		if k == nil || v == nil {
+			C.dg_free(C.int(dev), k)
+			C.dg_free(C.int(dev), v)
+			return nil
+		}
+		if d.rows > 0 {
+			C.dg_d2d(C.int(dev), k, d.k, C.size_t(d.rows*rowBytes))
+			C.dg_d2d(C.int(dev), v, d.v, C.size_t(d.rows*rowBytes))
+		}
+		C.dg_free(C.int(dev), d.k)
+		C.dg_free(C.int(dev), d.v)
+		d.k, d.v, d.capRows = k, v, nc
+	}
+	if end > d.rows {
+		hk, hv := flatHalf(c.K[d.rows:end]), flatHalf(c.V[d.rows:end])
+		off, n := C.size_t(d.rows*rowBytes), C.size_t((end-d.rows)*rowBytes)
+		if C.dg_h2d(C.int(dev), d.k, off, unsafe.Pointer(&hk[0]), n) != 0 || C.dg_h2d(C.int(dev), d.v, off, unsafe.Pointer(&hv[0]), n) != 0 {
+			return nil
+		}
+		d.rows = end
+	}
+	return d
+}
+
+// attn runs causal attention for the n rows of Q (cache rows first.., host row r being position b0+r; window > 0 limits
+// each token to the last window rows) on the card holding layer p's weights. Every cache stays resident (windowed ones in
+// a ring); one that does not fit is uploaded for the call (batches of 4 or more only). False means use the CPU path.
+func (g *gpuMatmul) attn(p string, Q [][]float32, c *kvCache, b0, first, window, nHead, nKV, hd int, scale float32) ([][]float32, bool) {
+	n, dev, rowElems := len(Q), g.res[p+"attn_q.weight"].dev, nKV*hd
+	var dk, dv unsafe.Pointer
+	ringCap, ringB0 := 0, 0
+	if d := g.resident(c, dev, rowElems, b0, window); d != nil {
+		dk, dv = d.k, d.v
+		if window > 0 {
+			ringCap, ringB0 = d.capRows, b0
+		}
+	}
+	if dk == nil {
+		if n < 4 {
+			return nil, false
+		}
+		hk, hv := flatHalf(c.K), flatHalf(c.V)
+		dk, dv = C.dg_alloc(C.int(dev), C.size_t(len(hk)*2)), C.dg_alloc(C.int(dev), C.size_t(len(hv)*2))
+		defer C.dg_free(C.int(dev), dk)
+		defer C.dg_free(C.int(dev), dv)
+		if dk == nil || dv == nil || C.dg_h2d(C.int(dev), dk, 0, unsafe.Pointer(&hk[0]), C.size_t(len(hk)*2)) != 0 ||
+			C.dg_h2d(C.int(dev), dv, 0, unsafe.Pointer(&hv[0]), C.size_t(len(hv)*2)) != 0 {
+			return nil, false
+		}
+	}
+	q := make([]float32, 0, n*nHead*hd)
+	for _, r := range Q {
+		q = append(q, r...)
+	}
+	out := make([]float32, n*nHead*hd)
+	defer func(t0 time.Time) { GPUCallNanos.Add(int64(time.Since(t0))); GPUCalls.Add(1) }(time.Now())
+	if C.dg_attn_dev(C.int(dev), C.int(n), C.int(first), C.int(window), C.int(ringB0), C.int(ringCap), C.int(nHead), C.int(nKV), C.int(hd), C.float(scale),
+		(*C.float)(&q[0]), dk, dv, (*C.float)(&out[0])) != 0 {
+		return nil, false
+	}
+	R := make([][]float32, n)
+	for i := range R {
+		R[i] = out[i*nHead*hd : (i+1)*nHead*hd]
+	}
+	return R, true
+}
+
+// gdn runs the delta-net recurrence for all n tokens on the card holding layer p's weights. conv holds the normalised
+// q/k/v rows, decay and beta are [n][numV]; the state stays on the card between calls (st.dev) and the output is
+// [n][numV*hv]. False means the caller must use the CPU loop (after st.fetch).
+func (g *gpuMatmul) gdn(p string, st *gdnState, conv, decay, beta [][]float32, numK, hk, hv int, qs float32) ([][]float32, bool) {
+	n, numV, dev := len(conv), len(st.S), g.res[p+"attn_qkv.weight"].dev
+	if st.dev == nil {
+		bytes := numV * hk * hv * 4
+		ptr := C.dg_alloc(C.int(dev), C.size_t(bytes))
+		if ptr == nil {
+			return nil, false
+		}
+		flat := make([]float32, 0, numV*hk*hv)
+		for _, s := range st.S {
+			flat = append(flat, s...)
+		}
+		if C.dg_h2d(C.int(dev), ptr, 0, unsafe.Pointer(&flat[0]), C.size_t(bytes)) != 0 {
+			C.dg_free(C.int(dev), ptr)
+			return nil, false
+		}
+		st.dev = &devS{dev: dev, ptr: ptr}
+		runtime.SetFinalizer(st.dev, (*devS).release)
+	}
+	flatten := func(rows [][]float32) []float32 {
+		f := make([]float32, 0, len(rows)*len(rows[0]))
+		for _, r := range rows {
+			f = append(f, r...)
+		}
+		return f
+	}
+	out := make([]float32, n*numV*hv)
+	c, d, b := flatten(conv), flatten(decay), flatten(beta)
+	defer func(t0 time.Time) { GPUCallNanos.Add(int64(time.Since(t0))); GPUCalls.Add(1) }(time.Now())
+	if C.dg_gdn_dev(C.int(dev), C.int(n), C.int(numK), C.int(numV), C.int(hk), C.int(hv), C.float(qs), (*C.float)(&c[0]),
+		(*C.float)(&d[0]), (*C.float)(&b[0]), (*C.float)(st.dev.ptr), (*C.float)(&out[0])) != 0 {
+		return nil, false
+	}
+	R := make([][]float32, n)
+	for t := range R {
+		R[t] = out[t*numV*hv : (t+1)*numV*hv]
+	}
+	return R, true
+}
+
+// fetch makes the host copy of the state current again and drops the device copy, so the CPU loop can continue it.
+func (s *gdnState) fetch() {
+	d := s.dev
+	if d == nil {
+		return
+	}
+	hk := len(s.S[0])
+	flat := make([]float32, len(s.S)*hk)
+	if C.dg_d2h(C.int(d.dev), unsafe.Pointer(&flat[0]), d.ptr, C.size_t(len(flat)*4)) != 0 {
+		panic("densecpu: cannot read the delta-net state back from the card")
+	}
+	for h := range s.S {
+		copy(s.S[h], flat[h*hk:(h+1)*hk])
+	}
+	C.dg_free(C.int(d.dev), d.ptr)
+	d.ptr = nil
+	s.dev = nil
+}
+
+// release frees the card memory now; the garbage collector cannot see VRAM, so sessions call this instead of waiting
+// for the finalizer. Safe on nil and to call twice.
+func (d *devKV) release() {
+	if d == nil {
+		return
+	}
+	C.dg_free(C.int(d.dev), d.k)
+	C.dg_free(C.int(d.dev), d.v)
+	d.k, d.v, d.capRows, d.rows = nil, nil, 0, 0
+}
+
+func (d *devS) release() {
+	if d == nil {
+		return
+	}
+	C.dg_free(C.int(d.dev), d.ptr)
+	d.ptr = nil
 }

@@ -36,6 +36,7 @@ type engineSpec struct {
 	Tokenizer string            `json:"tokenizer"`
 	ModelName string            `json:"model_name"`
 	Env       map[string]string `json:"env"`
+	PromptCap int               `json:"prompt_cap"` // longest prompt in tokens; older turns are dropped past it (0 = the context)
 }
 
 func readEngineSpec(path string) (*engineSpec, error) {
@@ -235,6 +236,13 @@ type engineState struct {
 	sampling    engineipc.SamplingParams
 	samplingSet bool // the config has a "sampling" block; without one requests get the model card's (cardSampling)
 	templateSHA string
+	format      string // chat template format ("flint"), "" for the Qwen ChatML one
+}
+
+func (s *StrataServer) templateFormat() string {
+	s.eng.mu.RLock()
+	defer s.eng.mu.RUnlock()
+	return s.eng.format
 }
 
 func (s *StrataServer) setProblem(msg string) {
@@ -317,7 +325,8 @@ func (s *StrataServer) StartEngine(ctx context.Context) error {
 				tokDir = filepath.Join(pack, "tokenizer")
 			}
 		}
-		if spec.ModelName != "" && s.Config.ModelName == "Qwen3.8-Flash-Next" {
+		s.Config.PromptCap = spec.PromptCap
+		if spec.ModelName != "" { // the config that is running names the model, not the name saved by the last run
 			s.Config.ModelName = spec.ModelName
 		}
 	case s.Config.ModelPath != "":
@@ -329,6 +338,19 @@ func (s *StrataServer) StartEngine(ctx context.Context) error {
 		err := fmt.Errorf("no model is configured: start with --config strata-<model>.json (found none in %s) or --model-path", mustGetwd())
 		s.setProblem(err.Error())
 		return err
+	}
+	format := ""
+	if native := argValue(spec.Args, "--native"); native != "" && ggufArch(native) == "flint" {
+		format = "flint"
+		if _, err := os.Stat(filepath.Join(tokDir, "vocab.json")); tokDir == "" || err != nil {
+			tokDir = native + ".tokenizer" // the GGUF carries the tokenizer; unpack it next to the model once
+			if _, err := os.Stat(filepath.Join(tokDir, "vocab.json")); err != nil {
+				if err := tokenizer.ExportGGUF(native, tokDir); err != nil {
+					s.setProblem(err.Error())
+					return err
+				}
+			}
+		}
 	}
 	tokDir = resolveTokenizerDir(tokDir, s.Config.ModelPath)
 	if tokDir == "" {
@@ -351,15 +373,18 @@ func (s *StrataServer) StartEngine(ctx context.Context) error {
 	if tok.EOS >= 0 {
 		stop[tok.EOS] = true
 	}
+	for _, id := range tok.StopIDs {
+		stop[id] = true
+	}
 	s.eng.mu.Lock()
-	s.eng.tok, s.eng.stopIDs = tok, stop
+	s.eng.tok, s.eng.stopIDs, s.eng.format = tok, stop, format
 	s.eng.mu.Unlock()
 	if raw, err := os.ReadFile(filepath.Join(tokDir, "chat_template.jinja")); err == nil {
 		sum := sha256.Sum256(raw)
 		s.eng.mu.Lock()
 		s.eng.templateSHA = hex.EncodeToString(sum[:])[:12]
 		s.eng.mu.Unlock()
-		if hex.EncodeToString(sum[:]) != supportedTemplateSHA256 {
+		if format == "" && hex.EncodeToString(sum[:]) != supportedTemplateSHA256 {
 			s.eng.mu.Lock()
 			s.eng.templateMsg = "the pack's chat template differs from the one this server renders (prompts may not match the model's training format)"
 			s.eng.mu.Unlock()
@@ -409,6 +434,22 @@ func (s *StrataServer) StartEngine(ctx context.Context) error {
 	}
 	s.EngineIPC = engineipc.NewEngineOrchestrator(cfg)
 	s.EngineIPC.SetTokenizer(tok)
+	// The offline K/V store: the engine's own session files plus an index of them in a Turso database, so a prompt
+	// whose beginning was computed before - by an earlier process, or yesterday - skips prefill for it.
+	kvDir, kvMiB := "", 0
+	if s.ConfigManager != nil {
+		rc := s.ConfigManager.Get()
+		kvDir, kvMiB = rc.KVStoreDir, rc.KVStoreMiB
+	}
+	if kvDir != "" {
+		if err := s.EngineIPC.EnablePromptCache(engineipc.PromptCacheConfig{
+			Dir: kvDir, MaxBytes: int64(kvMiB) << 20,
+		}); err != nil {
+			fmt.Fprintln(os.Stderr, "strata: the offline KV store is off:", err)
+		}
+	} else {
+		s.EngineIPC.ClosePromptCache()
+	}
 	s.Config.MaxContext = cfg.ContextSize
 	if err := s.EngineIPC.Start(ctx); err != nil {
 		s.setProblem(err.Error())
@@ -483,6 +524,17 @@ func (s *StrataServer) engineStatus() map[string]interface{} {
 		}
 	}
 	return out
+}
+
+// ggufArch is general.architecture of a GGUF ("" when it cannot be read).
+func ggufArch(path string) string {
+	g, err := gguf.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer g.Close()
+	arch, _ := g.Metadata["general.architecture"].(string)
+	return arch
 }
 
 // ggufContext is the context length the model file declares (0 when it cannot be read).

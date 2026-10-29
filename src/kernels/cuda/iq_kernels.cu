@@ -642,11 +642,269 @@ __global__ void __launch_bounds__(128) mmvq_kernel(const uint8_t* __restrict__ w
     const int lane = threadIdx.x;
     const int nb = n_in / Fmt<TY>::qk;
     const uint8_t* wr = w + (size_t) row * row_bytes;
-    for (int c = 0; c < ncols; ++c) {
-        const float s = row_dot<TY>(wr, x + (size_t) c * (n_in / 32), nb, lane);
-        if (lane == 0) y[(size_t) c * n_out + row] = s;
+    // 8 columns per pass over the row, so a weight word is loaded once for 8 activations; each column sums in the same order as row_dot
+    using F = Fmt<TY>;
+    for (int c0 = 0; c0 < ncols; c0 += 8) {
+        const int nc = min(8, ncols - c0);
+        float acc[8] = {};
+        for (int k = lane; k < nb * F::ipb; k += 32) {
+            const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
+#pragma unroll
+            for (int c = 0; c < 8; ++c)
+                if (c < nc) acc[c] += F::dot(wr, x + (size_t) (c0 + c) * (n_in / 32) + kbx * (F::qk / 32), kbx, iqs);
+        }
+#pragma unroll
+        for (int c = 0; c < 8; ++c)
+            if (c < nc) {
+                const float s = warp_sum(acc[c]);
+                if (lane == 0) y[(size_t) (c0 + c) * n_out + row] = s;
+            }
     }
 }
+
+#if !defined(__HIPCC__)
+// Q8_0 weights x q8_1 activations on the tensor cores (mma.sync m16n8k32 s8): one mma is one 32-value block of 16 rows x 8
+// columns. Block = 4 warps, each 16 rows x 32 columns; the block covers 64 rows. Per block of 32 values the int32 result is scaled by
+// the weight's and the activation's d and added in fp32, in block order. For ncols >= 16 (a prefill chunk); needs sm_80.
+__global__ void __launch_bounds__(128) mmq_q8_0_kernel(const uint8_t* __restrict__ w, size_t row_bytes, const block_q8_1* __restrict__ x,
+                                                       float* __restrict__ y, int n_in, int n_out, int ncols) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, g = lane >> 2, t4 = lane & 3;
+    const int r0 = blockIdx.x * 64 + warp * 16 + g, r1 = r0 + 8, c0 = blockIdx.y * 32;
+    const uint8_t* w0 = w + (size_t) min(r0, n_out - 1) * row_bytes;
+    const uint8_t* w1 = w + (size_t) min(r1, n_out - 1) * row_bytes;
+    const block_q8_1* xc[4];
+    for (int j = 0; j < 4; ++j) xc[j] = x + (size_t) min(c0 + 8 * j + g, ncols - 1) * (n_in / 32);
+    float acc[4][4] = {};
+    for (int kb = 0; kb < n_in / 32; ++kb) {
+        const block_q8_0* b0 = (const block_q8_0*) w0 + kb;
+        const block_q8_0* b1 = (const block_q8_0*) w1 + kb;
+        const int a0 = get_int_b2(b0->qs, t4), a1 = get_int_b2(b1->qs, t4), a2 = get_int_b2(b0->qs, t4 + 4), a3 = get_int_b2(b1->qs, t4 + 4);
+        const float d0 = __half2float(b0->d), d1 = __half2float(b1->d);
+        for (int j = 0; j < 4; ++j) {
+            const block_q8_1* bx = xc[j] + kb;
+            const int x0 = get_int_b4(bx->qs, t4), x1 = get_int_b4(bx->qs, t4 + 4);
+            int c[4] = {0, 0, 0, 0};
+            asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+                         : "+r"(c[0]), "+r"(c[1]), "+r"(c[2]), "+r"(c[3])
+                         : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(x0), "r"(x1));
+            // this thread's columns are 2 * t4 and 2 * t4 + 1 of the tile
+            const block_q8_1* e0 = x + (size_t) min(c0 + 8 * j + 2 * t4, ncols - 1) * (n_in / 32) + kb;
+            const block_q8_1* e1 = x + (size_t) min(c0 + 8 * j + 2 * t4 + 1, ncols - 1) * (n_in / 32) + kb;
+            const float s0 = __low2float(e0->ds), s1 = __low2float(e1->ds);
+            acc[j][0] += (float) c[0] * d0 * s0;
+            acc[j][1] += (float) c[1] * d0 * s1;
+            acc[j][2] += (float) c[2] * d1 * s0;
+            acc[j][3] += (float) c[3] * d1 * s1;
+        }
+    }
+    for (int j = 0; j < 4; ++j)
+        for (int i = 0; i < 4; ++i) {
+            const int row = (i & 2) ? r1 : r0, col = c0 + 8 * j + 2 * t4 + (i & 1);
+            if (row < n_out && col < ncols) y[(size_t) col * n_out + row] = acc[j][i];
+        }
+#endif
+}
+
+// Q6_K the same way, with m16n8k16 steps because a scale covers 16 values: one q8_1 block (32 values) is two mma, each scaled by its
+// signed sub-block scale; the -32 offset is folded into the byte (as vec_dot_q6_K_q8_1 does). Same tiling as mmq_q8_0_kernel.
+__global__ void __launch_bounds__(128) mmq_q6_k_kernel(const uint8_t* __restrict__ w, size_t row_bytes, const block_q8_1* __restrict__ x,
+                                                       float* __restrict__ y, int n_in, int n_out, int ncols) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, g = lane >> 2, t4 = lane & 3;
+    const int r0 = blockIdx.x * 64 + warp * 16 + g, r1 = r0 + 8, c0 = blockIdx.y * 32;
+    const uint8_t* w0 = w + (size_t) min(r0, n_out - 1) * row_bytes;
+    const uint8_t* w1 = w + (size_t) min(r1, n_out - 1) * row_bytes;
+    float acc[4][4] = {};
+    for (int sb = 0; sb < n_in / 256; ++sb) {
+        const block_q6_K* q0 = (const block_q6_K*) w0 + sb;
+        const block_q6_K* q1 = (const block_q6_K*) w1 + sb;
+        const float d0 = __half2float(q0->d), d1 = __half2float(q1->d);
+        for (int n = 0; n < 2; ++n)
+            for (int k = 0; k < 4; ++k) {
+                int a[2][4];  // [h][2 * 0 + row]: k16 step h of this 32-value block, rows g and g + 8
+                for (int h = 0; h < 2; ++h) {
+                    const int l4 = (4 * t4 + 16 * h) / 4;
+                    for (int r = 0; r < 2; ++r) {
+                        const block_q6_K* q = r ? q1 : q0;
+                        const int ql = (get_int_b2(q->ql, 16 * n + 8 * (k & 1) + l4) >> (4 * (k >> 1))) & 0x0F0F0F0F;
+                        const int qh = ((get_int_b2(q->qh, 8 * n + l4) >> (2 * k)) & 0x03030303) << 4;
+                        a[h][r] = __vsubss4(ql | qh, 0x20202020);
+                    }
+                }
+                const int kb = sb * 8 + 4 * n + k;
+                float sc[2][2];  // [h][row]
+                for (int h = 0; h < 2; ++h) {
+                    sc[h][0] = d0 * q0->scales[8 * n + 2 * k + h];
+                    sc[h][1] = d1 * q1->scales[8 * n + 2 * k + h];
+                }
+                for (int c = 0; c < 4; ++c) {
+                    const block_q8_1* bx = x + (size_t) min(c0 + 8 * c + g, ncols - 1) * (n_in / 32) + kb;
+                    int cc[2][4] = {};
+                    for (int h = 0; h < 2; ++h)
+                        asm volatile("mma.sync.aligned.m16n8k16.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};\n"
+                                     : "+r"(cc[h][0]), "+r"(cc[h][1]), "+r"(cc[h][2]), "+r"(cc[h][3])
+                                     : "r"(a[h][0]), "r"(a[h][1]), "r"(get_int_b4(bx->qs, t4 + 4 * h)));
+                    const block_q8_1* e0 = x + (size_t) min(c0 + 8 * c + 2 * t4, ncols - 1) * (n_in / 32) + kb;
+                    const block_q8_1* e1 = x + (size_t) min(c0 + 8 * c + 2 * t4 + 1, ncols - 1) * (n_in / 32) + kb;
+                    const float v0 = __low2float(e0->ds), v1 = __low2float(e1->ds);
+                    acc[c][0] += v0 * ((float) cc[0][0] * sc[0][0] + (float) cc[1][0] * sc[1][0]);
+                    acc[c][1] += v1 * ((float) cc[0][1] * sc[0][0] + (float) cc[1][1] * sc[1][0]);
+                    acc[c][2] += v0 * ((float) cc[0][2] * sc[0][1] + (float) cc[1][2] * sc[1][1]);
+                    acc[c][3] += v1 * ((float) cc[0][3] * sc[0][1] + (float) cc[1][3] * sc[1][1]);
+                }
+            }
+    }
+    for (int c = 0; c < 4; ++c)
+        for (int i = 0; i < 4; ++i) {
+            const int row = (i & 2) ? r1 : r0, col = c0 + 8 * c + 2 * t4 + (i & 1);
+            if (row < n_out && col < ncols) y[(size_t) col * n_out + row] = acc[c][i];
+        }
+#endif
+}
+
+// Q5_K the same way: one mma is one 32-value sub-block (5-bit values 0..31 as bytes), scaled by d * sc and offset by dmin * m times
+// the activation's sum (ds.y). Same tiling as mmq_q8_0_kernel.
+__global__ void __launch_bounds__(128) mmq_q5_k_kernel(const uint8_t* __restrict__ w, size_t row_bytes, const block_q8_1* __restrict__ x,
+                                                       float* __restrict__ y, int n_in, int n_out, int ncols,
+                                                       const uint8_t* const* wt = nullptr, const int* tile_e = nullptr, const int* tile_c0 = nullptr,
+                                                       const int* e_cnt = nullptr, const int* e_off = nullptr) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, g = lane >> 2, t4 = lane & 3;
+    // grouped launch: tile blockIdx.y is columns c0.. of expert e, whose weights are wt[e] and whose columns start at e_off[e]
+    int c0 = blockIdx.y * 32;
+    if (wt) {
+        const int e = tile_e[blockIdx.y];
+        w = wt[e];
+        ncols = e_cnt[e];
+        c0 = tile_c0[blockIdx.y];
+        x += (size_t) e_off[e] * (n_in / 32);
+        y += (size_t) e_off[e] * n_out;
+    }
+    const int r0 = blockIdx.x * 64 + warp * 16 + g, r1 = r0 + 8;
+    const uint8_t* w0 = w + (size_t) min(r0, n_out - 1) * row_bytes;
+    const uint8_t* w1 = w + (size_t) min(r1, n_out - 1) * row_bytes;
+    float acc[4][4] = {};
+    for (int sb = 0; sb < n_in / 256; ++sb) {
+        const block_q5_K* q0 = (const block_q5_K*) w0 + sb;
+        const block_q5_K* q1 = (const block_q5_K*) w1 + sb;
+        const float d0 = __low2float(q0->dm), m0 = __high2float(q0->dm), d1 = __low2float(q1->dm), m1 = __high2float(q1->dm);
+        for (int j = 0; j < 8; ++j) {
+            const int p = j >> 1, sh = 4 * (j & 1);
+            int a[4];
+            for (int h = 0; h < 2; ++h)      // h: k = t4 * 4 + 16 * h
+                for (int r = 0; r < 2; ++r) {  // r: row g or g + 8
+                    const block_q5_K* q = r ? q1 : q0;
+                    const int lo = (get_int_b4(q->qs, 8 * p + t4 + 4 * h) >> sh) & 0x0F0F0F0F;
+                    const int hi = ((get_int_b4(q->qh, t4 + 4 * h) >> j) & 0x01010101) << 4;
+                    a[2 * h + r] = lo | hi;
+                }
+            float sc[2], mn[2];
+            for (int r = 0; r < 2; ++r) {
+                const uint8_t* S = (r ? q1 : q0)->scales;
+                const int s_ = j < 4 ? (S[j] & 63) : ((S[j + 4] & 0xF) | ((S[j - 4] >> 6) << 4));
+                const int m_ = j < 4 ? (S[j + 4] & 63) : ((S[j + 4] >> 4) | ((S[j] >> 6) << 4));
+                sc[r] = (r ? d1 : d0) * s_;
+                mn[r] = (r ? m1 : m0) * m_;
+            }
+            const int kb = sb * 8 + j;
+            for (int c = 0; c < 4; ++c) {
+                const block_q8_1* bx = x + (size_t) min(c0 + 8 * c + g, ncols - 1) * (n_in / 32) + kb;
+                const int x0 = get_int_b4(bx->qs, t4), x1 = get_int_b4(bx->qs, t4 + 4);
+                int cc[4] = {0, 0, 0, 0};
+                asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+                             : "+r"(cc[0]), "+r"(cc[1]), "+r"(cc[2]), "+r"(cc[3])
+                             : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(x0), "r"(x1));
+                const block_q8_1* e0 = x + (size_t) min(c0 + 8 * c + 2 * t4, ncols - 1) * (n_in / 32) + kb;
+                const block_q8_1* e1 = x + (size_t) min(c0 + 8 * c + 2 * t4 + 1, ncols - 1) * (n_in / 32) + kb;
+                // the min term uses the sum of the quantized activations, as vec_dot_q5_K_q8_1 does: an mma against all-ones weights
+                int cs[4] = {0, 0, 0, 0};
+                asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+                             : "+r"(cs[0]), "+r"(cs[1]), "+r"(cs[2]), "+r"(cs[3])
+                             : "r"(0x01010101), "r"(0x01010101), "r"(0x01010101), "r"(0x01010101), "r"(x0), "r"(x1));
+                const float v0 = __low2float(e0->ds), v1 = __low2float(e1->ds);
+                acc[c][0] += v0 * ((float) cc[0] * sc[0] - mn[0] * (float) cs[0]);
+                acc[c][1] += v1 * ((float) cc[1] * sc[0] - mn[0] * (float) cs[1]);
+                acc[c][2] += v0 * ((float) cc[2] * sc[1] - mn[1] * (float) cs[2]);
+                acc[c][3] += v1 * ((float) cc[3] * sc[1] - mn[1] * (float) cs[3]);
+            }
+        }
+    }
+    for (int j = 0; j < 4; ++j)
+        for (int i = 0; i < 4; ++i) {
+            const int row = (i & 2) ? r1 : r0, col = c0 + 8 * j + 2 * t4 + (i & 1);
+            if (row < n_out && col < ncols) y[(size_t) col * n_out + row] = acc[j][i];
+        }
+#endif
+}
+
+// IQ4_XS the same way: a sub-block's 16 bytes hold values 0-15 (low nibbles) and 16-31 (high nibbles), which are exactly the
+// k and k + 16 halves of an mma fragment; the table gives int8 values, the 6-bit sub-block scale and d scale the int32 result.
+__global__ void __launch_bounds__(128) mmq_iq4_xs_kernel(const uint8_t* __restrict__ w, size_t row_bytes, const block_q8_1* __restrict__ x,
+                                                         float* __restrict__ y, int n_in, int n_out, int ncols,
+                                                       const uint8_t* const* wt = nullptr, const int* tile_e = nullptr, const int* tile_c0 = nullptr,
+                                                       const int* e_cnt = nullptr, const int* e_off = nullptr) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, g = lane >> 2, t4 = lane & 3;
+    // grouped launch: tile blockIdx.y is columns c0.. of expert e, whose weights are wt[e] and whose columns start at e_off[e]
+    int c0 = blockIdx.y * 32;
+    if (wt) {
+        const int e = tile_e[blockIdx.y];
+        w = wt[e];
+        ncols = e_cnt[e];
+        c0 = tile_c0[blockIdx.y];
+        x += (size_t) e_off[e] * (n_in / 32);
+        y += (size_t) e_off[e] * n_out;
+    }
+    const int r0 = blockIdx.x * 64 + warp * 16 + g, r1 = r0 + 8;
+    const uint8_t* w0 = w + (size_t) min(r0, n_out - 1) * row_bytes;
+    const uint8_t* w1 = w + (size_t) min(r1, n_out - 1) * row_bytes;
+    float acc[4][4] = {};
+    for (int sb = 0; sb < n_in / 256; ++sb) {
+        const block_iq4_xs* q0 = (const block_iq4_xs*) w0 + sb;
+        const block_iq4_xs* q1 = (const block_iq4_xs*) w1 + sb;
+        const float d0 = __half2float(q0->d), d1 = __half2float(q1->d);
+        for (int ib = 0; ib < 8; ++ib) {
+            const int2 v0 = get_int_from_table_16(get_int_b4(q0->qs, 4 * ib + t4), kvalues_iq4nl);
+            const int2 v1 = get_int_from_table_16(get_int_b4(q1->qs, 4 * ib + t4), kvalues_iq4nl);
+            const int ls0 = ((q0->scales_l[ib / 2] >> (4 * (ib & 1))) & 0x0F) | (((q0->scales_h >> (2 * ib)) & 0x03) << 4);
+            const int ls1 = ((q1->scales_l[ib / 2] >> (4 * (ib & 1))) & 0x0F) | (((q1->scales_h >> (2 * ib)) & 0x03) << 4);
+            const float sc0 = d0 * (ls0 - 32), sc1 = d1 * (ls1 - 32);
+            const int kb = sb * 8 + ib;
+            for (int c = 0; c < 4; ++c) {
+                const block_q8_1* bx = x + (size_t) min(c0 + 8 * c + g, ncols - 1) * (n_in / 32) + kb;
+                const int x0 = get_int_b4(bx->qs, t4), x1 = get_int_b4(bx->qs, t4 + 4);
+                int cc[4] = {0, 0, 0, 0};
+                asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+                             : "+r"(cc[0]), "+r"(cc[1]), "+r"(cc[2]), "+r"(cc[3])
+                             : "r"(v0.x), "r"(v1.x), "r"(v0.y), "r"(v1.y), "r"(x0), "r"(x1));
+                const float s0 = __low2float((x + (size_t) min(c0 + 8 * c + 2 * t4, ncols - 1) * (n_in / 32) + kb)->ds);
+                const float s1 = __low2float((x + (size_t) min(c0 + 8 * c + 2 * t4 + 1, ncols - 1) * (n_in / 32) + kb)->ds);
+                acc[c][0] += (float) cc[0] * sc0 * s0;
+                acc[c][1] += (float) cc[1] * sc0 * s1;
+                acc[c][2] += (float) cc[2] * sc1 * s0;
+                acc[c][3] += (float) cc[3] * sc1 * s1;
+            }
+        }
+    }
+    for (int j = 0; j < 4; ++j)
+        for (int i = 0; i < 4; ++i) {
+            const int row = (i & 2) ? r1 : r0, col = c0 + 8 * j + 2 * t4 + (i & 1);
+            if (row < n_out && col < ncols) y[(size_t) col * n_out + row] = acc[j][i];
+        }
+#endif
+}
+
+static bool has_tensor_cores() {
+    static const bool ok = [] {
+        int dev = 0, major = 0;
+        cudaGetDevice(&dev);
+        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+        return major >= 8;
+    }();
+    return ok;
+}
+#endif
 
 // ---------------------------------------------------------------- decode once, apply to every column
 // The kernels above call Fmt<TY>::dot once per (call, column): each column re-reads the weight words and redoes
@@ -1988,6 +2246,17 @@ template<int TY>
 void launch_mmvq(const uint8_t* W, size_t rb, const block_q8_1* X, float* y, int n_in, int n_out, int ncols,
                  cudaStream_t s) {
     const dim3 grid((unsigned) ((n_out + 3) / 4)), block(32, 4);
+#if !defined(__HIPCC__)
+    if constexpr (TY == 8 || TY == 13 || TY == 23) {
+        if (ncols >= 16 && !g_old_kernels && has_tensor_cores()) {
+            const dim3 g2((unsigned) ((n_out + 63) / 64), (unsigned) ((ncols + 31) / 32));
+            if constexpr (TY == 8) mmq_q8_0_kernel<<<g2, 128, 0, s>>>(W, rb, X, y, n_in, n_out, ncols);
+            else if constexpr (TY == 13) mmq_q5_k_kernel<<<g2, 128, 0, s>>>(W, rb, X, y, n_in, n_out, ncols);
+            else mmq_iq4_xs_kernel<<<g2, 128, 0, s>>>(W, rb, X, y, n_in, n_out, ncols);
+            return;
+        }
+    }
+#endif
     if constexpr (!kSplit<TY>) mmvq_kernel<TY><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols);
     else if (g_old_kernels) mmvq_kernel<TY><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols);
     else if constexpr (kStageIqGrid<TY>) {
@@ -2732,6 +3001,25 @@ void quantize_q8_1_rows(const float* x, int64_t n_rows, int64_t n_cols, void* y,
     check("quantize_q8_1_rows");
 }
 
+// All experts of one phase in one launch (Q5_K or IQ4_XS weights, prefill): w[e] is expert e's weights, tile i is columns
+// tile_c0[i].. of expert tile_e[i]; expert e has e_cnt[e] columns starting at column e_off[e] of xq (q8_1) and y. False when
+// the type or the card does not support it (the caller then runs the experts one by one).
+bool iq_mmq_grouped(int t, const void* const* w, int n_in, int n_out, const void* xq, float* y, const int* tile_e, const int* tile_c0,
+                    const int* e_cnt, const int* e_off, int n_tiles, void* stream) {
+#if !defined(__HIPCC__)
+    if ((t != 13 && t != 23) || g_old_kernels || !has_tensor_cores()) return false;
+    if (n_tiles == 0) return true;  // only asking
+    const dim3 grid((unsigned) ((n_out + 63) / 64), (unsigned) n_tiles);
+    const size_t rb = iq_row_bytes(t, n_in);
+    if (t == 13) mmq_q5_k_kernel<<<grid, 128, 0, (cudaStream_t) stream>>>(nullptr, rb, (const block_q8_1*) xq, y, n_in, n_out, 0, (const uint8_t* const*) w, tile_e, tile_c0, e_cnt, e_off);
+    else mmq_iq4_xs_kernel<<<grid, 128, 0, (cudaStream_t) stream>>>(nullptr, rb, (const block_q8_1*) xq, y, n_in, n_out, 0, (const uint8_t* const*) w, tile_e, tile_c0, e_cnt, e_off);
+    check("iq_mmq_grouped");
+    return true;
+#else
+    return false;
+#endif
+}
+
 void iq_mmvq(int t, const void* w, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream) {
     const size_t rb = iq_row_bytes(t, n_in);
     cudaStream_t s = (cudaStream_t) stream;
@@ -2744,6 +3032,20 @@ void iq_mmvq(int t, const void* w, const void* x_q8_1, float* y, int n_in, int n
         default: std::fprintf(stderr, "iq_mmvq: type %d is not supported\n", t); std::exit(1);
     }
     check("iq_mmvq");
+}
+
+// Q6_K matrix x q8_1 columns on the tensor cores (ncols >= 16, sm_80+); false when it cannot run (the caller uses another kernel)
+bool iq_mmq_q6k(const void* w, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream) {
+#if !defined(__HIPCC__)
+    if (ncols < 16 || n_in % 256 != 0 || g_old_kernels || !has_tensor_cores()) return false;
+    const dim3 g2((unsigned) ((n_out + 63) / 64), (unsigned) ((ncols + 31) / 32));
+    mmq_q6_k_kernel<<<g2, 128, 0, (cudaStream_t) stream>>>((const uint8_t*) w, (size_t) n_in / 256 * sizeof(block_q6_K), (const block_q8_1*) x_q8_1, y,
+                                                           n_in, n_out, ncols);
+    check("iq_mmq_q6k");
+    return true;
+#else
+    return false;
+#endif
 }
 
 void iq_dequant_f16(int t, const void* src, int64_t n, uint16_t* dst, void* stream) {

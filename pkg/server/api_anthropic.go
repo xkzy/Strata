@@ -88,6 +88,8 @@ func blocksText(bs []anBlock) (string, error) {
 
 func (r *anRequest) toSpec(s *StrataServer) (genSpec, error) {
 	var spec genSpec
+	spec.Model = r.Model
+	spec.Stream = r.Stream
 	if len(r.System) > 0 && string(r.System) != "null" {
 		bs, err := anBlocks(r.System)
 		if err != nil {
