@@ -769,6 +769,51 @@ __global__ void __launch_bounds__(128) mmq_q5_k_kernel(const uint8_t* __restrict
 #endif
 }
 
+// IQ4_XS the same way: a sub-block's 16 bytes hold values 0-15 (low nibbles) and 16-31 (high nibbles), which are exactly the
+// k and k + 16 halves of an mma fragment; the table gives int8 values, the 6-bit sub-block scale and d scale the int32 result.
+__global__ void __launch_bounds__(128) mmq_iq4_xs_kernel(const uint8_t* __restrict__ w, size_t row_bytes, const block_q8_1* __restrict__ x,
+                                                         float* __restrict__ y, int n_in, int n_out, int ncols) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, g = lane >> 2, t4 = lane & 3;
+    const int r0 = blockIdx.x * 64 + warp * 16 + g, r1 = r0 + 8, c0 = blockIdx.y * 32;
+    const uint8_t* w0 = w + (size_t) min(r0, n_out - 1) * row_bytes;
+    const uint8_t* w1 = w + (size_t) min(r1, n_out - 1) * row_bytes;
+    float acc[4][4] = {};
+    for (int sb = 0; sb < n_in / 256; ++sb) {
+        const block_iq4_xs* q0 = (const block_iq4_xs*) w0 + sb;
+        const block_iq4_xs* q1 = (const block_iq4_xs*) w1 + sb;
+        const float d0 = __half2float(q0->d), d1 = __half2float(q1->d);
+        for (int ib = 0; ib < 8; ++ib) {
+            const int2 v0 = get_int_from_table_16(get_int_b4(q0->qs, 4 * ib + t4), kvalues_iq4nl);
+            const int2 v1 = get_int_from_table_16(get_int_b4(q1->qs, 4 * ib + t4), kvalues_iq4nl);
+            const int ls0 = ((q0->scales_l[ib / 2] >> (4 * (ib & 1))) & 0x0F) | (((q0->scales_h >> (2 * ib)) & 0x03) << 4);
+            const int ls1 = ((q1->scales_l[ib / 2] >> (4 * (ib & 1))) & 0x0F) | (((q1->scales_h >> (2 * ib)) & 0x03) << 4);
+            const float sc0 = d0 * (ls0 - 32), sc1 = d1 * (ls1 - 32);
+            const int kb = sb * 8 + ib;
+            for (int c = 0; c < 4; ++c) {
+                const block_q8_1* bx = x + (size_t) min(c0 + 8 * c + g, ncols - 1) * (n_in / 32) + kb;
+                const int x0 = get_int_b4(bx->qs, t4), x1 = get_int_b4(bx->qs, t4 + 4);
+                int cc[4] = {0, 0, 0, 0};
+                asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+                             : "+r"(cc[0]), "+r"(cc[1]), "+r"(cc[2]), "+r"(cc[3])
+                             : "r"(v0.x), "r"(v1.x), "r"(v0.y), "r"(v1.y), "r"(x0), "r"(x1));
+                const float s0 = __low2float((x + (size_t) min(c0 + 8 * c + 2 * t4, ncols - 1) * (n_in / 32) + kb)->ds);
+                const float s1 = __low2float((x + (size_t) min(c0 + 8 * c + 2 * t4 + 1, ncols - 1) * (n_in / 32) + kb)->ds);
+                acc[c][0] += (float) cc[0] * sc0 * s0;
+                acc[c][1] += (float) cc[1] * sc0 * s1;
+                acc[c][2] += (float) cc[2] * sc1 * s0;
+                acc[c][3] += (float) cc[3] * sc1 * s1;
+            }
+        }
+    }
+    for (int j = 0; j < 4; ++j)
+        for (int i = 0; i < 4; ++i) {
+            const int row = (i & 2) ? r1 : r0, col = c0 + 8 * j + 2 * t4 + (i & 1);
+            if (row < n_out && col < ncols) y[(size_t) col * n_out + row] = acc[j][i];
+        }
+#endif
+}
+
 static bool has_tensor_cores() {
     static const bool ok = [] {
         int dev = 0, major = 0;
@@ -2121,11 +2166,12 @@ void launch_mmvq(const uint8_t* W, size_t rb, const block_q8_1* X, float* y, int
                  cudaStream_t s) {
     const dim3 grid((unsigned) ((n_out + 3) / 4)), block(32, 4);
 #if !defined(__HIPCC__)
-    if constexpr (TY == 8 || TY == 13) {
+    if constexpr (TY == 8 || TY == 13 || TY == 23) {
         if (ncols >= 16 && !g_old_kernels && has_tensor_cores()) {
             const dim3 g2((unsigned) ((n_out + 63) / 64), (unsigned) ((ncols + 31) / 32));
             if constexpr (TY == 8) mmq_q8_0_kernel<<<g2, 128, 0, s>>>(W, rb, X, y, n_in, n_out, ncols);
-            else mmq_q5_k_kernel<<<g2, 128, 0, s>>>(W, rb, X, y, n_in, n_out, ncols);
+            else if constexpr (TY == 13) mmq_q5_k_kernel<<<g2, 128, 0, s>>>(W, rb, X, y, n_in, n_out, ncols);
+            else mmq_iq4_xs_kernel<<<g2, 128, 0, s>>>(W, rb, X, y, n_in, n_out, ncols);
             return;
         }
     }

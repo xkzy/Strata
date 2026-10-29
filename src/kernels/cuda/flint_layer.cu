@@ -249,6 +249,28 @@ __global__ void router_kernel(const uint16_t* W, const float* x, float* logits, 
     if (threadIdx.x == 0) logits[(size_t) t * n_exp + e] = s;
 }
 
+// logits for a tile of 32 tokens x 32 experts (prefill): a plain tiled matrix product, dim a multiple of 32, 256 threads
+__global__ void router_tile_kernel(const uint16_t* W, const float* x, float* logits, int dim, int n_exp, int n_tok) {
+    __shared__ float xs[32][33], ws[32][33];
+    const int t0 = blockIdx.x * 32, e0 = blockIdx.y * 32, tid = threadIdx.x, tx = tid & 15, ty = tid >> 4;
+    float acc[2][2] = {};
+    for (int k0 = 0; k0 < dim; k0 += 32) {
+        for (int i = tid; i < 1024; i += 256) {
+            const int r = i >> 5, c = i & 31;
+            xs[r][c] = t0 + r < n_tok ? x[(size_t) (t0 + r) * dim + k0 + c] : 0.0f;
+            ws[r][c] = e0 + r < n_exp ? __uint_as_float((uint32_t) W[(size_t) (e0 + r) * dim + k0 + c] << 16) : 0.0f;
+        }
+        __syncthreads();
+        for (int c = 0; c < 32; ++c)
+            for (int a = 0; a < 2; ++a)
+                for (int b = 0; b < 2; ++b) acc[a][b] += xs[2 * ty + a][c] * ws[2 * tx + b][c];
+        __syncthreads();
+    }
+    for (int a = 0; a < 2; ++a)
+        for (int b = 0; b < 2; ++b)
+            if (t0 + 2 * ty + a < n_tok && e0 + 2 * tx + b < n_exp) logits[(size_t) (t0 + 2 * ty + a) * n_exp + e0 + 2 * tx + b] = acc[a][b];
+}
+
 // sigmoid scores, top n_used (ties: lowest index), optionally normalized to sum 1, times scale. One 256-thread block per
 // token: n_used rounds of a block-wide arg-max over the scores not yet taken (n_exp <= 1024).
 __global__ void topk_kernel(const float* logits, int n_exp, int n_used, bool norm, float scale, int* ids, float* wts,
@@ -448,7 +470,8 @@ void flint_layer_forward(const FlintLayer& L, FlintKV& kv, int pos0, const float
         float* logits = m.get<float>((size_t) n * L.n_exp);
         int* ids = m.get<int>((size_t) n * L.n_used);
         float* wts = m.get<float>((size_t) n * L.n_used);
-        router_kernel<<<dim3(n, L.n_exp), 256, 0, s>>>((const uint16_t*) L.router, fx, logits, E, L.n_exp);
+        if (n >= 16 && E % 32 == 0) router_tile_kernel<<<dim3((n + 31) / 32, (L.n_exp + 31) / 32), 256, 0, s>>>((const uint16_t*) L.router, fx, logits, E, L.n_exp, n);
+        else router_kernel<<<dim3(n, L.n_exp), 256, 0, s>>>((const uint16_t*) L.router, fx, logits, E, L.n_exp);
         topk_kernel<<<n, 256, 0, s>>>(logits, L.n_exp, L.n_used, L.norm_topk, L.exp_scale, ids, wts, n);
         std::vector<int> hid((size_t) n * L.n_used);
         std::vector<float> hw((size_t) n * L.n_used);
