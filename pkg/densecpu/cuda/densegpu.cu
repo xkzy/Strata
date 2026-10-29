@@ -401,16 +401,20 @@ __global__ void __launch_bounds__(128) mma_q(const uint8_t* __restrict__ w, size
             const uint8_t* q0 = w0 + (size_t) sb * 210;
             const uint8_t* q1 = w1 + (size_t) sb * 210;
             const float dd[2] = {h2f(q0 + 208), h2f(q1 + 208)};
-            for (int nn = 0; nn < 2; ++nn)
+            for (int nn = 0; nn < 2; ++nn) {
+                // each word is read once for all four k groups: qh serves every k, ql serves k and k + 2 (low and high nibble)
+                uint32_t qhw[2][2], qlw[2][2][2];   // [h][r], [k & 1][h][r]
+                for (int h = 0; h < 2; ++h)
+                    for (int r = 0; r < 2; ++r) {
+                        const uint8_t* q = r ? q1 : q0;
+                        qhw[h][r] = ld32(q + 128 + 32 * nn + 4 * t4 + 16 * h);
+                        for (int kk = 0; kk < 2; ++kk) qlw[kk][h][r] = ld32(q + 64 * nn + 32 * kk + 4 * t4 + 16 * h);
+                    }
                 for (int k = 0; k < 4; ++k) {
                     int a[2][2];
                     for (int h = 0; h < 2; ++h)
-                        for (int r = 0; r < 2; ++r) {
-                            const uint8_t* q = r ? q1 : q0;
-                            const uint32_t ql = ld32(q + 64 * nn + 32 * (k & 1) + 4 * t4 + 16 * h) >> (4 * (k >> 1));
-                            const uint32_t qh = ld32(q + 128 + 32 * nn + 4 * t4 + 16 * h) >> (2 * k);
-                            a[h][r] = __vsubss4((int) ((ql & 0x0F0F0F0Fu) | ((qh & 0x03030303u) << 4)), 0x20202020);
-                        }
+                        for (int r = 0; r < 2; ++r)
+                            a[h][r] = __vsubss4((int) (((qlw[k & 1][h][r] >> (4 * (k >> 1))) & 0x0F0F0F0Fu) | (((qhw[h][r] >> (2 * k)) & 0x03030303u) << 4)), 0x20202020);
                     float sc[2][2];
                     for (int h = 0; h < 2; ++h)
                         for (int r = 0; r < 2; ++r) sc[h][r] = dd[r] * (float) ((const int8_t*) ((r ? q1 : q0) + 192))[8 * nn + 2 * k + h];
@@ -425,6 +429,7 @@ __global__ void __launch_bounds__(128) mma_q(const uint8_t* __restrict__ w, size
                         acc[c][3] += v1 * ((float) cc[0][3] * sc[0][1] + (float) cc[1][3] * sc[1][1]);
                     }
                 }
+            }
         }
     }
     for (int c = 0; c < NT; ++c)
