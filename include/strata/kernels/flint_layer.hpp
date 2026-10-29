@@ -40,6 +40,16 @@ struct FlintExpertCache {
     std::vector<char> used_prev;       // layer * n_exp + expert: it had tokens the last time that layer ran (what to prefetch)
     std::vector<char> pend;            // slot -> a prefetch copy into it may still be running
     std::vector<void*> pf_ev;          // by layer index: cudaEvent_t recorded after the prefetch copies for that layer
+    // second card: experts kept there for good run there when a call has fewer than 16 tokens; only the activations cross the bus
+    int dev1 = 0, dev2 = -1, n_slot2 = 0;
+    bool placed2 = false;
+    char* pool2 = nullptr;
+    std::vector<int> slot2_of;         // layer * n_exp + expert -> slot on the second card, -1 when not there
+    std::vector<float> use;            // layer * n_exp + expert -> decayed count of calls that routed to it (ranks what goes where)
+    void* stream2 = nullptr;           // cudaStream_t on dev2
+    void* ev_x = nullptr;              // cudaEvent_t on dev1: the activations for dev2 are in hx
+    float *x2 = nullptr, *g2 = nullptr, *u2 = nullptr, *y2 = nullptr, *hx = nullptr, *hy = nullptr;  // dev2 buffers, pinned host buffers (120 rows)
+    char* xq2 = nullptr;
 };
 
 struct FlintLayer {

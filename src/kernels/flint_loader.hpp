@@ -180,6 +180,7 @@ inline int make_cache(Loader& ld, std::vector<FlintLayer>& layers, size_t margin
     c.slot_of.assign((size_t) (max_layer + 1) * c.n_exp, -1);
     c.owner.assign(c.n_slot, -1);
     c.score.assign(c.n_slot, 0.0);
+    c.use.assign(c.slot_of.size(), 0.f);
     c.locked_at.assign(c.n_slot, 0);
     c.layer.assign((size_t) max_layer + 2, nullptr);
     c.used_prev.assign((size_t) (max_layer + 1) * c.n_exp, 0);
@@ -188,6 +189,105 @@ inline int make_cache(Loader& ld, std::vector<FlintLayer>& layers, size_t margin
     for (FlintLayer& L : layers) c.layer[L.index] = &L;
     for (FlintLayer& L : layers) if (L.moe) L.cache = &c;
     return c.n_slot;
+}
+
+/// Gives the card with the most free memory other than the current one a second pool (all but `margin` bytes) for experts that
+/// stay there; they are chosen by cache_place2 once the usage counts mean something. Returns the number of slots (0: no second card).
+inline int make_cache2(FlintExpertCache& c, size_t margin) {
+    cudaGetDevice(&c.dev1);
+    int n = 0, best = -1;
+    size_t best_free = 0;
+    cudaGetDeviceCount(&n);
+    for (int d = 0; d < n; ++d) {
+        if (d == c.dev1) continue;
+        size_t f = 0, t = 0;
+        cudaSetDevice(d);
+        cudaMemGetInfo(&f, &t);
+        if (f > best_free) best_free = f, best = d;
+    }
+    if (best < 0 || best_free <= margin || c.n_slot <= 0) { cudaSetDevice(c.dev1); return 0; }
+    cudaSetDevice(best);
+    const int total = (int) c.slot_of.size();
+    c.n_slot2 = (int) std::min<size_t>((best_free - margin) / c.slot_bytes, std::max(0, total - c.n_slot));
+    if (c.n_slot2 > 0 && cudaMalloc(&c.pool2, (size_t) c.n_slot2 * c.slot_bytes) != cudaSuccess) c.n_slot2 = 0, c.pool2 = nullptr;
+    cudaSetDevice(c.dev1);
+    if (c.n_slot2 <= 0) return 0;
+    c.dev2 = best;
+    c.slot2_of.assign(c.slot_of.size(), -1);
+    return c.n_slot2;
+}
+
+/// Copies expert `key` (layer * n_exp + expert) from host memory to dst on whichever card holds dst.
+inline void copy_expert(const FlintExpertCache& c, int key, char* dst) {
+    const FlintLayer* L = c.layer[key / c.n_exp];
+    const int e = key % c.n_exp;
+    const size_t gu = (size_t) L->gate_exps.n_out * iq_row_bytes(L->gate_exps.type, L->gate_exps.n_in);
+    const size_t up = (size_t) L->up_exps.n_out * iq_row_bytes(L->up_exps.type, L->up_exps.n_in);
+    const size_t dn = (size_t) L->down_exps.n_out * (L->down_exps.type == 14 ? (size_t) L->down_exps.n_in / 256 * 210 : iq_row_bytes(L->down_exps.type, L->down_exps.n_in));
+    cudaMemcpy(dst, (const char*) L->host_gate + (size_t) e * gu, gu, cudaMemcpyHostToDevice);
+    cudaMemcpy(dst + gu, (const char*) L->host_up + (size_t) e * up, up, cudaMemcpyHostToDevice);
+    cudaMemcpy(dst + gu + up, (const char*) L->host_down + (size_t) e * dn, dn, cudaMemcpyHostToDevice);
+}
+
+/// The experts that fit the pools, hottest first by the usage counts.
+inline std::vector<int> cache_ranked(const FlintExpertCache& c) {
+    std::vector<int> keys;
+    for (size_t k = 0; k < c.use.size(); ++k) {
+        const FlintLayer* L = c.layer[k / c.n_exp];
+        if (c.use[k] > 0 && L && L->moe) keys.push_back((int) k);
+    }
+    std::stable_sort(keys.begin(), keys.end(), [&](int a, int b) { return c.use[a] > c.use[b]; });
+    return keys;
+}
+
+/// Puts the experts ranked just below the first pool's share on the second card, once. A call with fewer than 16 tokens runs them there.
+/// shortcut: the set is chosen once per run and not revisited; re-rank at a quiet moment if the workload changes.
+inline int cache_place2(FlintExpertCache& c) {
+    if (c.n_slot2 <= 0 || c.placed2) return 0;
+    const std::vector<int> keys = cache_ranked(c);
+    if ((int) keys.size() <= c.n_slot) return 0;
+    cudaSetDevice(c.dev2);
+    int n = 0;
+    for (size_t r = c.n_slot; r < keys.size() && n < c.n_slot2; ++r, ++n) {
+        copy_expert(c, keys[r], c.pool2 + (size_t) n * c.slot_bytes);
+        c.slot2_of[keys[r]] = n;
+    }
+    cudaSetDevice(c.dev1);
+    c.placed2 = true;
+    return n;
+}
+
+/// Writes the usage counts so the next start can fill both pools before the first token.
+inline void cache_save(const std::string& path, const FlintExpertCache& c) {
+    if (c.n_slot <= 0) return;
+    const std::string tmp = path + ".tmp";
+    FILE* f = std::fopen(tmp.c_str(), "wb");
+    if (!f) return;
+    const int hdr[3] = {c.n_exp, (int) c.slot_bytes, (int) c.use.size()};
+    std::fwrite(hdr, sizeof hdr, 1, f);
+    for (float u : c.use) { const float v = (float) (u / c.inc); std::fwrite(&v, sizeof v, 1, f); }
+    std::fclose(f);
+    std::rename(tmp.c_str(), path.c_str());  // atomic: a kill during the write leaves the old file
+}
+
+/// Fills the first pool with the hottest experts of a file written by cache_save and the second card with the next ones; a file of
+/// another model is ignored. Returns the number of experts copied to the first pool.
+inline int cache_warm(const std::string& path, FlintExpertCache& c) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f || c.n_slot <= 0) { if (f) std::fclose(f); return 0; }
+    int hdr[3] = {};
+    bool ok = std::fread(hdr, sizeof hdr, 1, f) == 1 && hdr[0] == c.n_exp && hdr[1] == (int) c.slot_bytes && hdr[2] == (int) c.use.size();
+    if (ok) ok = std::fread(c.use.data(), sizeof(float), c.use.size(), f) == c.use.size();
+    std::fclose(f);
+    if (!ok) return std::fill(c.use.begin(), c.use.end(), 0.f), 0;
+    const std::vector<int> keys = cache_ranked(c);
+    int n = 0;
+    for (size_t r = 0; r < keys.size() && n < c.n_slot; ++r, ++n) {
+        copy_expert(c, keys[r], c.pool + (size_t) n * c.slot_bytes);
+        c.owner[n] = keys[r], c.slot_of[keys[r]] = n, c.score[n] = c.use[keys[r]];
+    }
+    cache_place2(c);
+    return n;
 }
 
 }  // namespace flint_loader

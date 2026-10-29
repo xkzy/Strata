@@ -224,6 +224,16 @@ int main(int argc, char** argv) {
     const int n_slot = make_cache(ld, layers, (size_t) (margin_gib * (1ull << 30)));
     std::fprintf(stderr, "flint_engine: expert pool of %d slots (%.2f GiB) for %d experts\n", n_slot, n_slot * (double) ld.cache.slot_bytes / 1073741824.0,
                  (n_layer - 2) * ld.cache.n_exp);
+    if (!getenv("FLINT_NO_CARD2")) {
+        const int n2 = make_cache2(ld.cache, (size_t) (1.0 * (1ull << 30)));
+        if (n2) std::fprintf(stderr, "flint_engine: second pool of %d slots (%.2f GiB) on device %d\n", n2, n2 * (double) ld.cache.slot_bytes / 1073741824.0, ld.cache.dev2);
+    }
+    const std::string pool_file = model + ".pool";  // the hot experts of the last run
+    {
+        const auto tw = std::chrono::steady_clock::now();
+        const int n = flint_loader::cache_warm(pool_file, ld.cache);
+        if (n) std::fprintf(stderr, "flint_engine: pool warmed with %d experts in %.1f s\n", n, std::chrono::duration<double>(std::chrono::steady_clock::now() - tw).count());
+    }
     std::vector<float> logits(head.n_out);
     // runs ids[0..n) at positions pos.. and leaves the last row's logits in `logits`
     auto step = [&](const int32_t* ids, int n, int pos) {
@@ -305,6 +315,8 @@ int main(int argc, char** argv) {
             }
         }
         { const FlintExpertCache& c = ld.cache; std::fprintf(stderr, "flint_engine: expert cache: %lld hits, %lld copied in, %lld read from host\n", c.hits, c.copies, c.direct); }
+        if (const int n2 = flint_loader::cache_place2(ld.cache)) std::fprintf(stderr, "flint_engine: %d experts placed on device %d\n", n2, ld.cache.dev2);
+        flint_loader::cache_save(pool_file, ld.cache);
         say("DONE %d %zu %lld %lld %s", n, ids.size(), (long long) prefill, (long long) (ms_since() - prefill), reason);
     }
 }

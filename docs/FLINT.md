@@ -32,12 +32,19 @@ by what q8_1 rounding of the activations alone does to the reference (`src/kerne
   the span is not bound by shared memory. At 262144 positions the K/V cache is 7 GiB (14 GiB in fp32). fp16 vs fp32 K/V:
   `flint_model_parity` passes 9/9 with TV 0.056 0.002 0.359 0.005 0.051 0.000 0.008 0.006 0.050 (fp32: 0.090 0.001 0.343
   0.005 0.004 0.000 0.010 0.004 0.022; that run's TV floor from q8_1 alone is in the harness header).
-- Decode time is now the misses: about 120 experts (300 MB) copied over PCIe per token. A larger pool or a
-  stored expert profile to warm it would raise the hit rate.
+- Decode time is mostly the misses: experts the pool lacks are copied over PCIe. Two things cut them. (1) The engine saves how often
+  each expert was routed to `<model>.gguf.pool` after every reply and, at the next start, fills the pool with the hottest ones
+  before the first token (4614 experts in 0.7 s): the first 8000 tokens of a fresh prompt took 4.7 s instead of 6.4 s; decode did not change
+  (the pool is full after any prompt). (2) The card with the next most memory (RTX 4060, 8 GB) holds a second pool of 2706 experts, the ones ranked just
+  below the first pool's. A call with fewer than 16 tokens runs those experts on that card: only the activations (8 KB per token and
+  expert) go through host memory and back, the weights stay. The set is chosen once per run, from the saved counts at start or after the
+  first reply. `FLINT_NO_CARD2=1` turns it off. Decode on a 200-token prompt with 300 sampled tokens (RTX 5060 Ti + RTX 4060, two runs per
+  start, two starts each): 22.2-23.7 ms/token without, 17.9-21.8 with; experts copied in per 600 tokens 44-48k without, 27-32k with. A 24-token
+  greedy answer after a 1500-token prompt is identical with and without. The two cards cannot read each other's memory (no peer access here).
 - The pre-tokenizer pattern (digits in groups of three, letters only) is the GLM4 one, not read from the file; checked
   against the Python `regex` module, not against the model's own tokenizer.
 - Tool calls come back as text: the output parser does not know flint's `<tool_call>name<arg_key>` format yet.
-- Only the card with the most memory is used.
+- The card with the most memory runs the model; a second card only holds the extra pool of experts above.
 
 ## Several models
 
