@@ -5,7 +5,7 @@ import (
 )
 
 func TestSageBackend_SyntaxTranslation(t *testing.T) {
-	backend := NewSageBackend()
+	backend := NewUnifiedCasBackend()
 
 	s1 := backend.TranslateSageSyntax("var('x'); x^2 + 1")
 	if s1 != "x^2 + 1" {
@@ -29,7 +29,7 @@ func TestSageBackend_SyntaxTranslation(t *testing.T) {
 }
 
 func TestSageBackend_NumberTheory(t *testing.T) {
-	backend := NewSageBackend()
+	backend := NewUnifiedCasBackend()
 
 	// is_prime(1000000007)
 	res1 := backend.Execute(MathRequest{Expression: "is_prime(1000000007)", Operation: OpEvaluate})

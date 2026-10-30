@@ -4,7 +4,7 @@ Strata accepts **SageMath-style syntax** in the Math Runtime and runs it on its 
 
 ## Overview
 
-The SageMath backend (`SageBackend`) provides Python- and SageMath-compatible execution:
+The Sage dialect (`sage` in `pkg/mathruntime/dialect.go`, see MATH_RUNTIME.md "Input and output languages") provides Python- and SageMath-compatible execution:
 - **Syntax Compatibility**:
   - Variable declarations: `var('x')`, `var('x y z')`, `x, y = var('x y')`
   - Polynomial rings: `R.<x> = PolynomialRing(QQ)`

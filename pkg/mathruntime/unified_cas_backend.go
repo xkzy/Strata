@@ -35,58 +35,7 @@ func (b *UnifiedCasBackend) SupportsOperation(op MathOperation, mode MathMode) b
 }
 
 // TranslateSageSyntax converts SageMath Pythonic mathematical expressions into canonical CAS form.
-func (b *UnifiedCasBackend) TranslateSageSyntax(sageExpr string) string {
-	if sageExpr == "" {
-		return ""
-	}
-
-	text := sageExpr
-
-	// 1. Strip var declarations: var('x'), var('x y z'), x, y = var('x y')
-	varDeclRe := regexp.MustCompile(`(?:(?:[a-zA-Z_][a-zA-Z0-9_,\s]*=)?\s*var\s*\(\s*['"][^'"]*['"]\s*\)\s*(?:;|\n)?)`)
-	text = varDeclRe.ReplaceAllString(text, "")
-
-	// 2. Strip PolynomialRing declarations: R.<x> = PolynomialRing(QQ)
-	ringDeclRe := regexp.MustCompile(`(?:[a-zA-Z_][a-zA-Z0-9_]*\.<[^>]+>\s*=\s*(?:PolynomialRing\([^)]+\)|[a-zA-Z0-9_]+\[[^\]]+\])\s*(?:;|\n)?)`)
-	text = ringDeclRe.ReplaceAllString(text, "")
-
-	text = strings.TrimSpace(text)
-
-	// 3. Dot-method transformations:
-	// expr.diff(x) -> diff(expr, x)
-	// expr.factor() -> factor(expr)
-	// expr.roots(x) -> solve(expr == 0, x)
-	dotMethodRe := regexp.MustCompile(`\(?([a-zA-Z0-9_\+\-\*\/\^\s\(\)\[\],]+?)\)?\.(diff|derivative|integrate|integral|factor|expand|simplify|roots|det|inverse|transpose|rank|trace|solve|linearsolve|qr|cholesky)\s*\(([^)]*)\)`)
-	for {
-		m := dotMethodRe.FindStringSubmatch(text)
-		if len(m) == 0 {
-			break
-		}
-		target := m[1]
-		method := m[2]
-		args := m[3]
-
-		var replacement string
-		if method == "roots" {
-			v := "x"
-			if strings.TrimSpace(args) != "" {
-				v = strings.TrimSpace(args)
-			}
-			replacement = fmt.Sprintf("solve(%s == 0, %s)", target, v)
-		} else if strings.TrimSpace(args) == "" {
-			replacement = fmt.Sprintf("%s(%s)", method, target)
-		} else {
-			replacement = fmt.Sprintf("%s(%s, %s)", method, target, args)
-		}
-		text = strings.Replace(text, m[0], replacement, 1)
-	}
-
-	// 4. Translate matrix([[...]]) to [[...]]
-	matrixRe := regexp.MustCompile(`\bmatrix\s*\(\s*(\[\[[\s\S]*?\]\])\s*\)`)
-	text = matrixRe.ReplaceAllString(text, "$1")
-
-	return strings.TrimSpace(text)
-}
+func (b *UnifiedCasBackend) TranslateSageSyntax(sageExpr string) string { return sageParse(sageExpr) }
 
 // ToWolframSyntax converts a MathRequest into Wolfram Language syntax.
 func (b *UnifiedCasBackend) ToWolframSyntax(req MathRequest) string {

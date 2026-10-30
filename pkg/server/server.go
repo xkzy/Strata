@@ -1051,10 +1051,7 @@ func (s *StrataServer) handleMathBackends(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"cas_available":          s.MathRuntime.CasBackend.Available,
 		"cas_version":            s.MathRuntime.CasBackend.Version,
-		"mathics_available":      s.MathRuntime.MathicsBackend.Available,
-		"mathics_version":        s.MathRuntime.MathicsBackend.Version,
-		"sage_available":         s.MathRuntime.SageBackend.Available,
-		"sage_version":           s.MathRuntime.SageBackend.Version,
+		"languages":              mathruntime.Languages(),
 		"lean_available":         s.MathRuntime.LeanBackend.Available,
 		"lean_version":           s.MathRuntime.LeanBackend.Version,
 		"lean_kernel":            "go port of the Lean 4 kernel (in process, no external binary)",

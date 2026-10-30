@@ -2,6 +2,7 @@ package mathruntime
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -84,8 +85,9 @@ func (c *MathResultCache) GetSessionVars(sessionID string) map[string]string {
 func (c *MathResultCache) MakeCacheKey(req MathRequest) string {
 	parser := NewExpressionParser()
 	canon := parser.Canonicalize(req.Expression)
-	return fmt.Sprintf("%s|%s|%s|%s|%s|%d|%s|%d",
-		req.Operation, req.Mode, canon, req.Variable, req.Point, req.Order, req.Assumptions, req.PrecisionDigits)
+	return fmt.Sprintf("%s|%s|%s|%s|%s|%d|%s|%d|%s|%s",
+		req.Operation, req.Mode, canon, req.Variable, req.Point, req.Order, req.Assumptions, req.PrecisionDigits,
+		strings.ToLower(req.InputLanguage), strings.ToLower(req.OutputLanguage))
 }
 
 func (c *MathResultCache) Get(req MathRequest) (MathResult, bool) {

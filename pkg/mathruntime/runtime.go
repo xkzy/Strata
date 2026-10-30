@@ -12,15 +12,13 @@ import (
 )
 
 type MathRuntime struct {
-	Limits         MathSecurityLimits
-	Validator      *ExpressionValidator
-	Parser         *ExpressionParser
-	Cache          *MathResultCache
-	FastBackend    *FastNumericBackend
-	CasBackend     *UnifiedCasBackend
-	MathicsBackend *MathicsBackend
-	SageBackend    *SageBackend
-	LeanBackend    *LeanBackend
+	Limits      MathSecurityLimits
+	Validator   *ExpressionValidator
+	Parser      *ExpressionParser
+	Cache       *MathResultCache
+	FastBackend *FastNumericBackend
+	CasBackend  *UnifiedCasBackend
+	LeanBackend *LeanBackend
 
 	stats struct {
 		totalCalculations    uint64
@@ -47,15 +45,13 @@ func NewMathRuntime(limits *MathSecurityLimits) *MathRuntime {
 
 	cas := NewUnifiedCasBackend()
 	return &MathRuntime{
-		Limits:         lim,
-		Validator:      NewExpressionValidator(lim),
-		Parser:         NewExpressionParser(),
-		Cache:          NewMathResultCache(10000),
-		FastBackend:    NewFastNumericBackend(),
-		CasBackend:     cas,
-		MathicsBackend: NewMathicsBackend(),
-		SageBackend:    NewSageBackend(),
-		LeanBackend:    NewLeanBackend(lim.Timeout),
+		Limits:      lim,
+		Validator:   NewExpressionValidator(lim),
+		Parser:      NewExpressionParser(),
+		Cache:       NewMathResultCache(10000),
+		FastBackend: NewFastNumericBackend(),
+		CasBackend:  cas,
+		LeanBackend: NewLeanBackend(lim.Timeout),
 	}
 }
 
@@ -86,6 +82,27 @@ func (r *MathRuntime) ProcessRequest(req MathRequest) MathResult {
 			Status:             StatusInvalidExpression,
 			ErrorMessage:       msg,
 			CompactObservation: fmt.Sprintf("[MathError: Invalid expression: %s]", msg),
+		}
+	}
+
+	// Dialects: the request is read in its input language; the result is written in the output language
+	in, err := inputDialect(req)
+	var out Dialect
+	if err == nil {
+		out, err = outputDialect(req, in)
+	}
+	if err != nil {
+		return MathResult{RequestID: req.RequestID, Status: StatusInvalidExpression, ErrorMessage: err.Error(),
+			CompactObservation: fmt.Sprintf("[MathError: Invalid expression: %s]", err.Error())}
+	}
+	if in.Name == LangLean {
+		req.Operation = OpProve
+	} else {
+		req.Expression = in.Parse(req.Expression)
+		if in.Name == LangLaTeX && strings.Contains(req.Expression, `\`) { // a command latexParse does not read
+			msg := "unsupported LaTeX command in " + req.Expression
+			return MathResult{RequestID: req.RequestID, Status: StatusInvalidExpression, ErrorMessage: msg,
+				CompactObservation: fmt.Sprintf("[MathError: Invalid expression: %s]", msg)}
 		}
 	}
 
@@ -176,37 +193,21 @@ func (r *MathRuntime) ProcessRequest(req MathRequest) MathResult {
 	atomic.AddUint64(&r.stats.cacheMisses, 1)
 
 	// Step 3: Calculation Routing
-	expr := req.Expression
-	hasSage := strings.Contains(expr, "var(") ||
-		strings.Contains(expr, ".diff(") ||
-		strings.Contains(expr, ".derivative(") ||
-		strings.Contains(expr, ".integrate(") ||
-		strings.Contains(expr, ".integral(") ||
-		strings.Contains(expr, ".factor(") ||
-		strings.Contains(expr, ".expand(") ||
-		strings.Contains(expr, ".simplify(") ||
-		strings.Contains(expr, ".roots(") ||
-		strings.Contains(expr, ".det(") ||
-		strings.Contains(expr, ".inverse(") ||
-		strings.Contains(expr, ".transpose(") ||
-		strings.Contains(expr, "matrix([") ||
-		strings.Contains(expr, "is_prime(") ||
-		strings.Contains(expr, "euler_phi(") ||
-		strings.Contains(expr, "fibonacci(") ||
-		strings.Contains(expr, "power_mod(") ||
-		strings.Contains(expr, "xgcd(") ||
-		strings.ToLower(req.TenantID) == "sage"
-
 	useFast := r.RouteBackend(req, complexity)
 	var res MathResult
-	if hasSage && r.SageBackend.Available {
-		res = r.SageBackend.Execute(req)
-	} else if useFast {
+	if useFast && in.Name != LangSage {
 		atomic.AddUint64(&r.stats.fastPathCount, 1)
 		res = r.FastBackend.Execute(req)
 	} else {
-		atomic.AddUint64(&r.stats.mathicsCount, 1)
-		res = r.MathicsBackend.Execute(req)
+		if in.Name != LangSage {
+			atomic.AddUint64(&r.stats.mathicsCount, 1)
+		}
+		res = r.CasBackend.Execute(req)
+		res.BackendName, res.BackendVersion = in.Backend, in.Version
+	}
+	if res.Status == StatusSuccess {
+		res.ExactResult = out.Format(res.ExactResult, req.Operation)
+		res.RawResult = res.ExactResult
 	}
 
 	res.ComplexityScore = complexity

@@ -425,3 +425,17 @@ Three lemmas the file needed were added: `Nat.mul_add_div_of_lt`, `Int.mul_ediv_
 - `int_gcd_test.go` pins five statements (accept) and two drifted ones (reject); the rest are checked by the prelude build.
 - Proofs are kernel-checked only, never compared with real Lean. Prelude build 45 → 56 ms (100 runs). Nothing is committed.
 - Other `Init/Data/{Nat,Int}` files (Basic, Lemmas, Dvd, Mod, MinMax …) are not ported and are far larger.
+
+### Lean port: Dvd / Mod / Div / MinMax pieces (2026-10-30, after the push)
+
+`prelude_nat_extra16.go` … `prelude_nat_extra20.go` and `prelude_zint_ediv.go`: `Nat.dvd_add_iff_left/right`, `dvd_mod_iff`,
+`dvd_sub_iff_*`, `add_mul_div_left/right`, the `Nat.mod_mul` family, `div_div_eq_div_mul`, `div_eq_of_lt_le`, `mul_div_mul_*`,
+`mod_def`, `Nat.min/max` lemmas (`min_comm`, `le_min`, `max_lt` …), `Nat.zero_dvd/dvd_one`, `mul_lt_mul_left/right`, the Int
+`ediv`/`emod` constructor equations and `Int.zero_ne_one`. `Nat.mul_add_div_of_lt` moved to `prelude_nat_extra16b.go` (it must
+sort before `extra17`). Cg/tp bind a variable named `z`, so theorems whose own variable is `z` use `t` (name capture otherwise).
+- Still missing from the files touched (compare names with the scan in the session notes): everything that unfolds through `ite`
+  (`div_eq_ite`, `mod_eq_ite`, `compare_eq_ite_*`), `sub_mul_div_of_le`, `mul_sub_div`, `one_mod_eq_zero_iff`,
+  `zero_eq_one_mod_iff`, `add_min_add_*`, `mul_min_mul_*` and the `max` twins, `sub_mod_add_mod_cancel` (needs `NeZero`), the
+  `*_eq_true/false` dvd lemmas (need `propext`), `Int.ofNat_tdiv/fdiv`, Nat/Lemmas, Nat/Basic, Int/Order, Int/Lemmas,
+  Int/DivMod/Lemmas, Bitwise, Linear, Pow, ToString and about 1500 more theorems. Not committed.
+

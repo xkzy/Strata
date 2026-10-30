@@ -49,15 +49,39 @@ The Math Runtime provides:
                           │
                     Math Runtime
                           │
-          ┌───────────────┼────────────────┬───────────────┐
-          │               │                │               │
-     Fast Numeric    Mathics-Core       SageMath     Lean 4 kernel
-       Backend          Backend          Backend      (Go port)
-          │               │                │               │
-          └───────────────┼────────────────┴───────────────┘
+          ┌───────────────┼────────────────┐
+          │               │                │
+     Dialects in/out   Fast Numeric    Lean 4 kernel
+  (infix, Wolfram,       Backend         (Go port)
+ Sage, LaTeX, Lean)          │                │
+          │                  │                │
+     StrataCAS engine        │                │
+          │                  │                │
+          └───────────────┼────────────────┘
                           │
                     Math Result Store
 ```
+
+## Input and output languages
+
+One engine (StrataCAS) and one backend registry. A request is written in an input language and the result comes back
+in an output language; both are fields of the request (`input_language`, `output_language`), and each is one of
+`infix` (default), `wolfram`, `sage`, `latex`, `lean`. An empty input language is detected (Sage by its tokens such as
+`var(`, `.factor()`, `is_prime(`, or the `sage` tenant), else `infix`. An empty output language means the input's. An
+unknown name is rejected, not guessed. The table is `dialects` in `pkg/mathruntime/dialect.go`; `GET .../math/backends`
+lists it under `languages`.
+
+| Language | Reads | Writes |
+|---|---|---|
+| `infix` | `x^2 + 1` (as before) | unchanged |
+| `wolfram` | `Head[args]` for D, Integrate, Solve, Simplify, Factor, Expand, Limit, Det, Inverse, Transpose, Sin, Cos, Tan, Exp, Log, Sqrt | unchanged (the engine's native form) |
+| `sage` | `var(..)`, `R.<x> = ..`, `expr.method(..)`, `matrix([[..]])` | lists as `[..]`, `->` as `==` |
+| `latex` | `\frac`, `\sqrt`, `^{..}`, `\cdot`, `\times`, `\pi`, `\sin`-style, `\left`/`\right`; any other `\command` is rejected | `a/b` as `\frac`, `^n` as `^{n}`, `*` as `\cdot` (short fractions only) |
+| `lean` | a claim, sent to the Lean kernel (same as `operation: "prove"`) | not an output language |
+
+These are syntax translators over the one Go engine: there is no external Mathics or Sage. The `Head[args]` rewrite
+does not infer the operation: send `operation` as before. Measured: `go test ./pkg/mathruntime/...` (accept and reject
+cases in `dialect_test.go`).
 
 ## API Endpoints
 
@@ -432,7 +456,7 @@ Two places use it without being asked:
 **Measured** (AMD Ryzen 9 9950X3D, `go test -bench . ./pkg/mathruntime/lean`, 500 runs each, one run of the machine):
 building the prelude 1.8 ms → 10.7 ms over the port's history (the Int divisibility proofs, the div/mod model, the
 `Nat.ble` order lemmas, the order and divisibility lemmas under `Nat.gcd_dvd_left`/`right`, the subtraction layer under
-`Nat.dvd_gcd`/`Nat.gcd_le_left`, and the order/multiplication lemmas under `Nat.gcd_comm`/`Nat.gcd_assoc`) up to 10.7 ms, then the rest of the `Gcd`, `Lcm` and `Coprime` files (`prelude_nat_extra*.go`, about 300 more theorems) up to 45 ms, then `Init/Data/Int/Gcd.lean` (`prelude_zint_gcd01–18.go`, about 190 more theorems (counted from `ithm` calls) plus `Int.mul_ediv_cancel_left`, `Int.natAbs_ediv_of_dvd`, `Nat.mul_add_div_of_lt` they needed) up to 56 ms (100 runs of `BenchmarkBuildPrelude`, same machine); checking
+`Nat.dvd_gcd`/`Nat.gcd_le_left`, and the order/multiplication lemmas under `Nat.gcd_comm`/`Nat.gcd_assoc`) up to 10.7 ms, then the rest of the `Gcd`, `Lcm` and `Coprime` files (`prelude_nat_extra*.go`, about 300 more theorems) up to 45 ms, then `Init/Data/Int/Gcd.lean` (`prelude_zint_gcd01–18.go` (the Nat helper `prelude_nat_extra16b.go` was one of them), about 190 more theorems (counted from `ithm` calls) plus `Int.mul_ediv_cancel_left`, `Int.natAbs_ediv_of_dvd`, `Nat.mul_add_div_of_lt` they needed) up to 56 ms (100 runs of `BenchmarkBuildPrelude`, same machine); checking
 `2^10 = 1024` 14 µs; `123456789 * 987654321 = 121932631112635269` 14 µs;
 `3 ∣ 12 ∧ 5 < 7 ∧ ¬ (9 = 10)` 43 µs; the `Int` claims `-3 < 2` 17 µs,
 `-123456789 * 987654321 = -121932631112635269` 26 µs, `-12 / 7 = -2 ∧ -12 % 7 = 2` 51 µs,

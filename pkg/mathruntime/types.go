@@ -89,6 +89,11 @@ type MathRequest struct {
 	Mode            MathMode      `json:"mode"`
 	PrecisionDigits int           `json:"precision_digits"`
 	Timeout         time.Duration `json:"timeout"`
+	// InputLanguage names the notation of Expression: infix, wolfram, sage, latex or lean ("lean" makes it a claim to
+	// prove). Empty means detect (Sage by its tokens) and otherwise infix.
+	InputLanguage string `json:"input_language,omitempty"`
+	// OutputLanguage names the notation of the result: infix, wolfram, sage or latex. Empty means the input's.
+	OutputLanguage string `json:"output_language,omitempty"`
 }
 
 type MathResult struct {
