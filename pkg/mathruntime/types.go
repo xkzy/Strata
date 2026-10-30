@@ -30,6 +30,7 @@ const (
 	OpModInverse      MathOperation = "mod_inverse"
 	OpModPow          MathOperation = "mod_pow"
 	OpProbability     MathOperation = "probability"
+	OpProve           MathOperation = "prove"
 )
 
 type MathMode string
@@ -116,6 +117,8 @@ type MathVerificationResult struct {
 	DiscrepancyDetails string  `json:"discrepancy_details,omitempty"`
 	RelativeError      float64 `json:"relative_error"`
 	Confidence         float64 `json:"confidence"`
+	// KernelCertified: the Lean kernel independently proved ground truth = claimed value (see certify)
+	KernelCertified bool `json:"kernel_certified,omitempty"`
 }
 
 type MathRuntimeStats struct {
@@ -131,4 +134,6 @@ type MathRuntimeStats struct {
 	SecurityRejections   uint64  `json:"security_rejections"`
 	AvgExecutionTimeMs   float64 `json:"avg_execution_time_ms"`
 	TotalExecutionTimeMs float64 `json:"total_execution_time_ms"`
+	LeanCount            uint64  `json:"lean_count"`
+	LeanRefuted          uint64  `json:"lean_refuted"`
 }

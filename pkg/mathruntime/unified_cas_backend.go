@@ -372,8 +372,6 @@ func (b *UnifiedCasBackend) Execute(req MathRequest) MathResult {
 	return res
 }
 
-
-
 func fibonacciBig(n int64) *big.Int {
 	if n == 0 {
 		return big.NewInt(0)
@@ -390,4 +388,3 @@ func fibonacciBig(n int64) *big.Int {
 	}
 	return b
 }
-

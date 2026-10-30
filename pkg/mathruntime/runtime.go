@@ -20,6 +20,7 @@ type MathRuntime struct {
 	CasBackend     *UnifiedCasBackend
 	MathicsBackend *MathicsBackend
 	SageBackend    *SageBackend
+	LeanBackend    *LeanBackend
 
 	stats struct {
 		totalCalculations    uint64
@@ -30,6 +31,8 @@ type MathRuntime struct {
 		verificationCount    uint64
 		verificationFailures uint64
 		timeouts             uint64
+		leanCount            uint64
+		leanRefuted          uint64
 		securityRejections   uint64
 		totalExecTimeMs      float64
 	}
@@ -52,6 +55,7 @@ func NewMathRuntime(limits *MathSecurityLimits) *MathRuntime {
 		CasBackend:     cas,
 		MathicsBackend: NewMathicsBackend(),
 		SageBackend:    NewSageBackend(),
+		LeanBackend:    NewLeanBackend(lim.Timeout),
 	}
 }
 
@@ -83,6 +87,12 @@ func (r *MathRuntime) ProcessRequest(req MathRequest) MathResult {
 			ErrorMessage:       msg,
 			CompactObservation: fmt.Sprintf("[MathError: Invalid expression: %s]", msg),
 		}
+	}
+
+	// A claim is not an expression to evaluate: "4 = 4" must not be read as an assignment, and the kernel has its own
+	// grammar and budget, so it goes straight to the Lean backend
+	if req.Operation == OpProve {
+		return r.proveRequest(req)
 	}
 
 	// Step 0: Check for Variable Assignment (e.g. x = 10)
@@ -365,6 +375,7 @@ func (r *MathRuntime) VerifyCalculation(llmOutput, expectedExpr string) MathVeri
 	if claimed == canonGT {
 		ver.Matches = true
 		ver.RelativeError = 0.0
+		r.crossCheckWithKernel(&ver, expectedExpr, canonGT)
 		return ver
 	}
 
@@ -400,6 +411,21 @@ func (r *MathRuntime) VerifyCalculation(llmOutput, expectedExpr string) MathVeri
 	ver.DiscrepancyDetails = fmt.Sprintf("LLM output '%s' does not match verified mathematical result '%s'", claimed, gt.ExactResult)
 	atomic.AddUint64(&r.stats.verificationFailures, 1)
 	return ver
+}
+
+// crossCheckWithKernel has the Lean kernel re-derive a result the CAS produced. If they disagree, one of the two
+// engines is wrong, so the verification is reported as failed instead of trusting either.
+func (r *MathRuntime) crossCheckWithKernel(ver *MathVerificationResult, expr, value string) {
+	checked, agrees := r.certify(expr, value)
+	switch {
+	case !checked:
+	case agrees:
+		ver.KernelCertified, ver.Confidence = true, 1.0
+	default:
+		ver.Matches = false
+		ver.DiscrepancyDetails = fmt.Sprintf("the Lean kernel refutes %s = %s, which the CAS reported; one engine is wrong", expr, value)
+		atomic.AddUint64(&r.stats.verificationFailures, 1)
+	}
 }
 
 func (r *MathRuntime) InterceptAndEvaluate(text string) (string, []MathResult) {
@@ -454,6 +480,14 @@ func (r *MathRuntime) InterceptAndVerifyIntent(text string) *MathResult {
 					CompactObservation:  fmt.Sprintf("[Theorem Verified: %s => %s]", thm.Name, ver.GroundTruthResult),
 				}
 			}
+		}
+	}
+
+	// 1b. A Lean-style claim: `example : 2^10 = 1024 := by decide`
+	if claim, ok := leanClaimInText(text); ok {
+		res := r.ProcessRequest(MathRequest{Operation: OpProve, Expression: claim, Mode: ModeExact})
+		if res.Status == StatusSuccess {
+			return &res
 		}
 	}
 
@@ -514,6 +548,8 @@ func (r *MathRuntime) GetStats() MathRuntimeStats {
 	verFail := atomic.LoadUint64(&r.stats.verificationFailures)
 	timeouts := atomic.LoadUint64(&r.stats.timeouts)
 	secRej := atomic.LoadUint64(&r.stats.securityRejections)
+	leanN := atomic.LoadUint64(&r.stats.leanCount)
+	leanRef := atomic.LoadUint64(&r.stats.leanRefuted)
 
 	r.statsMu.Lock()
 	totalTime := r.stats.totalExecTimeMs
@@ -541,5 +577,7 @@ func (r *MathRuntime) GetStats() MathRuntimeStats {
 		SecurityRejections:   secRej,
 		AvgExecutionTimeMs:   avgTime,
 		TotalExecutionTimeMs: totalTime,
+		LeanCount:            leanN,
+		LeanRefuted:          leanRef,
 	}
 }

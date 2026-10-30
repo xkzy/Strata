@@ -23,17 +23,17 @@ const (
 )
 
 type ScientificFormula struct {
-	ID          string          `json:"id"`
-	Name        string          `json:"name"`
-	Domain      CASDomainType   `json:"domain"`
-	Equation    string          `json:"equation"`
-	Symbols     []string        `json:"symbols"`
-	TargetVar   string          `json:"target_var"`
-	Dimensions  DimensionVector `json:"dimensions"`
-	Unit        string          `json:"unit"`
-	Assumptions []string        `json:"assumptions"`
-	Literature  string          `json:"literature"`
-	Version     string          `json:"version"`
+	ID          string                                         `json:"id"`
+	Name        string                                         `json:"name"`
+	Domain      CASDomainType                                  `json:"domain"`
+	Equation    string                                         `json:"equation"`
+	Symbols     []string                                       `json:"symbols"`
+	TargetVar   string                                         `json:"target_var"`
+	Dimensions  DimensionVector                                `json:"dimensions"`
+	Unit        string                                         `json:"unit"`
+	Assumptions []string                                       `json:"assumptions"`
+	Literature  string                                         `json:"literature"`
+	Version     string                                         `json:"version"`
 	SolveFunc   func(vars map[string]float64) (float64, error) `json:"-"`
 }
 

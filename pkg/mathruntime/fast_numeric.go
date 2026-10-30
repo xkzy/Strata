@@ -549,7 +549,8 @@ func (b *FastNumericBackend) evalExactRational(expr string) (*big.Rat, float64, 
 			if c == '-' && (i == 0 || clean[i-1] == '(' || clean[i-1] == '+' || clean[i-1] == '-' || clean[i-1] == '*' || clean[i-1] == '/') {
 				values = append(values, big.NewRat(0, 1))
 			}
-			for len(ops) > 0 && getPrecedence(ops[len(ops)-1]) >= getPrecedence(c) {
+			// ^ is right-associative: 2^3^2 = 2^(3^2)
+			for len(ops) > 0 && (getPrecedence(ops[len(ops)-1]) > getPrecedence(c) || (c != '^' && getPrecedence(ops[len(ops)-1]) == getPrecedence(c))) {
 				if err := applyOp(ops[len(ops)-1]); err != nil {
 					return nil, 0, err
 				}

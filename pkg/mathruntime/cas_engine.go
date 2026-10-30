@@ -28,24 +28,24 @@ type CASProblem struct {
 
 // CASResult represents the authoritative deterministic outcome with complete physical provenance
 type CASResult struct {
-	ProblemID           string          `json:"problem_id,omitempty"`
-	Status              MathStatus      `json:"status"`
-	Domain              CASDomainType   `json:"domain"`
-	CanonicalExpression string          `json:"canonical_expression"`
-	ExactResult         string          `json:"exact_result"`
-	NumericResult       string          `json:"numeric_result,omitempty"`
-	Unit                string          `json:"unit,omitempty"`
-	Dimension           string          `json:"dimension,omitempty"`
-	FormulaUsed         string          `json:"formula_used,omitempty"`
-	ConstantsUsed       []string        `json:"constants_used,omitempty"`
-	BackendName         string          `json:"backend_name"`
-	BackendVersion      string          `json:"backend_version"`
-	ExecutionTimeMs     float64         `json:"execution_time_ms"`
-	CompactObservation  string          `json:"compact_observation"`
-	ErrorMessage        string          `json:"error_message,omitempty"`
-	VerificationState   string          `json:"verification_state,omitempty"` // VERIFIED, CONTRADICTED, UNKNOWN, DIMENSION_ERROR
-	CacheHit            bool            `json:"cache_hit"`
-	Provenance          string          `json:"provenance"`
+	ProblemID           string        `json:"problem_id,omitempty"`
+	Status              MathStatus    `json:"status"`
+	Domain              CASDomainType `json:"domain"`
+	CanonicalExpression string        `json:"canonical_expression"`
+	ExactResult         string        `json:"exact_result"`
+	NumericResult       string        `json:"numeric_result,omitempty"`
+	Unit                string        `json:"unit,omitempty"`
+	Dimension           string        `json:"dimension,omitempty"`
+	FormulaUsed         string        `json:"formula_used,omitempty"`
+	ConstantsUsed       []string      `json:"constants_used,omitempty"`
+	BackendName         string        `json:"backend_name"`
+	BackendVersion      string        `json:"backend_version"`
+	ExecutionTimeMs     float64       `json:"execution_time_ms"`
+	CompactObservation  string        `json:"compact_observation"`
+	ErrorMessage        string        `json:"error_message,omitempty"`
+	VerificationState   string        `json:"verification_state,omitempty"` // VERIFIED, CONTRADICTED, UNKNOWN, DIMENSION_ERROR
+	CacheHit            bool          `json:"cache_hit"`
+	Provenance          string        `json:"provenance"`
 }
 
 // UnifiedCASEngine defines the contract for Strata's shared CAS substrate

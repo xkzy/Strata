@@ -32,21 +32,21 @@ const (
 )
 
 type TheoremDef struct {
-	ID            string          `json:"id"`
-	Name          string          `json:"name"`
-	Aliases       []string        `json:"aliases"`
-	Category      TheoremCategory `json:"category"`
-	Statement     string          `json:"statement"`
-	Formula       string          `json:"formula"`
-	Preconditions []string        `json:"preconditions"`
-	LiteratureRef string          `json:"literature_ref"`
+	ID            string                                                         `json:"id"`
+	Name          string                                                         `json:"name"`
+	Aliases       []string                                                       `json:"aliases"`
+	Category      TheoremCategory                                                `json:"category"`
+	Statement     string                                                         `json:"statement"`
+	Formula       string                                                         `json:"formula"`
+	Preconditions []string                                                       `json:"preconditions"`
+	LiteratureRef string                                                         `json:"literature_ref"`
 	Verifier      func(args []string, assumptions string) MathVerificationResult `json:"-"`
 }
 
 type TheoremRegistry struct {
-	theorems   []TheoremDef
-	lookupMap  map[string]int
-	mu         sync.RWMutex
+	theorems  []TheoremDef
+	lookupMap map[string]int
+	mu        sync.RWMutex
 }
 
 var (

@@ -303,3 +303,125 @@ chat request is served from the virtual-context working set (a 200,000-character
 
 No GPU test while a device is missing or the driver reports a fault, and a reboot or driver reload is not evidence a
 defect is fixed (`gpu-test-plan.md`). Nothing here is committed.
+
+
+---
+
+## Addendum 2026-10-26: Lean 4 kernel in the math runtime (separate work; unrelated to the GPU audit above)
+
+State on 2026-10-26. Nothing is committed. Request that started it: "add lean to math verifier ... port it and merge into our math runtime".
+
+### What exists
+
+A Go port of the Lean 4 kernel (derived from leanprover/lean4 v4.35.0, Apache-2.0) inside `pkg/mathruntime`, used through a new `prove` operation. No external Lean binary is used.
+
+| Where | What |
+|---|---|
+| `pkg/mathruntime/lean/` | the kernel port (levels, exprs, env, type checker, inductives, prelude, claim elaborator); `LICENSE` is Lean's |
+| `pkg/mathruntime/lean_backend.go` | `LeanBackend`, `ProveWithLean` (replaces the old `VerifyWithLean`), CAS cross-check |
+| `pkg/mathruntime/runtime.go`, `types.go` | `OpProve`, `kernel_certified`, stats, intercept of `example : <claim> := by decide` |
+| `pkg/mathruntime/fast_numeric.go` | CAS bug fix: `^` is now right-associative (`2^3^2` = 512, was 64) |
+| `pkg/server/server.go`, `generate.go` | `lean_*` fields on `/v1/strata/math/backends`; `factLine` renders a Lean verdict as `[Lean kernel: claim => refuted]` instead of `claim = refuted` |
+| `docs/MATH_RUNTIME.md` | "Lean 4 kernel" section (grammar, limits, axioms, benchmarks) |
+| `third_party/lean4/` | vendored Lean source, gitignored, never built. Only a reference for reading `src/kernel` and `src/Init` |
+
+The 2026-10-26 pass added `Int`: the type with `ofNat`/`negSucc`, `Int.NonNeg` as an **indexed** family (so the
+kernel's indexed-inductive path is now used, not just tested), `add sub mul pow neg natAbs ediv emod dvd gcd lcm
+min max`, `le`/`lt` defined as Lean defines them, and `decEq`/`decLe`/`decLt`/`decNonneg`/`decDvd`. Claims with a
+negative numeral are read over `Int` (see "Claim grammar"); Nat behaviour is unchanged.
+
+Kernel features: levels, de Bruijn exprs, type checker (whnf, lazy-delta defeq, proof irrelevance, eta, structure eta, Nat literal acceleration, iota with K, quotients, projections), inductives that are single, **mutual** (`Env.AddMutual`), **nested** (aux-type elimination in `nested.go`, recursors `Main.rec_N`) or **indexed** (`Int.NonNeg : Int → Prop`, which `Int.le` is defined with).
+
+Claim grammar (`claim.go`): closed Nat arithmetic `+ - * / % ^`, `= ≠ < > ≤ ≥ ∣`, `∧ ∨ ¬`, functions `gcd lcm min max factorial/fact`, and bounded quantifiers `∀ x < n, P` / `∃ x ≤ n, P`. A quantifier is **expanded** into a conjunction/disjunction (max 256 values each, 4096 cases total); the kernel checks the expansion, not a real `∀`.
+
+A claim that contains a **negative numeral** (`-3`, `(-2)`) is read over `Int` instead: numerals are `Int.ofNat n` /
+`Int.negSucc (n-1)`, `+ - *` are `Int.add/sub/mul`, `/ %` are `Int.ediv`/`Int.emod` (E-rounding: the remainder is
+never negative, `-12 / 7 = -2`, `-12 % 7 = 2`, `x / 0 = 0`, `x % 0 = x`), `^` is `Int.pow` (its exponent stays a
+`Nat`), `∣` is `Int.dvd` (`Exists (fun c => b = a * c)`), `gcd`/`lcm` are `Int.gcd`/`Int.lcm` and `min`/`max` are
+`Int.min`/`Int.max`, the relations are `Int.le`/`Int.lt` and quantifier variables are `Int.ofNat k`. A claim without
+one stays `Nat`, where `-` truncates: `3 - 5 = 0` is Nat (true) and `3 - 5 = -2` is Int (true). `factorial` has no
+`Int` version and is rejected there with a reason.
+`Int.le` is `Int.NonNeg (b - a)` and `Int.lt` is `(a + 1) ≤ b`, as in Lean, so a verdict certifies the same
+proposition Lean states.
+
+### How to run
+
+```
+go vet ./pkg/...
+go test -race -count=1 ./pkg/mathruntime/... ./pkg/server/
+go test -count=1 ./pkg/...        # full; densecpu takes ~260 s
+go test -bench . ./pkg/mathruntime/lean
+```
+
+Last results: `go test -race -count=1 ./pkg/mathruntime/...` passes, as do `./pkg/server` and the full `go test ./pkg/...`
+(all 30 packages ok on 2026-10-26, `densecpu` 266 s). One full run before that had `pkg/engineipc`
+`TestUnreadableTokenLineIsAnError` fail once while every package ran in parallel; it passes 3x alone and in the repeat
+full run, so it is a pre-existing load flake in the GPU-audit package, not this work.
+
+Try it: `POST /v1/strata/math/evaluate` with `{"operation":"prove","expression":"∀ x < 10, x * x < 100"}`.
+
+### Things you must know
+
+- **No admitted axioms, nothing opaque.** `PreludeAxioms` is an empty list, `BuildPrelude` also fails on an `opaque` declaration, and `TestPreludeAxiomSetIsTheDeclaredList` / `TestPreludeAdmitsNothing` fail if `Env.Axioms()` is not empty; `GET /v1/strata/math/backends` reports `lean_admitted_axioms: []`. The last two - `Nat.le_of_ble_eq_true` and `Nat.not_le_of_not_ble_eq_true` - are now theorems: `Nat.ble` is a definition here (`Nat.rec` on both arguments), so the reflection is proved (`Nat.ble_refl`, `Nat.ble_step`, `Nat.ble_true_of_le` by `Nat.le.rec`, `Nat.le_of_ble_eq_true` by `Nat.rec` on both arguments, and the negative direction as the contrapositive). `Int.decDvd` decides `a ∣ b` through `Int.natAbs_dvd_natAbs`, and `Nat.div`/`Nat.mod` are definitions with `Nat.dvd_iff_mod_eq_zero` proved from them, so every verdict rests on the kernel's rules alone.
+- **`Nat.gcd` is Lean's Euclid recursion with an explicit countdown.** Lean defines it (`Init/Data/Nat/Gcd.lean`: `gcd m n = if m = 0 then n else gcd (n % m) m`) by well-founded recursion, which this kernel cannot state; `Nat.gcdIter` maps `(a, b)` to `(b % a, a)` until the first argument is 0 and `Nat.gcd a b` runs it from `a`, since each step strictly lowers the first argument. The equations `gcd 0 b = b`, `gcd (succ a) b = gcdIter a (b % (succ a)) (succ a)`, `gcd 1 b = 1` and `gcd n 0 = n` hold definitionally (`Nat.gcd_succ`, `Nat.gcd_one_left`, `Nat.gcd_zero_left`, `Nat.gcd_zero_right`, with `Nat.gcdIter_zero` for the last), and `Nat.lcm` is `a * b / gcd a b` as in Lean.
+- **`Nat.dvd_mul` and `Coprime.gcd_mul`/`mul_gcd` are proved** (`Init/Data/Nat/Gcd.lean`, `Coprime.lean`). Lean's `dvdProdDvdOfDvdProd` returns a pair; here it is the statement `Nat.dvdProd_exists` (`k ∣ m*n` gives `a ∣ m`, `b ∣ n`, `a*b = k`), split on `gcd k m = 0` by `Nat.rec`, with `Nat.dvd_mul` the `Iff` Lean states, then `Nat.gcd_mul_right_dvd_mul_gcd`, `Nat.Coprime.gcd_mul` and `Nat.Coprime.mul_gcd`. Covered by `TestNatGcdProductDivisibilityLemmas` (it was failing on these four names before).
+- **`Nat.gcd_dvd_left`/`right` are proved**, where Lean derives them from its well-founded recursion. `Nat.gcdIter_dvd` carries the invariant `gcdIter f a b ∣ a ∧ ∣ b` under `a ≤ f` (the countdown keeps `a ≤ f`, so it can only stop on `a = 0`, where the value is `b` and divides `0` and `b`); going back up, a value that divides `b % a` and `a` divides `b`, because `b = a * (b / a) + b % a`. Supporting lemmas, all under Lean's names and statements from `Init/Data/Nat/Basic.lean`, `Dvd.lean`, `Mod.lean`: `Nat.le_trans`, `Nat.mul_zero`, `Nat.mul_one`, `Nat.add_assoc`, `Nat.mul_add`, `Nat.mul_assoc`, `Nat.dvd_mul_right_of_dvd`, `Nat.dvd_add`, `Nat.mod_lt` (`n % k < k` when `0 < k`, from `Nat.divStep_rem_lt`/`Nat.divIter_rem_lt`: a step keeps the machine's remainder below the divisor).
+- **`Nat.dvd_gcd`, `Nat.gcd_le_left`/`right`, `Int.gcd_dvd_left`/`right`** are proved too, which is the divisibility half of the gcd API in Lean's `Init/Data/Nat/Gcd.lean` and `src/Init/Data/Int/Gcd.lean` (`gcd_dvd`, `gcd_le_left`/`right`, `dvd_gcd`, on `Nat` and on `Int`). The rest of the gcd, lcm and Coprime API was ported later (see the Lean 4 kernel addendum).
+- **`Nat.gcd_comm` and `Nat.gcd_assoc` are proved**, and they never unfold the countdown: with `dvd_gcd` and `gcd_dvd` both sides of each equation are common divisors of the same arguments, so `Nat.dvd_antisymm` settles it. The order and multiplication lemmas that needs are now in the prelude too, under Lean's names: `Nat.mul_comm`, `Nat.add_le_add` (with `Nat.add_le_add_right`/`left`), `Nat.le_antisymm` (`Nat.le_trans` and `Nat.not_le_succ_self`), `Nat.dvd_antisymm` (via `Nat.le_of_dvd` and `Nat.pos_of_dvd_of_pos`), `Nat.dvd_trans` (via `Nat.mul_assoc`) and `Nat.eq_zero_of_zero_dvd`. `Nat.dvd_gcd` runs the countdown forwards (`Nat.gcdIter_dvd_of_dvd`: `k` divides both arguments at every step) and needs `k ∣ b % a` from `k ∣ a`, `k ∣ b`, i.e. `k ∣ b - a * (b / a)` (`Nat.dvd_mod_of_dvd`). That made the prelude need subtraction for the first time, so it now carries the layer from `Init/Data/Nat/Basic.lean`: `Nat.succ_add`, `Nat.add_comm`, `Nat.add_right_comm`, `Nat.succ_mul` (`*` recurses on its second argument here, so it is an induction), `Nat.add_sub_add_right`, `Nat.add_sub_add_left`, `Nat.add_sub_cancel`, `Nat.add_sub_cancel_left`, `Nat.succ_sub_succ`, `Nat.sub_self`, `Nat.zero_sub`, `Nat.sub_sub`, `Nat.mul_pred`, `Nat.mul_sub_left_distrib` (unconditional: Nat subtraction truncates), `Nat.dvd_sub`, plus `Nat.sub_congr` for the rewrites. `Nat.gcd_le_left`/`right` go through `Nat.le_of_dvd` (`Nat.le_add_left`, `Nat.zero_le`). `Int.gcd_dvd_left`/`right`/`Int.gcd_dvd` need no new multiplication lemma: `Int.natAbs_dvd_natAbs` carries `Nat.gcd_dvd_left` to `Int.dvd (ofNat (gcd a b)) a` because `natAbs (ofNat (gcd a b))` is `gcd a b` by definition. Not ported from `Init/Data/Nat`: files other than `Gcd`, `Lcm` and `Coprime` (those are complete, see the addendum), none of which a claim needs. `gcd_test.go` reduces `Nat.gcdIter` itself and requires it to equal `big.Int`'s GCD for every pair up to 30, checks that extra fuel never changes the answer, and checks the definition and the literal extension agree.
+- **`Nat.div`/`Nat.mod` are a state machine, not Lean's well-founded recursion**, which this kernel cannot state. `Nat.divMod k n` runs `Nat.divStep` `n` times from `mk 0 0`; a step bumps the remainder, or wraps to `mk (q+1) 0` when the remainder would reach `k`, so `mk q r` always satisfies `q * k + r = steps taken`, `n / 0 = 0` and `n % 0 = n`. `Nat.div`/`Nat.mod` take the dividend first (as Lean's do) and project the state. Literals never unfold it: `reduceNat` answers `Nat.div`/`Nat.mod` with `big.Int` division first, so a big quotient is still one kernel step; `divmod_test.go` reduces `Nat.divMod` itself and requires quotients and remainders to equal `big.Int`'s for divisors 0-9 and dividends 0-40. What is proved from the model: `Nat.divMod_spec` (`n = k * (n / k) + n % k`), `Nat.divIter_lt`/`Nat.divIter_wrap` (where the machine stands after `j` steps), `Nat.divMod_mul` (`k ∣ k * c`), and from those `Nat.dvd_iff_mod_eq_zero` both ways. Remaining difference: Lean's `Nat.div`/`Nat.mod` are opaque builtins and it proves things about them through `wf`/`omega`; here only what these lemmas say is known, and every `Nat` arithmetic fact used (`Nat.le`, `Nat.succ.inj`, `Nat.not_le_succ_self`, `Nat.zero_add`, `Nat.zero_mul`, …) had to be proved in the prelude first.
+- **Never compared with a real Lean build.** Recursor shapes in tests (`Nat.rec`, `Or.rec`, `Rose.rec_1`, `Int.NonNeg.rec`, mutual `Even/Odd`, ...) come from my reading of `inductive.cpp`, not from running Lean. Naming (`motive_N`, `rec_N`) and minor-premise order are the likeliest places to differ.
+- **Inductive order comes from `Int.NonNeg`.** The one indexed family in the prelude is `Int.NonNeg` (Lean's own definition); its recursor eliminates only into `Prop`, which is how `Int.decNonneg` proves a negative integer is not non-negative.
+- **`Decidable` deviates from 4.35**: the prelude uses the classic two-constructor inductive (`isFalse`/`isTrue`); 4.35 defines a structure with `decide` and `reflects_decide`.
+- **Operators elaborate to what Lean's instances unfold to** (`a + b` becomes `Nat.add a b`, `Int.le` is `NonNeg (b - a)`). The type-class layer is not ported.
+- **The `Int` operations are recursor/Bool.rec terms, not Lean's `match` bodies** (`Int.subNatNat`, `Int.negOfNat`, `Int.add`, `Int.mul`, `Int.ediv`, `Int.emod`), and `Int.pow` replaces Lean's `if n % 2 = 0` with a `Bool.rec` on `Nat.beq (Nat.mod n 2) 0`; the values are the same. `Int.decEq` uses five port helpers (`Int.ctorNat`, `Int.ofNat.inj`, `Int.negSucc.inj`, `Int.ofNat_ne_negSucc`, `Int.negSucc_ne_ofNat`) where Lean uses `Int.noConfusion`. `Int` declarations were read from `third_party/lean4/src/Init/Data/Int/Basic.lean`, `src/Init/Data/Int/DivMod/Basic.lean`, `src/Init/Data/Int/DivMod/Bootstrap.lean` (for `dvd_of_emod_eq_zero` / `emod_eq_zero_of_dvd`) and `src/Init/Data/Int/Gcd.lean` (`gcd`/`lcm`); `Int.decDvd` mirrors `decidableDvd` in `DivMod/Lemmas.lean` and `Int.min`/`Int.max` are `minOfLe`/`maxOfLe` from `Init/Prelude.lean`.
+- **`prove` bypasses the result cache** because the cache key canonicalizer can mangle symbols.
+- **CAS cross-check** (`certify`) only runs for expressions of `+ * ^ ( )` over unsigned integers; `- / %` differ between Lean's Nat and the CAS rationals.
+- Budgets: `MaxSteps` (default 5,000,000) and the runtime timeout, checked on every kernel step. Nat literal ops refuse results over `natMaxBits = 1<<22`.
+
+### Tests
+
+`pkg/mathruntime/lean`: `kernel_test.go` (claims incl. quantifiers/functions, 1,500-claim big-integer oracle, budgets, refutation certificates), `divmod_test.go` (the div/mod model against `big.Int` for divisors 0-9 and dividends 0-40), `negative_test.go` (bad terms, defeq, universes, inductive accept/reject, recursor types), `mutual_test.go`, `mutual_nested_test.go` (a mutual block whose types nest a sibling: three motives, the auxiliary in the block, elimination from either type, the counts), `nested_test.go` (Rose, parameterised `T α`, nesting inside a mutual block), `gcd_test.go` (the gcd countdown against `big.Int`, fuel independence, the equations by reduction, large literals through the extension), `gcd_dvd_test.go` (`Nat.mod_lt` for divisors 1-9 and dividends 0-40 against `big.Int`, the refusals for a bound that is one too small and for `k = 0`, `Nat.gcd_dvd_left`/`right` for every pair up to 20 with the type compared against the computed gcd and `Nat.decDvd` agreeing, the divisibility laws on numerals, `mod_lt` through `Nat.le_of_succ_le`, and now `Nat.dvd_gcd` for common divisors up to 6 with arguments up to 12, `Nat.gcd_le_left`/`right` for every pair up to 20, and `Int.gcd_dvd_left`/`right`/`gcd_dvd` on positive, negative and zero pairs with `Int.decDvd` agreeing), `three_index_test.go` (`Cube α i j k`: the three-index recursor's type, reductions at fixed indices, the index mismatch refused, and a `Slice` nesting `Cube Slice 2 3 4` whose auxiliary carries all three indices and takes an induction hypothesis for the recursive parameter), `indexed_nested_test.go` (`Vector` as the nested family: a fixed index, an index bound in the constructor, an index computed from a constructor argument, two indices sharing one auxiliary, an indexed and a plain family in one declaration), `nat_order_test.go` (`Nat.mul_comm`, `Nat.add_le_add` and its halves, `Nat.le_antisymm`, `Nat.dvd_antisymm`, `Nat.dvd_trans`, `Nat.pos_of_dvd_of_pos`, `Nat.eq_zero_of_zero_dvd` applied to numerals with the refused reversed/off-by-one statements, `Nat.gcd_comm` for every pair up to 20 and `Nat.gcd_assoc` for every triple up to 8 against `big.Int`), `mat_nested_test.go` (`Mat α rows cols`, a two-index family: the family's own recursor, a fixed 2x2 occurrence whose auxiliary nests `Vector` and so adds a third motive, and both indices bound in the constructor), `int_test.go` (Int claims incl. negative literals, both readings of `-`, E-rounding `/` and `%`, `∣` as `Int.dvd`, the `gcd`/`lcm`/`min`/`max`, the `Int`-unsupported `factorial`, a refutation certificate, the proposition shape, a 400-claim Int oracle and a literal-cost check), `prelude_test.go`, `bench_test.go`.
+`pkg/mathruntime/lean_runtime_test.go`: OpProve through `ProcessRequest`, budget, deadline (20 ms deadline returns within 250 ms), CAS cross-check, intercept, concurrency, `TestCASPowerIsRightAssociative`.
+`pkg/server/lean_endpoint_test.go`: endpoint and prompt-injection rendering.
+
+Measured (AMD Ryzen 9 9950X3D, `go test -bench . -benchtime=500x ./pkg/mathruntime/lean`, one run; the prelude and gcd readings are `-benchtime=300x`, after `Nat.gcd` became a definition): prelude build 10.7 ms (one `-benchtime=300x` run; 10.4 ms before the order/multiplication lemmas, 6.95 ms before the subtraction layer, 5.6 and 6.2 ms before the order and divisibility lemmas, 1.8 before the divisibility work; the div/mod model and its lemmas are the bulk, the `Nat.ble`, order and subtraction lemmas are the last declarations, the gcd countdown adds two definitions and five equations, and `Nat.mod_lt`, `Nat.gcdIter_dvd`/`Nat.gcdIter_dvd_of_dvd` with the lemmas under them add the rest); `2^10 = 1024` ~14 µs; big multiplication claim ~14 µs; `gcd(12, 18) = 6` ~11 µs and `gcd(123456789, 987654321) = 9` ~13 µs - a nine-digit pair costs what a two-digit one does, because the literal extension answers `Nat.gcd` before the definition unfolds; `3 ∣ 12 ∧ 5 < 7 ∧ ¬ (9 = 10)` ~46 µs; `-3 < 2` ~18 µs; `-123456789 * 987654321 = -121932631112635269` ~28 µs; `-12 / 7 = -2 ∧ -12 % 7 = 2` ~54 µs; `-3 ∣ 12 ∧ ¬ (-3 ∣ 13)` ~52 µs (`∣` on `Int` goes through `natAbs`); `gcd(-6, -9) = 3 ∧ min(-3, 5) = -3` ~50 µs. The same benchmarks move by up to a third between runs on this machine; an order claim now embeds a real proof term instead of an axiom's. The Nat oracle covers `+ - * / % ^ ∣ ∧ ∨ ¬` and comparisons; the Int oracle covers `+ - * / % ^ ∣ gcd lcm min max` and the six relations (with E-rounding); quantifiers only have hand-picked cases. `-2^64 = 18446744073709551616` takes 89 kernel steps, the big Int product 95, and `-123456789 / 7` / `% 7` 89 / 97, so the literals stay constant-cost.
+
+### Not done
+
+- Not ported: `String` literals, the elaborator, tactics, the compiler, the type-class layer.
+- Not supported in claims: unbounded quantifiers, free variables, and over `Int`: `factorial` (Lean has no `Int` version). Nothing is admitted or opaque any more, so the next real step is coverage, not trust: `Nat.ble`/`Nat.le` are only proved for the constructors the prelude has, the Nat arithmetic library stops at what `Nat.gcd`/`Nat.dvd` need (`Gcd`, `Lcm` and `Coprime` are complete bar the items named in the addendum), and unbounded quantifiers would need `omega`-style machinery.
+- Kernel cases now all exercised: single, mutual, nested, indexed, nested-through-indexed, two-index, three-index (`three_index_test.go`), and a mutual block whose types nest a sibling through `List` (`mutual_nested_test.go`). Both of the last two needed no change to the kernel: `nested.go` builds an auxiliary from the family's own type with the parameters instantiated, so three indices carry over for free, and `replaceNested` skips the block's own names, so a nested occurrence whose parameter is a sibling leaves the auxiliary in the same mutual block (every recursor then takes one motive per block type plus the auxiliary, and eliminates from any of them).
+- `factorial(n)` unfolds one step per unit of `n`; large `n` hits the step budget rather than computing.
+- The CAS itself was not audited beyond the `^` fix.
+
+### Repo state
+
+All changes are uncommitted. Mine: `.gitignore` (adds `/third_party/lean4`), `docs/MATH_RUNTIME.md`, `pkg/mathruntime/*` (including the new `lean/`, `lean_backend.go`, `lean_runtime_test.go`), `pkg/server/server.go`, `pkg/server/generate.go`, `pkg/server/lean_endpoint_test.go`. Not mine, already dirty before this work: `src/prefill/moe_mmq.cu`, `src/prefill/prefill.cpp`, `run_upstream.sh`, `strata-coder-iq1_m.json.bak*`. The status snapshot also shows modifications to `pkg/mathruntime` files I did not list (`cas_engine.go`, `dimensions.go`, `formulas.go`, `theorems.go`, `unified_cas_backend.go`, `math_test.go`); check the diff before committing.
+
+### Lean port: Gcd / Lcm / Coprime now complete (2026-10-30)
+
+`pkg/mathruntime/lean/prelude_nat_extra.go` … `prelude_nat_extra15.go` add the rest of `Init/Data/Nat/{Gcd,Lcm,Coprime}.lean`
+under Lean's names (about 300 theorems), written with a small Go DSL (`eqN`, `tr`, `cg`, `tp`, `thm`, `dvIntro`) that
+emits the same raw proof terms as `prelude.go`. `BuildPrelude` appends `preludeExtra` to `preludeDecls`. The extra files
+register in their `init` functions, so their names must stay zero-padded (`extra02` … `extra15`): init order is filename order.
+Binder order: explicit arguments first, then implicit ones, hypotheses last.
+
+- Not ported: `Nat.gcd_def` (needs `ite`), `dvdProdDvdOfDvdProd` (data; its Prop form is `Nat.dvdProd_exists`), and
+  `coprime_one_left_eq_true`/`right_eq_true` (need `propext`/`eq_true`).
+- Every proof is checked only by this kernel; none was compared against real Lean's output. `nat_order_test.go` and
+  `nat_lcm_coprime_test.go` pin a sample of statements; the rest are covered by the prelude build type-checking each one.
+- Prelude build time went 10.7 → 45 ms. Nothing here is committed.
+- Leftover untracked files in `lean/`: `prelude.go.active/.bak/.orig`, `probe0/1/2_test.go`.
+
+### Lean port: Int Gcd / Lcm added (2026-10-30)
+
+`pkg/mathruntime/lean/prelude_zint_gcd01.go` … `prelude_zint_gcd18.go` port every theorem of `Init/Data/Int/Gcd.lean`
+(helpers `ithm`, `icg`, `icgN`, `tpI`, `iDvIntro`; most are the Nat lemma at absolute values). The `zint` names sort after
+`prelude_nat_extra15.go` on purpose: init order is filename order and `preludeExtra` is declared in `prelude_nat_extra.go`.
+Three lemmas the file needed were added: `Nat.mul_add_div_of_lt`, `Int.mul_ediv_cancel_left`, `Int.natAbs_ediv_of_dvd`.
+`Int.dvd_mul` goes through `Nat.dvdProd_exists` (the Prop form), not `dvdProdDvdOfDvdProd`.
+
+- Only `Nat.gcd_def` (needs `ite`) is still missing from Nat/Int Gcd, Lcm and Coprime; checked by comparing theorem names.
+- `int_gcd_test.go` pins five statements (accept) and two drifted ones (reject); the rest are checked by the prelude build.
+- Proofs are kernel-checked only, never compared with real Lean. Prelude build 45 → 56 ms (100 runs). Nothing is committed.
+- Other `Init/Data/{Nat,Int}` files (Basic, Lemmas, Dvd, Mod, MinMax …) are not ported and are far larger.
